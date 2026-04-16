@@ -73,3 +73,7 @@ You can also pin the launcher to the taskbar or Start menu:
 Hardware-library imports (`pymmcore_plus`, `cns_control`, etc.) are done
 lazily inside methods, so the package imports cleanly on machines without
 the rig.
+
+## License
+
+`napari-raman-widget` is distributed under the terms of the [BSD-3-Clause](https://spdx.org/licenses/BSD-3-Clause.html) license.
