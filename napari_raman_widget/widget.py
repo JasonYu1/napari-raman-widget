@@ -380,8 +380,8 @@ class HardwareWidget(QWidget):
         sq_size_row = QHBoxLayout()
         sq_size_row.addWidget(QLabel("Square size:"))
         self.sel_sqsize_input = QDoubleSpinBox()
-        self.sel_sqsize_input.setRange(0.01, 10.0)
-        self.sel_sqsize_input.setValue(0.02)
+        self.sel_sqsize_input.setRange(0.001, 10.0)
+        self.sel_sqsize_input.setValue(0.002)
         self.sel_sqsize_input.setDecimals(4)
         self.sel_sqsize_input.setSingleStep(0.0005)
         sq_size_row.addWidget(self.sel_sqsize_input)
@@ -1362,6 +1362,12 @@ class HardwareWidget(QWidget):
         batch = self.sel_batch_combo.currentText() == "True"
         sq_size = float(self.sel_sqsize_input.value())
         sq_n = int(self.sel_sqn_input.value())
+        if batch and sq_n < 2:
+            self.status.setText(
+                "Status: batch mode requires Square N >= 2 "
+                "(DAQ needs at least 2 samples per channel)"
+            )
+            return
 
         out_dir = self.mda_dir_input.text().strip() or "data/run"
         os.makedirs(out_dir, exist_ok=True)
