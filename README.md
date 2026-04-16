@@ -1,6 +1,6 @@
 # napari-raman-widget
 
-A napari dock widget for controlling the CNS Raman microscopy rig.
+A napari dock widget for controlling the Raman microscopy rig.
 
 ## What it does
 
@@ -32,7 +32,7 @@ on PyPI and must be installed from your internal/local sources).
 
 ## Run
 
-From inside the repo, with the `micro-control-2` conda env active:
+From inside the repo, with your conda environment active:
 
 ```bash
 python run_napari.py
@@ -42,22 +42,28 @@ python run_napari.py
 
 A `launch_napari.bat` script is included for convenience. Double-click it to:
 
-1. Activate the `micro-control-2` conda environment
+1. Activate your conda environment
 2. Change into the repo directory
 3. Launch napari with the widget
 
-You can also pin it to the taskbar or Start menu:
+Before using it, edit `launch_napari.bat` to match your setup:
+
+- The `call ... activate.bat <env-name>` line: replace `<env-name>` with
+  your own conda environment name.
+- The `cd /d <repo-path>` line: replace with the path to your local clone
+  of this repo.
+- The path to `activate.bat` itself: if your conda install isn't at the
+  default `C:\Users\<you>\miniforge3\Scripts\activate.bat`, point it at
+  your actual `activate.bat`. You can find it with `where conda` in any
+  terminal.
+
+You can also pin the launcher to the taskbar or Start menu:
 
 1. Right-click `launch_napari.bat` -> Create shortcut.
 2. Right-click the shortcut -> Properties, and prepend `cmd /c ` to the
    Target field so it becomes `cmd /c "<full path>\launch_napari.bat"`.
 3. Optionally click Change Icon to give it a recognizable icon.
 4. Right-click the shortcut -> Pin to taskbar (or drag it to the desktop).
-
-If your conda install isn't at the default
-`C:\Users\<you>\miniforge3\Scripts\activate.bat`, edit the `call` line in
-`launch_napari.bat` to point at your actual `activate.bat`. You can find it
-with `where conda` in any terminal.
 
 ## Structure
 
