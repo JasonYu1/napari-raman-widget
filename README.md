@@ -52,10 +52,6 @@ Before using it, edit `launch_napari.bat` to match your setup:
   your own conda environment name.
 - The `cd /d <repo-path>` line: replace with the path to your local clone
   of this repo.
-- The path to `activate.bat` itself: if your conda install isn't at the
-  default `C:\Users\<you>\miniforge3\Scripts\activate.bat`, point it at
-  your actual `activate.bat`. You can find it with `where conda` in any
-  terminal.
 
 You can also pin the launcher to the taskbar or Start menu:
 
