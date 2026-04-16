@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "napari-raman-widget"
+version = "0.1.0"
+description = "napari widget for controlling the CNS Raman microscopy rig"
+requires-python = ">=3.10"
+dependencies = [
+    "napari",
+    "numpy",
+    "qtpy",
+    "matplotlib",
+    "xarray",
+    "zarr",
+]
+
+[tool.setuptools.packages.find]
+include = ["napari_raman_widget*"]
