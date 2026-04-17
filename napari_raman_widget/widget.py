@@ -14,7 +14,7 @@ from qtpy.QtWidgets import (
 from .log_window import LogWindow, _StdoutRedirector
 from .plot_windows import (
     CalibrationPlotWindow, GridScanPlotWindow, ReferenceSpectraWindow,
-    SpectrumWindow,
+    SpectrumWindow, DatasetViewerWindow,
 )
 from .ui_helpers import make_collapsible
 
@@ -517,6 +517,10 @@ class HardwareWidget(QWidget):
         mda_btns_row.addWidget(self.stop_mda_btn, 1)
         mda_layout.addLayout(mda_btns_row)
 
+        self.gen_dataset_btn = QPushButton("Generate dataset")
+        self.gen_dataset_btn.clicked.connect(self.generate_dataset)
+        mda_layout.addWidget(self.gen_dataset_btn)
+
         mda_box.setLayout(mda_layout)
         outer.addWidget(mda_box)
 
@@ -795,6 +799,60 @@ class HardwareWidget(QWidget):
                 )
         except Exception as e:
             print(f"[mda setup] failed to update sequence: {e}")
+
+    def generate_dataset(self):
+        # Let the user pick which run folder to load.
+        default_dir = self.mda_dir_input.text().strip() or "data/run"
+        run_dir = QFileDialog.getExistingDirectory(
+            self, "Select MDA run folder", default_dir
+        )
+        if not run_dir:
+            return  # user cancelled
+
+        batch = self.sel_batch_combo.currentText() == "True"
+
+        log = LogWindow(title="Dataset generation log")
+        log.show()
+        self._plot_windows.append(log)
+
+        self.status.setText("Status: generating dataset...")
+        self.repaint()
+
+        try:
+            from .dataset import load_experiment
+            from pathlib import Path
+
+            run_path = Path(run_dir)
+            run_name = run_path.name              # e.g. "run_9"
+            parent = run_path.parent              # e.g. "data/"
+            dataset_dir = parent / "dataset"      # e.g. "data/dataset/"
+
+            os.makedirs(dataset_dir, exist_ok=True)
+            zarr_path = str(dataset_dir / f"ds_{run_name}.zarr")
+            pkl_path = str(dataset_dir / f"df_{run_name}.pkl")
+
+            with _StdoutRedirector(log):
+                df, df_locs, da = load_experiment(
+                    run_dir, zarr_output=zarr_path, batch=batch,
+                )
+                df.to_pickle(pkl_path)
+                print(f"Saved DataFrame to {pkl_path}")
+
+            log.append(f"\n--- dataset ready: {len(df)} spectra ---\n")
+
+            win = DatasetViewerWindow(
+                df, da, title=f"Dataset: {run_name}"
+            )
+            win.show()
+            self._plot_windows.append(win)
+
+            self.status.setText(
+                f"Status: dataset generated ({len(df)} spectra) "
+                f"-> {zarr_path}, {pkl_path}"
+            )
+        except Exception as e:
+            log.append(f"\n--- generation failed: {e} ---\n")
+            self.status.setText(f"Status: dataset generation failed - {e}")
 
     # -------- loading actions --------
     def connect(self):

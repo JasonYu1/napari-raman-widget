@@ -206,3 +206,191 @@ class GridScanPlotWindow(QMainWindow):
         self.setCentralWidget(central)
 
         self.fig.tight_layout(h_pad=2.0)
+
+class DatasetViewerWindow(QMainWindow):
+    """Interactive viewer: BF image with laser scatter + spectrum, Qt sliders for t/p/z."""
+
+    def __init__(self, df, da, title="Dataset viewer"):
+        super().__init__()
+        self.setWindowTitle(title)
+        self.resize(1200, 650)
+        self.df = df
+        self.da = da
+        self.bf = da.sel(c=0).values  # (t, p, z, y, x)
+        self._pt_selected = 0
+
+        import matplotlib
+        matplotlib.use("QtAgg")
+        import matplotlib.cm as mcm
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_qtagg import (
+            FigureCanvasQTAgg, NavigationToolbar2QT,
+        )
+        from qtpy.QtWidgets import QSlider, QHBoxLayout, QVBoxLayout, QLabel
+
+        self._mcm = mcm
+
+        central = QWidget()
+        main_layout = QVBoxLayout(central)
+
+        # --- Sliders ---
+        self.t_vals = da.coords["t"].values
+        self.p_vals = da.coords["p"].values
+        self.z_vals = da.coords["z"].values
+
+        slider_layout = QHBoxLayout()
+        self.t_slider, self.t_label = self._make_slider(
+            "t", 0, len(self.t_vals) - 1
+        )
+        self.p_slider, self.p_label = self._make_slider(
+            "p", 0, len(self.p_vals) - 1
+        )
+        self.z_slider, self.z_label = self._make_slider(
+            "z", 0, len(self.z_vals) - 1
+        )
+        for label, slider in [
+            (self.t_label, self.t_slider),
+            (self.p_label, self.p_slider),
+            (self.z_label, self.z_slider),
+        ]:
+            slider_layout.addWidget(label)
+            slider_layout.addWidget(slider, 1)
+        main_layout.addLayout(slider_layout)
+
+        # --- Figure ---
+        self.fig = Figure(figsize=(12, 5))
+        self.canvas = FigureCanvasQTAgg(self.fig)
+        self.toolbar = NavigationToolbar2QT(self.canvas, self)
+        self.ax_img = self.fig.add_subplot(121)
+        self.ax_spec = self.fig.add_subplot(122)
+
+        main_layout.addWidget(self.toolbar)
+        main_layout.addWidget(self.canvas)
+        self.setCentralWidget(central)
+
+        # --- Initial draw ---
+        t0 = int(self.t_vals[0])
+        p0 = int(self.p_vals[0])
+        z0 = int(self.z_vals[0])
+
+        self.im = self.ax_img.imshow(
+            self.bf[0, 0, 0], cmap="gray", aspect="equal"
+        )
+        self.ax_img.set_title(f"t={t0}, p={p0}, z={z0}")
+
+        # Scatter
+        try:
+            sub = df.loc[t0, p0, z0]
+            n = len(sub)
+            offsets = np.c_[sub["Y"].to_numpy(), sub["X"].to_numpy()]
+        except KeyError:
+            n = 0
+            offsets = np.empty((0, 2))
+
+        self.scat = self.ax_img.scatter(
+            offsets[:, 0] if n else [],
+            offsets[:, 1] if n else [],
+            c=np.arange(n) if n else [],
+            cmap="viridis",
+            vmin=0,
+            vmax=max(n - 1, 1),
+            picker=5,
+        )
+
+        # Spectrum line
+        try:
+            spec0 = df.loc[t0, p0, z0, 0].values[:-3]
+        except KeyError:
+            spec0 = np.zeros(100)
+        colors = self._pt_colors(max(n, 1))
+        (self.spec_line,) = self.ax_spec.plot(
+            spec0, color=colors[0] if n else "C0"
+        )
+        self.ax_spec.set_xlabel("pixel")
+        self.ax_spec.set_ylabel("intensity (a.u.)")
+        self.ax_spec.set_title(f"pt={self._pt_selected}")
+
+        self.fig.tight_layout()
+
+        # --- Connect signals ---
+        self.t_slider.valueChanged.connect(self._on_slider)
+        self.p_slider.valueChanged.connect(self._on_slider)
+        self.z_slider.valueChanged.connect(self._on_slider)
+        self.canvas.mpl_connect("pick_event", self._on_pick)
+
+    def _make_slider(self, name, lo, hi):
+        from qtpy.QtWidgets import QSlider, QLabel
+        from qtpy.QtCore import Qt
+        label = QLabel(f"{name}=0")
+        slider = QSlider(Qt.Horizontal)
+        slider.setMinimum(lo)
+        slider.setMaximum(hi)
+        slider.setValue(0)
+        slider.valueChanged.connect(
+            lambda v, n=name, lbl=label: lbl.setText(f"{n}={v}")
+        )
+        return slider, label
+
+    def _pt_colors(self, n):
+        if n <= 1:
+            return self._mcm.viridis(np.array([0.5]))
+        return self._mcm.viridis(np.linspace(0, 1, n))
+
+    def _current_tpz(self):
+        ti = self.t_slider.value()
+        pi = self.p_slider.value()
+        zi = self.z_slider.value()
+        t = int(self.t_vals[ti])
+        p = int(self.p_vals[pi])
+        z = int(self.z_vals[zi])
+        return t, p, z, ti, pi, zi
+
+    def _on_slider(self, _=None):
+        t, p, z, ti, pi, zi = self._current_tpz()
+
+        # Update image
+        self.im.set_data(self.bf[ti, pi, zi])
+        self.im.set_clim(
+            self.bf[ti, pi, zi].min(), self.bf[ti, pi, zi].max()
+        )
+        self.ax_img.set_title(f"t={t}, p={p}, z={z}")
+
+        # Update scatter
+        try:
+            sub = self.df.loc[t, p, z]
+            n = len(sub)
+            offsets = np.c_[sub["Y"].to_numpy(), sub["X"].to_numpy()]
+        except KeyError:
+            n = 0
+            offsets = np.empty((0, 2))
+
+        self.scat.set_offsets(offsets)
+        self.scat.set_array(np.arange(n))
+        self.scat.set_clim(0, max(n - 1, 1))
+
+        self._pt_selected = min(self._pt_selected, max(n - 1, 0))
+        self._update_spectrum()
+        self.canvas.draw_idle()
+
+    def _on_pick(self, event):
+        if event.artist is not self.scat:
+            return
+        self._pt_selected = int(event.ind[0])
+        self._update_spectrum()
+        self.canvas.draw_idle()
+
+    def _update_spectrum(self):
+        t, p, z, _, _, _ = self._current_tpz()
+        pt = self._pt_selected
+        try:
+            y = self.df.loc[t, p, z, pt].values[:-3]
+            n = len(self.df.loc[t, p, z])
+        except KeyError:
+            return
+        self.spec_line.set_ydata(y)
+        if len(y) != len(self.spec_line.get_xdata()):
+            self.spec_line.set_xdata(np.arange(len(y)))
+        self.spec_line.set_color(self._pt_colors(n)[min(pt, n - 1)])
+        self.ax_spec.relim()
+        self.ax_spec.autoscale_view()
+        self.ax_spec.set_title(f"pt={pt}")
