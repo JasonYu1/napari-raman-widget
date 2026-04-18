@@ -1259,7 +1259,7 @@ class HardwareWidget(QWidget):
 
                 X_img, Y_img = self._get_image_xy()
                 volts = self.transformer.BF_to_volts(
-                    grid / np.array([X_img, Y_img]), max_volts=1.8
+                    grid / np.array([Y_img, X_img]), max_volts=1.8
                 )
                 self.core.stopSequenceAcquisition()
                 self.core.setExposure(1)
