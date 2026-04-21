@@ -1156,7 +1156,7 @@ class HardwareWidget(QWidget):
                 f"reference/reference_spec_zs_{name}_{uid}.npy", zs
             )
             np.save(
-                f"reference/reference_spec_{int(exp)}s_{name}_{uid}.npy",
+                f"reference/reference_spec_{int(exp)}ms_{name}_{uid}.npy",
                 all_raman,
             )
             np.save(
