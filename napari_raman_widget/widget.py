@@ -2,7 +2,7 @@
 import os
 import time
 import uuid
-
+import xarray as xr
 import napari
 import numpy as np
 from qtpy.QtCore import Qt
@@ -1152,23 +1152,25 @@ class HardwareWidget(QWidget):
 
             os.makedirs("reference", exist_ok=True)
             uid = str(uuid.uuid1())[:8]
-            np.save(
-                f"reference/reference_spec_zs_{name}_{uid}.npy", zs
-            )
-            np.save(
-                f"reference/reference_spec_{int(exp)}ms_{name}_{uid}.npy",
-                all_raman,
-            )
-            np.save(
-                f"reference/reference_spec_xy_{name}_{uid}.npy",
-                np.asarray(pt),
+
+            ds = xr.Dataset(
+                {
+                    "spec": (["z", "n", "pixel"], all_raman),
+                },
+                coords={
+                    "z":        ("z",  zs),
+                    "x":        pt[1],
+                    "y":        pt[0],
+                    "exposure": exp,
+                },
             )
 
-            log.append(f"\n--- saved to reference/*_{name}_{uid}.npy ---\n")
-            self.status.setText(
-                f"Status: reference saved "
-                f"(reference/*_{name}_{uid}.npy) ✓"
-            )
+            zarr_path = f"reference/{name}_{uid}.zarr"
+            ds.to_zarr(zarr_path)
+
+            log.append(f"\n--- saved to {zarr_path} ---\n")
+            self.status.setText(f"Status: reference saved ({zarr_path}) ✓")
+
         except Exception as e:
             log.append(f"\n--- reference collection failed: {e} ---\n")
             self.status.setText(
