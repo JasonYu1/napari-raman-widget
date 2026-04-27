@@ -7,8 +7,8 @@ import napari
 import numpy as np
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
-    QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel,
+    QLineEdit, QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from .log_window import LogWindow, _StdoutRedirector
@@ -48,7 +48,7 @@ class HardwareWidget(QWidget):
         self.cfg_path = QLineEdit()
         self.cfg_path.setText("test3.cfg")
         self.cfg_path.setPlaceholderText("test3.cfg")
-        cfg_browse = QPushButton("…")
+        cfg_browse = QPushButton("...")
         cfg_browse.setFixedWidth(30)
         cfg_browse.clicked.connect(self.browse_cfg)
         cfg_row.addWidget(self.cfg_path)
@@ -59,7 +59,7 @@ class HardwareWidget(QWidget):
         tf_row = QHBoxLayout()
         self.tf_path = QLineEdit()
         self.tf_path.setPlaceholderText("model_2026-01-08.json")
-        tf_browse = QPushButton("…")
+        tf_browse = QPushButton("...")
         tf_browse.setFixedWidth(30)
         tf_browse.clicked.connect(self.browse_tf)
         tf_row.addWidget(self.tf_path)
@@ -72,7 +72,7 @@ class HardwareWidget(QWidget):
         out_row = QHBoxLayout()
         self.out_path = QLineEdit()
         self.out_path.setPlaceholderText("(current directory)")
-        out_browse = QPushButton("…")
+        out_browse = QPushButton("...")
         out_browse.setFixedWidth(30)
         out_browse.clicked.connect(self.browse_out)
         out_row.addWidget(self.out_path)
@@ -111,7 +111,7 @@ class HardwareWidget(QWidget):
         raman_layout.addLayout(exp_row)
 
         n_row = QHBoxLayout()
-        n_row.addWidget(QLabel("N (repeats, ≥2):"))
+        n_row.addWidget(QLabel("N (repeats, >=2):"))
         self.n_input = QSpinBox()
         self.n_input.setRange(2, 1000)
         self.n_input.setValue(2)
@@ -241,7 +241,7 @@ class HardwareWidget(QWidget):
         ref_layout.addLayout(ref_n_row)
 
         ref_range_row = QHBoxLayout()
-        ref_range_row.addWidget(QLabel("Search range (±µm):"))
+        ref_range_row.addWidget(QLabel("Search range (um):"))
         self.ref_range_input = QDoubleSpinBox()
         self.ref_range_input.setRange(0.1, 1000.0)
         self.ref_range_input.setValue(10)
@@ -297,7 +297,7 @@ class HardwareWidget(QWidget):
         scan_layout.addLayout(scan_n_row)
 
         scan_z_row = QHBoxLayout()
-        scan_z_row.addWidget(QLabel("Z offset (µm):"))
+        scan_z_row.addWidget(QLabel("Z offset (um):"))
         self.scan_z_input = QDoubleSpinBox()
         self.scan_z_input.setRange(-1000, 1000)
         self.scan_z_input.setValue(4)
@@ -305,6 +305,38 @@ class HardwareWidget(QWidget):
         self.scan_z_input.setSingleStep(0.5)
         scan_z_row.addWidget(self.scan_z_input)
         scan_layout.addLayout(scan_z_row)
+
+        # Z-scan option
+        self.scan_zscan_check = QCheckBox("Z-scan (multi-plane Raman)")
+        self.scan_zscan_check.setChecked(False)
+        self.scan_zscan_check.toggled.connect(self._toggle_zscan_fields)
+        scan_layout.addWidget(self.scan_zscan_check)
+
+        self.scan_zrange_row = QHBoxLayout()
+        self._zscan_range_label = QLabel("Z range (+/- um):")
+        self.scan_zrange_row.addWidget(self._zscan_range_label)
+        self.scan_zrange_input = QDoubleSpinBox()
+        self.scan_zrange_input.setRange(0.1, 1000.0)
+        self.scan_zrange_input.setValue(5.0)
+        self.scan_zrange_input.setDecimals(1)
+        self.scan_zrange_input.setSingleStep(0.5)
+        self.scan_zrange_row.addWidget(self.scan_zrange_input)
+        scan_layout.addLayout(self.scan_zrange_row)
+
+        self.scan_zsteps_row = QHBoxLayout()
+        self._zscan_steps_label = QLabel("Z steps:")
+        self.scan_zsteps_row.addWidget(self._zscan_steps_label)
+        self.scan_zsteps_input = QSpinBox()
+        self.scan_zsteps_input.setRange(2, 500)
+        self.scan_zsteps_input.setValue(10)
+        self.scan_zsteps_row.addWidget(self.scan_zsteps_input)
+        scan_layout.addLayout(self.scan_zsteps_row)
+
+        # Hide z-scan fields initially
+        self._zscan_range_label.setVisible(False)
+        self.scan_zrange_input.setVisible(False)
+        self._zscan_steps_label.setVisible(False)
+        self.scan_zsteps_input.setVisible(False)
 
         scan_layout.addWidget(QLabel(
             "Extra channels (BF is always captured before & after):"
@@ -435,7 +467,7 @@ class HardwareWidget(QWidget):
         mda_layout.addLayout(mda_dir_row)
 
         raman_off_row = QHBoxLayout()
-        raman_off_row.addWidget(QLabel("Raman glass offset (µm):"))
+        raman_off_row.addWidget(QLabel("Raman glass offset (um):"))
         self.mda_raman_off_input = QDoubleSpinBox()
         self.mda_raman_off_input.setRange(-1000, 1000)
         self.mda_raman_off_input.setValue(5.0)
@@ -481,7 +513,7 @@ class HardwareWidget(QWidget):
         mda_layout.addLayout(interval_row)
 
         zrel_row = QHBoxLayout()
-        zrel_row.addWidget(QLabel("Z relative (comma-sep µm):"))
+        zrel_row.addWidget(QLabel("Z relative (comma-sep um):"))
         self.mda_zrel_input = QLineEdit()
         self.mda_zrel_input.setText("0, 3")
         self.mda_zrel_input.setPlaceholderText("e.g. 0, 3.33")
@@ -616,6 +648,13 @@ class HardwareWidget(QWidget):
                 f"{label} contains non-integer entries: {text!r}"
             )
 
+    def _toggle_zscan_fields(self, checked):
+        """Show/hide the z-scan range and steps fields."""
+        self._zscan_range_label.setVisible(checked)
+        self.scan_zrange_input.setVisible(checked)
+        self._zscan_steps_label.setVisible(checked)
+        self.scan_zsteps_input.setVisible(checked)
+
     # -------- channel row helpers --------
     def _available_channels(self):
         """Query MM for available channels in the 'Channel' group, excluding BF."""
@@ -647,7 +686,7 @@ class HardwareWidget(QWidget):
         exp_spin.setDecimals(1)
         exp_spin.setSuffix(" ms")
 
-        remove_btn = QPushButton("✕")
+        remove_btn = QPushButton("x")
         remove_btn.setFixedWidth(30)
 
         row.addWidget(combo, 2)
@@ -698,7 +737,7 @@ class HardwareWidget(QWidget):
         exp_spin.setDecimals(1)
         exp_spin.setSuffix(" ms")
 
-        remove_btn = QPushButton("✕")
+        remove_btn = QPushButton("x")
         remove_btn.setFixedWidth(30)
 
         row.addWidget(combo, 2)
@@ -771,7 +810,7 @@ class HardwareWidget(QWidget):
             print(f"[live mode stop] {e}")
 
         if self.main_window is None:
-            print("[mda setup] no main_window — can't configure MDA widget")
+            print("[mda setup] no main_window -- can't configure MDA widget")
             return
 
         try:
@@ -790,9 +829,9 @@ class HardwareWidget(QWidget):
             )
             if hasattr(mda_settings, "setValue"):
                 mda_settings.setValue(new_seq)
-                print("[mda setup] axis_order=tpcz, z_plan=ZRangeAround ✓")
+                print("[mda setup] axis_order=tpcz, z_plan=ZRangeAround OK")
             else:
-                print("[mda setup] no setValue method — can't push sequence back")
+                print("[mda setup] no setValue method -- can't push sequence back")
                 print(
                     "[mda setup] available: "
                     f"{[m for m in dir(mda_settings) if 'value' in m.lower() or 'set' in m.lower()][:10]}"
@@ -800,6 +839,7 @@ class HardwareWidget(QWidget):
         except Exception as e:
             print(f"[mda setup] failed to update sequence: {e}")
 
+    # -------- dataset generation --------
     def generate_dataset(self):
         # Let the user pick which run folder to load.
         default_dir = self.mda_dir_input.text().strip() or "data/run"
@@ -856,10 +896,10 @@ class HardwareWidget(QWidget):
 
     # -------- loading actions --------
     def connect(self):
-        self.status.setText("Status: connecting…")
+        self.status.setText("Status: connecting...")
         self.repaint()
 
-        # cd to output folder before doing anything else — all subsequent
+        # cd to output folder before doing anything else -- all subsequent
         # relative paths (model json, reference/, grid_scan_*.zarr, data/run,
         # etc.) will then land inside it.
         out = self.out_path.text().strip()
@@ -870,7 +910,7 @@ class HardwareWidget(QWidget):
                 print(f"[cwd] changed to {os.getcwd()}")
             except Exception as e:
                 self.status.setText(
-                    f"Status: couldn't cd to output folder — {e}"
+                    f"Status: couldn't cd to output folder -- {e}"
                 )
                 return
 
@@ -916,7 +956,7 @@ class HardwareWidget(QWidget):
 
             self._refresh_channel_combos()
 
-            msg = "Status: connected ✓"
+            msg = "Status: connected OK"
             if not cfg:
                 msg += " (no cfg loaded)"
             if not tf:
@@ -926,7 +966,7 @@ class HardwareWidget(QWidget):
             self.disconnect_btn.setEnabled(True)
             self.reload_tf_btn.setEnabled(True)
         except Exception as e:
-            self.status.setText(f"Status: failed — {e}")
+            self.status.setText(f"Status: failed -- {e}")
 
     def reload_transformer(self):
         tf = self.tf_path.text().strip()
@@ -936,9 +976,9 @@ class HardwareWidget(QWidget):
         try:
             from cns_control.coordtransformer import CoordTransformer
             self.transformer = CoordTransformer.from_json(tf)
-            self.status.setText("Status: transformer reloaded ✓")
+            self.status.setText("Status: transformer reloaded OK")
         except Exception as e:
-            self.status.setText(f"Status: transformer reload failed — {e}")
+            self.status.setText(f"Status: transformer reload failed -- {e}")
 
     def disconnect(self):
         try:
@@ -993,9 +1033,9 @@ class HardwareWidget(QWidget):
             win.show()
             self._plot_windows.append(win)
 
-            self.status.setText(f"Status: collected {N}x{exposure:.0f}ms ✓")
+            self.status.setText(f"Status: collected {N}x{exposure:.0f}ms OK")
         except Exception as e:
-            self.status.setText(f"Status: collection failed — {e}")
+            self.status.setText(f"Status: collection failed -- {e}")
 
     # -------- laser aiming calibration --------
     def run_calibration(self):
@@ -1016,7 +1056,7 @@ class HardwareWidget(QWidget):
         log.show()
         self._plot_windows.append(log)
 
-        self.status.setText("Status: calibrating…")
+        self.status.setText("Status: calibrating...")
         self.repaint()
 
         try:
@@ -1039,16 +1079,16 @@ class HardwareWidget(QWidget):
             plot_win.show()
             self._plot_windows.append(plot_win)
 
-            self.status.setText("Status: calibration done ✓")
+            self.status.setText("Status: calibration done OK")
         except Exception as e:
             log.append(f"\n--- calibration failed: {e} ---\n")
-            self.status.setText(f"Status: calibration failed — {e}")
+            self.status.setText(f"Status: calibration failed -- {e}")
 
     # -------- recalibration --------
     def open_selector(self):
         if self.calibration_ds is None:
             self.status.setText(
-                "Status: no calibration dataset — run calibration first"
+                "Status: no calibration dataset -- run calibration first"
             )
             return
         try:
@@ -1061,18 +1101,18 @@ class HardwareWidget(QWidget):
             self.selector = ManualImageSelector(self.calibration_ds)
             plt.show()
             self.status.setText(
-                "Status: selector open — click through, then save"
+                "Status: selector open -- click through, then save"
             )
         except Exception as e:
-            self.status.setText(f"Status: selector failed — {e}")
+            self.status.setText(f"Status: selector failed -- {e}")
 
     def save_recalibration(self):
         if self.selector is None:
-            self.status.setText("Status: no selector — open it first")
+            self.status.setText("Status: no selector -- open it first")
             return
         if self.calibrator is None:
             self.status.setText(
-                "Status: no calibrator — run calibration first"
+                "Status: no calibrator -- run calibration first"
             )
             return
         if self.calibration_ds is None:
@@ -1093,9 +1133,9 @@ class HardwareWidget(QWidget):
             )
             self.transformer = CoordTransformer.from_json(f"{model_name}.json")
             self.tf_path.setText(f"{model_name}.json")
-            self.status.setText(f"Status: saved & loaded {model_name}.json ✓")
+            self.status.setText(f"Status: saved & loaded {model_name}.json OK")
         except Exception as e:
-            self.status.setText(f"Status: save failed — {e}")
+            self.status.setText(f"Status: save failed -- {e}")
 
     # -------- collect reference spectra --------
     def collect_reference(self):
@@ -1119,7 +1159,7 @@ class HardwareWidget(QWidget):
         search_range = float(self.ref_range_input.value())
         search_pts = int(self.ref_pts_input.value())
 
-        self.status.setText("Status: collecting reference spectra…")
+        self.status.setText("Status: collecting reference spectra...")
         self.repaint()
 
         log = LogWindow(title="Reference collection log")
@@ -1169,12 +1209,12 @@ class HardwareWidget(QWidget):
             ds.to_zarr(zarr_path)
 
             log.append(f"\n--- saved to {zarr_path} ---\n")
-            self.status.setText(f"Status: reference saved ({zarr_path}) ✓")
+            self.status.setText(f"Status: reference saved ({zarr_path}) OK")
 
         except Exception as e:
             log.append(f"\n--- reference collection failed: {e} ---\n")
             self.status.setText(
-                f"Status: reference collection failed — {e}"
+                f"Status: reference collection failed -- {e}"
             )
 
     # -------- spatial mapping --------
@@ -1197,6 +1237,14 @@ class HardwareWidget(QWidget):
         exp = float(self.scan_exp_input.value())
         N = int(self.scan_n_input.value())
         z_offset = float(self.scan_z_input.value())
+        do_zscan = self.scan_zscan_check.isChecked()
+
+        if do_zscan:
+            z_half = float(self.scan_zrange_input.value())
+            z_steps = int(self.scan_zsteps_input.value())
+            z_range = np.linspace(-z_half, z_half, z_steps)
+        else:
+            z_range = np.array([0.0])
 
         extra_channels = []
         seen = set()
@@ -1213,7 +1261,7 @@ class HardwareWidget(QWidget):
         log.show()
         self._plot_windows.append(log)
 
-        self.status.setText("Status: grid scanning…")
+        self.status.setText("Status: grid scanning...")
         self.repaint()
 
         try:
@@ -1226,7 +1274,7 @@ class HardwareWidget(QWidget):
                     shape0 = shapes.data[0]
                 except Exception:
                     raise RuntimeError(
-                        "Last layer has no shape data — "
+                        "Last layer has no shape data -- "
                         "draw a rectangle first."
                     )
 
@@ -1240,7 +1288,13 @@ class HardwareWidget(QWidget):
                 grid = np.column_stack([Xg.ravel(), Yg.ravel()])
 
                 print(f"Grid: {N}x{N} = {grid.shape[0]} points")
+                if do_zscan:
+                    print(
+                        f"Z-scan: {len(z_range)} planes, "
+                        f"range [{z_range[0]:.1f}, {z_range[-1]:.1f}] um"
+                    )
 
+                # --- Widefield snapshots at current z ---
                 self.core.setConfig("Channel", "BF")
                 self.core.setExposure(10)
                 BF = self.core.snap()
@@ -1252,10 +1306,11 @@ class HardwareWidget(QWidget):
                     self.core.setExposure(ch_exp)
                     extra_imgs[ch] = self.core.snap()
 
+                # --- Raman setup ---
                 self.daq.galvo.stop()
                 self.daq.galvo.start()
                 currentz = self.core.getPosition()
-                self.core.setPosition(currentz - z_offset)
+                base_z = currentz - z_offset
                 self.core.setConfig("Channel", "RM")
                 self.core.setShutterOpen("Fluoshutter", True)
 
@@ -1265,37 +1320,106 @@ class HardwareWidget(QWidget):
                 )
                 self.core.stopSequenceAcquisition()
                 self.core.setExposure(1)
-                print(
-                    f"Collecting {grid.shape[0]} spectra at "
-                    f"{exp:.0f} ms each…"
-                )
-                specs = self.collector.collect_spectra_pts(volts, exp)
 
+                # --- Acquire spectra (z-loop) ---
+                all_specs = []
+                all_BF_z = []
+                for i, dz in enumerate(z_range):
+                    self.core.setPosition(base_z + dz)
+                    print(
+                        f"  z-plane {i+1}/{len(z_range)}: "
+                        f"dz={dz:+.2f} um, collecting "
+                        f"{grid.shape[0]} spectra..."
+                    )
+                    specs = self.collector.collect_spectra_pts(volts, exp)
+                    all_specs.append(specs)
+
+                    if do_zscan:
+                        # BF snapshot at this z plane
+                        self.core.setShutterOpen("Fluoshutter", False)
+                        self.core.setConfig("Channel", "BF")
+                        self.core.setExposure(10)
+                        BF_z = self.core.snap()
+                        all_BF_z.append(BF_z)
+                        # Return to RM for next z plane
+                        self.core.setConfig("Channel", "RM")
+                        self.core.setShutterOpen("Fluoshutter", True)
+                        self.core.setExposure(1)
+
+                # --- Cleanup ---
                 self.core.setShutterOpen("Fluoshutter", False)
                 self.core.setPosition(currentz)
                 self.core.setConfig("Channel", "BF")
                 self.core.setExposure(10)
                 end_BF = self.core.snap()
 
-                data_vars = {
-                    "laser_pos": xr.DataArray(volts, dims=("idx", "volt")),
-                    "grid_pos": xr.DataArray(grid, dims=("idx", "volt")),
-                    "specs": xr.DataArray(specs, dims=("N", "spec_dim")),
-                    "BF": xr.DataArray(BF, dims=("Y", "X")),
-                    "end_BF": xr.DataArray(end_BF, dims=("Y", "X")),
-                }
-                for ch, img in extra_imgs.items():
-                    data_vars[ch] = xr.DataArray(img, dims=("Y", "X"))
+                # --- Build dataset ---
+                if do_zscan:
+                    specs_stack = np.stack(all_specs, axis=0)
+                    BF_stack = np.stack(all_BF_z, axis=0)
+                    data_vars = {
+                        "laser_pos": xr.DataArray(
+                            volts, dims=("idx", "volt")
+                        ),
+                        "grid_pos": xr.DataArray(
+                            grid, dims=("idx", "xy")
+                        ),
+                        "specs": xr.DataArray(
+                            specs_stack, dims=("z", "idx", "spec_dim")
+                        ),
+                        "z_range": xr.DataArray(
+                            z_range, dims=("z",)
+                        ),
+                        "BF": xr.DataArray(BF, dims=("Y", "X")),
+                        "BF_z": xr.DataArray(
+                            BF_stack, dims=("z", "Y", "X")
+                        ),
+                        "end_BF": xr.DataArray(end_BF, dims=("Y", "X")),
+                    }
+                    for ch, img in extra_imgs.items():
+                        data_vars[ch] = xr.DataArray(img, dims=("Y", "X"))
 
-                ds = xr.Dataset(data_vars)
-                ds.attrs["time"] = str(datetime.now())
-                ds.attrs["raman_exposure_ms"] = exp
-                ds.attrs["channel_exposures_ms"] = {
-                    ch: ch_exp for ch, ch_exp in extra_channels
-                }
+                    ds = xr.Dataset(data_vars)
+                    ds.attrs["time"] = str(datetime.now())
+                    ds.attrs["raman_exposure_ms"] = exp
+                    ds.attrs["z_offset"] = z_offset
+                    ds.attrs["z_range_min"] = float(z_range[0])
+                    ds.attrs["z_range_max"] = float(z_range[-1])
+                    ds.attrs["z_steps"] = len(z_range)
+                    ds.attrs["channel_exposures_ms"] = {
+                        ch: ch_exp for ch, ch_exp in extra_channels
+                    }
 
-                uid = uuid.uuid4().hex[:8]
-                zarr_name = f"grid_scan_data_{file_name}_{uid}.zarr"
+                    uid = uuid.uuid4().hex[:8]
+                    zarr_name = f"grid_scan_z_{file_name}_{uid}.zarr"
+                else:
+                    # Single-plane: same format as before
+                    data_vars = {
+                        "laser_pos": xr.DataArray(
+                            volts, dims=("idx", "volt")
+                        ),
+                        "grid_pos": xr.DataArray(
+                            grid, dims=("idx", "volt")
+                        ),
+                        "specs": xr.DataArray(
+                            all_specs[0], dims=("N", "spec_dim")
+                        ),
+                        "BF": xr.DataArray(BF, dims=("Y", "X")),
+                        "end_BF": xr.DataArray(end_BF, dims=("Y", "X")),
+                    }
+                    for ch, img in extra_imgs.items():
+                        data_vars[ch] = xr.DataArray(img, dims=("Y", "X"))
+
+                    ds = xr.Dataset(data_vars)
+                    ds.attrs["time"] = str(datetime.now())
+                    ds.attrs["raman_exposure_ms"] = exp
+                    ds.attrs["channel_exposures_ms"] = {
+                        ch: ch_exp for ch, ch_exp in extra_channels
+                    }
+
+                    uid = uuid.uuid4().hex[:8]
+                    zarr_name = f"grid_scan_data_{file_name}_{uid}.zarr"
+
                 ds.to_zarr(zarr_name)
                 print(f"Saved grid scan to {zarr_name}")
 
@@ -1305,10 +1429,10 @@ class HardwareWidget(QWidget):
             win.show()
             self._plot_windows.append(win)
 
-            self.status.setText(f"Status: grid scan saved → {zarr_name} ✓")
+            self.status.setText(f"Status: grid scan saved -> {zarr_name}")
         except Exception as e:
             log.append(f"\n--- grid scan failed: {e} ---\n")
-            self.status.setText(f"Status: grid scan failed — {e}")
+            self.status.setText(f"Status: grid scan failed -- {e}")
 
     # -------- automated cell selection --------
     def add_mask(self):
@@ -1316,7 +1440,7 @@ class HardwareWidget(QWidget):
         try:
             from cns_control.utils import add_mask_with_hole
         except Exception as e:
-            self.status.setText(f"Status: import failed — {e}")
+            self.status.setText(f"Status: import failed -- {e}")
             return
 
         X, Y = self._get_image_xy()
@@ -1337,17 +1461,17 @@ class HardwareWidget(QWidget):
                 small_circle_alpha=255,
             )
             self.status.setText(
-                f"Status: mask added at ({cy},{cx}) r={r} ✓"
+                f"Status: mask added at ({cy},{cx}) r={r} OK"
             )
         except Exception as e:
-            self.status.setText(f"Status: add_mask failed — {e}")
+            self.status.setText(f"Status: add_mask failed -- {e}")
 
     def run_automated_selection(self):
         if self.core is None:
             self.status.setText("Status: not connected")
             return
         if self.default_engine is None:
-            self.status.setText("Status: no default engine — reconnect")
+            self.status.setText("Status: no default engine -- reconnect")
             return
 
         cy = int(self.sel_cy_input.value())
@@ -1364,7 +1488,7 @@ class HardwareWidget(QWidget):
         log.show()
         self._plot_windows.append(log)
 
-        self.status.setText("Status: running automated selection…")
+        self.status.setText("Status: running automated selection...")
         self.repaint()
 
         try:
@@ -1392,10 +1516,10 @@ class HardwareWidget(QWidget):
                 "new_seq": new_seq,
             }
             log.append("\n--- selection complete ---\n")
-            self.status.setText("Status: automated selection done ✓")
+            self.status.setText("Status: automated selection done OK")
         except Exception as e:
             log.append(f"\n--- selection failed: {e} ---\n")
-            self.status.setText(f"Status: selection failed — {e}")
+            self.status.setText(f"Status: selection failed -- {e}")
 
     # -------- run raman MDA --------
     def run_raman_mda(self):
@@ -1404,12 +1528,12 @@ class HardwareWidget(QWidget):
             return
         if self.collector is None or self.transformer is None:
             self.status.setText(
-                "Status: collector/transformer missing — reconnect"
+                "Status: collector/transformer missing -- reconnect"
             )
             return
         if self.selection_results is None:
             self.status.setText(
-                "Status: no selection results — "
+                "Status: no selection results -- "
                 "run automated selection first"
             )
             return
@@ -1463,7 +1587,7 @@ class HardwareWidget(QWidget):
         log.show()
         self._plot_windows.append(log)
 
-        self.status.setText("Status: starting Raman MDA…")
+        self.status.setText("Status: starting Raman MDA...")
         self.repaint()
 
         try:
@@ -1555,10 +1679,10 @@ class HardwareWidget(QWidget):
                 self.core.run_mda(final_seq)
 
             log.append("\n--- MDA started ---\n")
-            self.status.setText("Status: Raman MDA started ✓")
+            self.status.setText("Status: Raman MDA started OK")
         except Exception as e:
             log.append(f"\n--- MDA failed: {e} ---\n")
-            self.status.setText(f"Status: MDA failed — {e}")
+            self.status.setText(f"Status: MDA failed -- {e}")
 
     def stop_raman_mda(self):
         if self.core is None:
@@ -1573,6 +1697,6 @@ class HardwareWidget(QWidget):
                 self.core.stopSequenceAcquisition()
             except Exception:
                 pass
-            self.status.setText("Status: stop requested ✓")
+            self.status.setText("Status: stop requested OK")
         except Exception as e:
-            self.status.setText(f"Status: stop failed — {e}")
+            self.status.setText(f"Status: stop failed -- {e}")
