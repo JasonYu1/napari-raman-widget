@@ -79,6 +79,27 @@ class HardwareWidget(QWidget):
         out_row.addWidget(out_browse)
         loading_layout.addLayout(out_row)
 
+        # Wavelength control
+        wl_row = QHBoxLayout()
+        wl_row.addWidget(QLabel("Center λ (nm):"))
+        self.wl_current_label = QLabel("—")
+        self.wl_current_label.setStyleSheet("font-weight: bold;")
+        wl_row.addWidget(self.wl_current_label)
+        loading_layout.addLayout(wl_row)
+
+        wl_set_row = QHBoxLayout()
+        self.wl_input = QDoubleSpinBox()
+        self.wl_input.setRange(0, 2000)
+        self.wl_input.setDecimals(2)
+        self.wl_input.setValue(785.0)
+        self.wl_input.setSuffix(" nm")
+        self.wl_update_btn = QPushButton("Update λ")
+        self.wl_update_btn.setEnabled(False)
+        self.wl_update_btn.clicked.connect(self.update_wavelength)
+        wl_set_row.addWidget(self.wl_input, 2)
+        wl_set_row.addWidget(self.wl_update_btn, 1)
+        loading_layout.addLayout(wl_set_row)
+
         self.connect_btn = QPushButton("Connect hardware")
         self.disconnect_btn = QPushButton("Disconnect")
         self.reload_tf_btn = QPushButton("Reload transformer")
@@ -955,6 +976,8 @@ class HardwareWidget(QWidget):
                 self.transformer = CoordTransformer.from_json(tf)
 
             self._refresh_channel_combos()
+            self.wl_update_btn.setEnabled(True)
+            self.refresh_wavelength()
 
             msg = "Status: connected OK"
             if not cfg:
@@ -980,6 +1003,30 @@ class HardwareWidget(QWidget):
         except Exception as e:
             self.status.setText(f"Status: transformer reload failed -- {e}")
 
+    def refresh_wavelength(self):
+        """Read and display the current center wavelength."""
+        if self.collector is None:
+            return
+        try:
+            wl = self.collector.get_wavelength()
+            self.wl_current_label.setText(f"{wl:.2f} nm")
+            self.wl_input.setValue(wl)
+        except Exception as e:
+            self.wl_current_label.setText(f"error: {e}")
+
+    def update_wavelength(self):
+        """Set a new center wavelength on the spectrometer."""
+        if self.collector is None:
+            self.status.setText("Status: not connected")
+            return
+        wl = float(self.wl_input.value())
+        try:
+            self.collector.set_wavelength(wl)
+            self.refresh_wavelength()
+            self.status.setText(f"Status: wavelength set to {wl:.2f} nm")
+        except Exception as e:
+            self.status.setText(f"Status: wavelength update failed -- {e}")
+
     def disconnect(self):
         try:
             if self.core is not None:
@@ -1003,6 +1050,8 @@ class HardwareWidget(QWidget):
         self.connect_btn.setEnabled(True)
         self.disconnect_btn.setEnabled(False)
         self.reload_tf_btn.setEnabled(False)
+        self.wl_update_btn.setEnabled(False)
+        self.wl_current_label.setText("—")
 
     # -------- raman collection --------
     def collect_raman(self):
