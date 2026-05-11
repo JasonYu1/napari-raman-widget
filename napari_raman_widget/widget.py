@@ -138,6 +138,12 @@ class HardwareWidget(QWidget):
         self.n_input.setValue(2)
         n_row.addWidget(self.n_input)
         raman_layout.addLayout(n_row)
+        save_row = QHBoxLayout()
+        save_row.addWidget(QLabel("Save as (blank = don't save):"))
+        self.collect_save_input = QLineEdit()
+        self.collect_save_input.setPlaceholderText("filename (no extension)")
+        save_row.addWidget(self.collect_save_input)
+        raman_layout.addLayout(save_row)
 
         self.collect_btn = QPushButton("Collect spectra at last point")
         self.collect_btn.clicked.connect(self.collect_raman)
@@ -1078,11 +1084,22 @@ class HardwareWidget(QWidget):
                 np.tile(volts[0], (N, 1)), exposure
             )
 
+            save_name = self.collect_save_input.text().strip()
+            saved_msg = ""
+            if save_name:
+                if not save_name.lower().endswith(".npy"):
+                    save_name += ".npy"
+                np.save(save_name, spec)
+                saved_msg = f" -> {save_name}"
+                print(f"Saved spectrum to {save_name}")
+
             win = SpectrumWindow(spec, title="Raman spectra")
             win.show()
             self._plot_windows.append(win)
 
-            self.status.setText(f"Status: collected {N}x{exposure:.0f}ms OK")
+            self.status.setText(
+                f"Status: collected {N}x{exposure:.0f}ms OK{saved_msg}"
+            )
         except Exception as e:
             self.status.setText(f"Status: collection failed -- {e}")
 
