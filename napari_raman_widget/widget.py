@@ -100,6 +100,18 @@ class HardwareWidget(QWidget):
         wl_set_row.addWidget(self.wl_update_btn, 1)
         loading_layout.addLayout(wl_set_row)
 
+        # Grating control
+        grating_row = QHBoxLayout()
+        grating_row.addWidget(QLabel("Grating:"))
+        self.grating_combo = QComboBox()
+        self.grating_combo.setEnabled(False)
+        self.grating_update_btn = QPushButton("Update grating")
+        self.grating_update_btn.setEnabled(False)
+        self.grating_update_btn.clicked.connect(self.update_grating)
+        grating_row.addWidget(self.grating_combo, 2)
+        grating_row.addWidget(self.grating_update_btn, 1)
+        loading_layout.addLayout(grating_row)
+
         self.connect_btn = QPushButton("Connect hardware")
         self.disconnect_btn = QPushButton("Disconnect")
         self.reload_tf_btn = QPushButton("Reload transformer")
@@ -984,6 +996,9 @@ class HardwareWidget(QWidget):
             self._refresh_channel_combos()
             self.wl_update_btn.setEnabled(True)
             self.refresh_wavelength()
+            self.refresh_wavelength()
+            self.grating_update_btn.setEnabled(True)  
+            self.refresh_gratings()                   
 
             msg = "Status: connected OK"
             if not cfg:
@@ -1033,6 +1048,50 @@ class HardwareWidget(QWidget):
         except Exception as e:
             self.status.setText(f"Status: wavelength update failed -- {e}")
 
+    def refresh_gratings(self):
+        """Populate the grating dropdown from the spectrograph. Read-only --
+        this does NOT move the turret."""
+        if self.collector is None:
+            return
+        try:
+            n = self.collector.get_number_gratings()
+            current = self.collector.get_grating()
+            self.grating_combo.blockSignals(True)
+            self.grating_combo.clear()
+            self.grating_combo.addItems([str(i) for i in range(1, n + 1)])
+            idx = current - 1                       # gratings are 1-indexed
+            if 0 <= idx < n:
+                self.grating_combo.setCurrentIndex(idx)
+            self.grating_combo.setEnabled(True)
+            self.grating_combo.blockSignals(False)
+        except Exception as e:
+            self.status.setText(f"Status: couldn't read gratings -- {e}")
+
+    def update_grating(self):
+        """Move the turret to the selected grating, then report groove
+        density and center wavelength in the status bar."""
+        if self.collector is None:
+            self.status.setText("Status: not connected")
+            return
+        text = self.grating_combo.currentText()
+        if not text:
+            self.status.setText("Status: no grating selected")
+            return
+        grating = int(text)
+        self.status.setText(f"Status: moving to grating {grating}...")
+        self.repaint()
+        try:
+            self.collector.set_grating(grating)
+            lines, blaze, home, offset = self.collector.get_grating_info(grating)
+            wl = self.collector.get_wavelength()
+            self.refresh_wavelength()               # keep λ display in sync
+            self.status.setText(
+                f"Status: grating {grating} set -- {lines:.0f} grooves/mm, "
+                f"center {wl:.2f} nm"
+            )
+        except Exception as e:
+            self.status.setText(f"Status: grating update failed -- {e}")
+
     def disconnect(self):
         try:
             if self.core is not None:
@@ -1057,6 +1116,9 @@ class HardwareWidget(QWidget):
         self.disconnect_btn.setEnabled(False)
         self.reload_tf_btn.setEnabled(False)
         self.wl_update_btn.setEnabled(False)
+        self.grating_update_btn.setEnabled(False)
+        self.grating_combo.setEnabled(False)
+        self.grating_combo.clear()
         self.wl_current_label.setText("—")
 
     # -------- raman collection --------
