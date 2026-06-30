@@ -435,7 +435,7 @@ class HardwareWidget(QWidget):
         af_row.addWidget(QLabel("Autofocus object:"))
         self.sel_af_combo = QComboBox()
         self.sel_af_combo.addItems(
-            ["laser", "software", "quartz", "glass", "cell"]
+            ["laser", "software", "quartz", "glass", "cell", "None"]
         )
         af_row.addWidget(self.sel_af_combo)
         sel_layout.addLayout(af_row)
@@ -524,6 +524,13 @@ class HardwareWidget(QWidget):
         self.mda_af_range_input.setSingleStep(0.5)
         af_range_row.addWidget(self.mda_af_range_input)
         mda_layout.addLayout(af_range_row)
+
+        # Segment-and-track toggle (independent of autofocus)
+        self.mda_seg_track_check = QCheckBox(
+            "Segment and track (update aiming each cycle)"
+        )
+        self.mda_seg_track_check.setChecked(False)
+        mda_layout.addWidget(self.mda_seg_track_check)
 
         mda_exp_row = QHBoxLayout()
         mda_exp_row.addWidget(QLabel("Exposure per cell (ms):"))
@@ -997,8 +1004,8 @@ class HardwareWidget(QWidget):
             self.wl_update_btn.setEnabled(True)
             self.refresh_wavelength()
             self.refresh_wavelength()
-            self.grating_update_btn.setEnabled(True)  
-            self.refresh_gratings()                   
+            self.grating_update_btn.setEnabled(True)
+            self.refresh_gratings()
 
             msg = "Status: connected OK"
             if not cfg:
@@ -1606,6 +1613,11 @@ class HardwareWidget(QWidget):
         cx = int(self.sel_cx_input.value())
         r = int(self.sel_r_input.value())
         autofocus_object = self.sel_af_combo.currentText()
+        if autofocus_object == "None":
+            self.status.setText(
+                "Status: pick an autofocus object (not None) for selection"
+            )
+            return
         N_per_fov = int(self.sel_npf_input.value())
         sq_size = float(self.sel_sqsize_input.value())
         sq_n = int(self.sel_sqn_input.value())
@@ -1670,7 +1682,12 @@ class HardwareWidget(QWidget):
         autofocus_p = self.selection_results["autofocus_p"]
         new_seq = self.selection_results["new_seq"]
 
-        autofocus_object = self.sel_af_combo.currentText()
+        af_choice = self.sel_af_combo.currentText()
+        autofocus_enabled = af_choice != "None"
+        # When autofocus is off we still hand the engine a valid method string
+        # for its constructor; it just won't be used.
+        autofocus_object = af_choice if autofocus_enabled else "laser"
+        segment_and_track = self.mda_seg_track_check.isChecked()
         batch = self.sel_batch_combo.currentText() == "True"
         sq_size = float(self.sel_sqsize_input.value())
         sq_n = int(self.sel_sqn_input.value())
@@ -1733,13 +1750,17 @@ class HardwareWidget(QWidget):
                     scale=2,
                     transformer=self.transformer,
                     batch=batch,
+                    autofocus=autofocus_enabled,           
                     autofocus_p=autofocus_p,
                     autofocus_object=autofocus_object,
+                    segment_and_track=segment_and_track,    
                     raman_glass_offset=raman_offset,
                     autofocus_search_range=40,
                     skip_imaging_for_same_pos=True,
                 )
                 engine._autofocus_search_range = af_range
+                engine._autofocus = autofocus_enabled
+                engine._segment_and_track = segment_and_track
 
                 self.core.register_mda_engine(engine)
 
@@ -1802,7 +1823,13 @@ class HardwareWidget(QWidget):
                 print(
                     f"Starting MDA: {loops} loops, interval={interval}s, "
                     f"z_rel={z_relative}, raman_z={raman_z_indices}, "
+                    f"autofocus={autofocus_enabled} ({af_choice}), "
+                    f"segment_and_track={segment_and_track}, "
                     f"extra channels={[ch for ch, _ in extra_channels]}"
+                )
+                print(
+                    f"[debug] engine._autofocus={engine._autofocus}, "
+                    f"engine._segment_and_track={engine._segment_and_track}"
                 )
                 self.core.run_mda(final_seq)
 
