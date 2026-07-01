@@ -5,7 +5,7 @@ import uuid
 import xarray as xr
 import napari
 import numpy as np
-from qtpy.QtCore import Qt
+from qtpy.QtCore import Qt, QTimer
 from qtpy.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel,
     QLineEdit, QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
@@ -516,10 +516,11 @@ class HardwareWidget(QWidget):
         mda_layout.addLayout(raman_off_row)
 
         af_range_row = QHBoxLayout()
-        af_range_row.addWidget(QLabel("Autofocus search range:"))
+        self._af_range_label = QLabel("Autofocus search range:")
+        af_range_row.addWidget(self._af_range_label)
         self.mda_af_range_input = QDoubleSpinBox()
         self.mda_af_range_input.setRange(0.1, 1000)
-        self.mda_af_range_input.setValue(4.5)
+        self.mda_af_range_input.setValue(6)
         self.mda_af_range_input.setDecimals(2)
         self.mda_af_range_input.setSingleStep(0.5)
         af_range_row.addWidget(self.mda_af_range_input)
@@ -527,7 +528,8 @@ class HardwareWidget(QWidget):
 
         # Coarse autofocus search points (all autofocus objects)
         search_pts_row = QHBoxLayout()
-        search_pts_row.addWidget(QLabel("Autofocus search pts:"))
+        self._search_pts_label = QLabel("Autofocus search pts:")
+        search_pts_row.addWidget(self._search_pts_label)
         self.mda_search_pts_input = QSpinBox()
         self.mda_search_pts_input.setRange(2, 500)
         self.mda_search_pts_input.setValue(8)
@@ -536,7 +538,8 @@ class HardwareWidget(QWidget):
 
         # Laser autofocus FINE scan range
         fine_range_row = QHBoxLayout()
-        fine_range_row.addWidget(QLabel("Laser fine search range (+/- um):"))
+        self._fine_range_label = QLabel("Laser fine search range (+/- um):")
+        fine_range_row.addWidget(self._fine_range_label)
         self.mda_fine_range_input = QDoubleSpinBox()
         self.mda_fine_range_input.setRange(0.1, 1000)
         self.mda_fine_range_input.setValue(1.5)
@@ -547,12 +550,17 @@ class HardwareWidget(QWidget):
 
         # Laser autofocus FINE scan points
         fine_pts_row = QHBoxLayout()
-        fine_pts_row.addWidget(QLabel("Laser fine search pts:"))
+        self._fine_pts_label = QLabel("Laser fine search pts:")
+        fine_pts_row.addWidget(self._fine_pts_label)
         self.mda_fine_pts_input = QSpinBox()
         self.mda_fine_pts_input.setRange(2, 500)
         self.mda_fine_pts_input.setValue(15)
         fine_pts_row.addWidget(self.mda_fine_pts_input)
         mda_layout.addLayout(fine_pts_row)
+
+        # Show/hide autofocus fields based on the selected autofocus object.
+        self.sel_af_combo.currentTextChanged.connect(self._toggle_autofocus_fields)
+        self._toggle_autofocus_fields(self.sel_af_combo.currentText())
 
         # Segment-and-track toggle (independent of autofocus)
         self.mda_seg_track_check = QCheckBox(
@@ -587,10 +595,20 @@ class HardwareWidget(QWidget):
         interval_row.addWidget(self.mda_interval_input)
         mda_layout.addLayout(interval_row)
 
+        # Refocus / re-segment cadence: run autofocus AND segment-and-track
+        # only every Nth timepoint (1 = every timepoint).
+        refocus_row = QHBoxLayout()
+        refocus_row.addWidget(QLabel("Refocus every (timepoints):"))
+        self.mda_refocus_input = QSpinBox()
+        self.mda_refocus_input.setRange(1, 1_000_000)
+        self.mda_refocus_input.setValue(1)
+        refocus_row.addWidget(self.mda_refocus_input)
+        mda_layout.addLayout(refocus_row)
+
         zrel_row = QHBoxLayout()
         zrel_row.addWidget(QLabel("Z relative (comma-sep um):"))
         self.mda_zrel_input = QLineEdit()
-        self.mda_zrel_input.setText("0, 3")
+        self.mda_zrel_input.setText("0, 4")
         self.mda_zrel_input.setPlaceholderText("e.g. 0, 3.33")
         zrel_row.addWidget(self.mda_zrel_input)
         mda_layout.addLayout(zrel_row)
@@ -633,6 +651,14 @@ class HardwareWidget(QWidget):
 
         outer.addStretch()
 
+        # ================= LIVE STAGE POSITION =================
+        self.pos_label = QLabel("Stage:  X --  Y --  Z --")
+        self.pos_label.setStyleSheet(
+            "QLabel { border-top: 1px solid palette(mid); padding: 4px; "
+            "font-family: monospace; }"
+        )
+        outer.addWidget(self.pos_label)
+
         # ================= STATUS BAR (bottom) =================
         self.status = QLabel("Status: disconnected")
         self.status.setStyleSheet(
@@ -655,6 +681,12 @@ class HardwareWidget(QWidget):
 
         # Keep references to pop-up windows so they don't get garbage collected.
         self._plot_windows = []
+
+        # Poll the stage position periodically for the live X/Y/Z readout.
+        self._pos_timer = QTimer(self)
+        self._pos_timer.setInterval(500)  # ms
+        self._pos_timer.timeout.connect(self._update_position_label)
+        self._pos_timer.start()
 
     # -------- file pickers --------
     def browse_cfg(self):
@@ -729,12 +761,56 @@ class HardwareWidget(QWidget):
                 f"{label} contains non-integer entries: {text!r}"
             )
 
+    def _update_position_label(self):
+        """Poll the stage for X/Y/Z and update the live readout label.
+
+        Kept deliberately cheap and fault-tolerant: it never raises. It keeps
+        polling during an MDA so the readout tracks the time-lapse; a read-only
+        position query is low-risk, and transient failures are swallowed."""
+        if self.core is None:
+            self.pos_label.setText("Stage:  X --  Y --  Z --")
+            return
+        try:
+            x = self.core.getXPosition()
+            y = self.core.getYPosition()
+            z = self.core.getPosition()
+            self.pos_label.setText(
+                f"Stage:  X {x:9.2f}  Y {y:9.2f}  Z {z:8.2f}"
+            )
+        except Exception:
+            # transient failure (device busy, reload in progress) -- leave the
+            # last good reading up rather than flickering an error.
+            pass
+
     def _toggle_zscan_fields(self, checked):
         """Show/hide the z-scan range and steps fields."""
         self._zscan_range_label.setVisible(checked)
         self.scan_zrange_input.setVisible(checked)
         self._zscan_steps_label.setVisible(checked)
         self.scan_zsteps_input.setVisible(checked)
+
+    def _toggle_autofocus_fields(self, method):
+        """Show/hide the MDA autofocus fields based on the chosen object.
+
+        - None  : hide everything (no autofocus).
+        - laser : show coarse range/pts AND the laser fine range/pts.
+        - other : show coarse range/pts only (fine is laser-specific).
+        """
+        method = (method or "").lower()
+        has_autofocus = method not in ("none", "")
+        is_laser = method == "laser"
+
+        # coarse fields: shown for any real autofocus object
+        self._af_range_label.setVisible(has_autofocus)
+        self.mda_af_range_input.setVisible(has_autofocus)
+        self._search_pts_label.setVisible(has_autofocus)
+        self.mda_search_pts_input.setVisible(has_autofocus)
+
+        # fine fields: laser only
+        self._fine_range_label.setVisible(is_laser)
+        self.mda_fine_range_input.setVisible(is_laser)
+        self._fine_pts_label.setVisible(is_laser)
+        self.mda_fine_pts_input.setVisible(is_laser)
 
     # -------- channel row helpers --------
     def _available_channels(self):
@@ -1725,6 +1801,7 @@ class HardwareWidget(QWidget):
         total_exp = float(self.mda_exp_input.value())
         loops = int(self.mda_loops_input.value())
         interval = float(self.mda_interval_input.value())
+        refocus_every = int(self.mda_refocus_input.value())
 
         try:
             z_relative = self._parse_float_list(
@@ -1785,6 +1862,7 @@ class HardwareWidget(QWidget):
                     search_pts=search_pts,
                     fine_search_range=fine_search_range,
                     fine_search_pts=fine_search_pts,
+                    refocus_every=refocus_every,
                     image_x=img_x,
                     image_y=img_y,
                     skip_imaging_for_same_pos=True,
@@ -1854,7 +1932,8 @@ class HardwareWidget(QWidget):
                     f"autofocus={autofocus_enabled} ({af_choice}), "
                     f"segment_and_track={segment_and_track}, "
                     f"search_pts={search_pts}, fine_range={fine_search_range}, "
-                    f"fine_pts={fine_search_pts}, image=({img_x}x{img_y}), "
+                    f"fine_pts={fine_search_pts}, refocus_every={refocus_every}, "
+                    f"image=({img_x}x{img_y}), "
                     f"extra channels={[ch for ch, _ in extra_channels]}"
                 )
                 print(
