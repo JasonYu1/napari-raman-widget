@@ -81,8 +81,8 @@ class HardwareWidget(QWidget):
 
         # Wavelength control
         wl_row = QHBoxLayout()
-        wl_row.addWidget(QLabel("Center λ (nm):"))
-        self.wl_current_label = QLabel("—")
+        wl_row.addWidget(QLabel("Center \u03bb (nm):"))
+        self.wl_current_label = QLabel("\u2014")
         self.wl_current_label.setStyleSheet("font-weight: bold;")
         wl_row.addWidget(self.wl_current_label)
         loading_layout.addLayout(wl_row)
@@ -93,7 +93,7 @@ class HardwareWidget(QWidget):
         self.wl_input.setDecimals(2)
         self.wl_input.setValue(785.0)
         self.wl_input.setSuffix(" nm")
-        self.wl_update_btn = QPushButton("Update λ")
+        self.wl_update_btn = QPushButton("Update \u03bb")
         self.wl_update_btn.setEnabled(False)
         self.wl_update_btn.clicked.connect(self.update_wavelength)
         wl_set_row.addWidget(self.wl_input, 2)
@@ -525,6 +525,35 @@ class HardwareWidget(QWidget):
         af_range_row.addWidget(self.mda_af_range_input)
         mda_layout.addLayout(af_range_row)
 
+        # Coarse autofocus search points (all autofocus objects)
+        search_pts_row = QHBoxLayout()
+        search_pts_row.addWidget(QLabel("Autofocus search pts:"))
+        self.mda_search_pts_input = QSpinBox()
+        self.mda_search_pts_input.setRange(2, 500)
+        self.mda_search_pts_input.setValue(8)
+        search_pts_row.addWidget(self.mda_search_pts_input)
+        mda_layout.addLayout(search_pts_row)
+
+        # Laser autofocus FINE scan range
+        fine_range_row = QHBoxLayout()
+        fine_range_row.addWidget(QLabel("Laser fine search range (+/- um):"))
+        self.mda_fine_range_input = QDoubleSpinBox()
+        self.mda_fine_range_input.setRange(0.1, 1000)
+        self.mda_fine_range_input.setValue(1.5)
+        self.mda_fine_range_input.setDecimals(2)
+        self.mda_fine_range_input.setSingleStep(0.5)
+        fine_range_row.addWidget(self.mda_fine_range_input)
+        mda_layout.addLayout(fine_range_row)
+
+        # Laser autofocus FINE scan points
+        fine_pts_row = QHBoxLayout()
+        fine_pts_row.addWidget(QLabel("Laser fine search pts:"))
+        self.mda_fine_pts_input = QSpinBox()
+        self.mda_fine_pts_input.setRange(2, 500)
+        self.mda_fine_pts_input.setValue(15)
+        fine_pts_row.addWidget(self.mda_fine_pts_input)
+        mda_layout.addLayout(fine_pts_row)
+
         # Segment-and-track toggle (independent of autofocus)
         self.mda_seg_track_check = QCheckBox(
             "Segment and track (update aiming each cycle)"
@@ -653,8 +682,14 @@ class HardwareWidget(QWidget):
 
     # -------- helpers --------
     def _get_image_xy(self):
-        """Return (X_size, Y_size) from the first image layer in the viewer.
-        Falls back to (1344, 1024) if no image layer is present."""
+        """Return (X_size, Y_size) from the camera via the core if connected,
+        else from the first image layer in the viewer. Falls back to
+        (1344, 1024) if neither is available."""
+        if self.core is not None:
+            try:
+                return int(self.core.getImageWidth()), int(self.core.getImageHeight())
+            except Exception:
+                pass
         from napari.layers import Image
         for layer in self.viewer.layers:
             if isinstance(layer, Image):
@@ -945,9 +980,6 @@ class HardwareWidget(QWidget):
         self.status.setText("Status: connecting...")
         self.repaint()
 
-        # cd to output folder before doing anything else -- all subsequent
-        # relative paths (model json, reference/, grid_scan_*.zarr, data/run,
-        # etc.) will then land inside it.
         out = self.out_path.text().strip()
         if out:
             try:
@@ -1091,7 +1123,7 @@ class HardwareWidget(QWidget):
             self.collector.set_grating(grating)
             lines, blaze, home, offset = self.collector.get_grating_info(grating)
             wl = self.collector.get_wavelength()
-            self.refresh_wavelength()               # keep λ display in sync
+            self.refresh_wavelength()               # keep lambda display in sync
             self.status.setText(
                 f"Status: grating {grating} set -- {lines:.0f} grooves/mm, "
                 f"center {wl:.2f} nm"
@@ -1126,7 +1158,7 @@ class HardwareWidget(QWidget):
         self.grating_update_btn.setEnabled(False)
         self.grating_combo.setEnabled(False)
         self.grating_combo.clear()
-        self.wl_current_label.setText("—")
+        self.wl_current_label.setText("\u2014")
 
     # -------- raman collection --------
     def collect_raman(self):
@@ -1429,7 +1461,6 @@ class HardwareWidget(QWidget):
                         f"range [{z_range[0]:.1f}, {z_range[-1]:.1f}] um"
                     )
 
-                # --- Widefield snapshots at current z ---
                 self.core.setConfig("Channel", "BF")
                 self.core.setExposure(10)
                 BF = self.core.snap()
@@ -1441,7 +1472,6 @@ class HardwareWidget(QWidget):
                     self.core.setExposure(ch_exp)
                     extra_imgs[ch] = self.core.snap()
 
-                # --- Raman setup ---
                 self.daq.galvo.stop()
                 self.daq.galvo.start()
                 currentz = self.core.getPosition()
@@ -1456,7 +1486,6 @@ class HardwareWidget(QWidget):
                 self.core.stopSequenceAcquisition()
                 self.core.setExposure(1)
 
-                # --- Acquire spectra (z-loop) ---
                 all_specs = []
                 all_BF_z = []
                 for i, dz in enumerate(z_range):
@@ -1470,25 +1499,21 @@ class HardwareWidget(QWidget):
                     all_specs.append(specs)
 
                     if do_zscan:
-                        # BF snapshot at this z plane
                         self.core.setShutterOpen("Fluoshutter", False)
                         self.core.setConfig("Channel", "BF")
                         self.core.setExposure(10)
                         BF_z = self.core.snap()
                         all_BF_z.append(BF_z)
-                        # Return to RM for next z plane
                         self.core.setConfig("Channel", "RM")
                         self.core.setShutterOpen("Fluoshutter", True)
                         self.core.setExposure(1)
 
-                # --- Cleanup ---
                 self.core.setShutterOpen("Fluoshutter", False)
                 self.core.setPosition(currentz)
                 self.core.setConfig("Channel", "BF")
                 self.core.setExposure(10)
                 end_BF = self.core.snap()
 
-                # --- Build dataset ---
                 if do_zscan:
                     specs_stack = np.stack(all_specs, axis=0)
                     BF_stack = np.stack(all_BF_z, axis=0)
@@ -1528,7 +1553,6 @@ class HardwareWidget(QWidget):
                     uid = uuid.uuid4().hex[:8]
                     zarr_name = f"grid_scan_z_{file_name}_{uid}.zarr"
                 else:
-                    # Single-plane: same format as before
                     data_vars = {
                         "laser_pos": xr.DataArray(
                             volts, dims=("idx", "volt")
@@ -1613,11 +1637,6 @@ class HardwareWidget(QWidget):
         cx = int(self.sel_cx_input.value())
         r = int(self.sel_r_input.value())
         autofocus_object = self.sel_af_combo.currentText()
-        if autofocus_object == "None":
-            self.status.setText(
-                "Status: pick an autofocus object (not None) for selection"
-            )
-            return
         N_per_fov = int(self.sel_npf_input.value())
         sq_size = float(self.sel_sqsize_input.value())
         sq_n = int(self.sel_sqn_input.value())
@@ -1684,8 +1703,6 @@ class HardwareWidget(QWidget):
 
         af_choice = self.sel_af_combo.currentText()
         autofocus_enabled = af_choice != "None"
-        # When autofocus is off we still hand the engine a valid method string
-        # for its constructor; it just won't be used.
         autofocus_object = af_choice if autofocus_enabled else "laser"
         segment_and_track = self.mda_seg_track_check.isChecked()
         batch = self.sel_batch_combo.currentText() == "True"
@@ -1702,6 +1719,9 @@ class HardwareWidget(QWidget):
         os.makedirs(out_dir, exist_ok=True)
         raman_offset = float(self.mda_raman_off_input.value())
         af_range = float(self.mda_af_range_input.value())
+        search_pts = int(self.mda_search_pts_input.value())
+        fine_search_range = float(self.mda_fine_range_input.value())
+        fine_search_pts = int(self.mda_fine_pts_input.value())
         total_exp = float(self.mda_exp_input.value())
         loops = int(self.mda_loops_input.value())
         interval = float(self.mda_interval_input.value())
@@ -1744,23 +1764,31 @@ class HardwareWidget(QWidget):
             from raman_mda_engine.aiming.transformers import Square
             from cns_control.utils import set_up_new_seq
 
+            try:
+                img_x = int(self.core.getImageWidth())
+                img_y = int(self.core.getImageHeight())
+            except Exception:
+                img_x, img_y = self._get_image_xy()
+
             with _StdoutRedirector(log):
                 engine = RamanEngine(
                     spectra_collector=self.collector,
                     scale=2,
                     transformer=self.transformer,
                     batch=batch,
-                    autofocus=autofocus_enabled,           
+                    autofocus=autofocus_enabled,
                     autofocus_p=autofocus_p,
                     autofocus_object=autofocus_object,
-                    segment_and_track=segment_and_track,    
+                    segment_and_track=segment_and_track,
                     raman_glass_offset=raman_offset,
-                    autofocus_search_range=40,
+                    autofocus_search_range=af_range,
+                    search_pts=search_pts,
+                    fine_search_range=fine_search_range,
+                    fine_search_pts=fine_search_pts,
+                    image_x=img_x,
+                    image_y=img_y,
                     skip_imaging_for_same_pos=True,
                 )
-                engine._autofocus_search_range = af_range
-                engine._autofocus = autofocus_enabled
-                engine._segment_and_track = segment_and_track
 
                 self.core.register_mda_engine(engine)
 
@@ -1825,6 +1853,8 @@ class HardwareWidget(QWidget):
                     f"z_rel={z_relative}, raman_z={raman_z_indices}, "
                     f"autofocus={autofocus_enabled} ({af_choice}), "
                     f"segment_and_track={segment_and_track}, "
+                    f"search_pts={search_pts}, fine_range={fine_search_range}, "
+                    f"fine_pts={fine_search_pts}, image=({img_x}x{img_y}), "
                     f"extra channels={[ch for ch, _ in extra_channels]}"
                 )
                 print(
