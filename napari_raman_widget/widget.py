@@ -395,8 +395,100 @@ class HardwareWidget(QWidget):
         scan_box.setLayout(scan_layout)
         outer.addWidget(scan_box)
 
+        # ================= GENERATE STAGE GRID SECTION =================
+        grid_box = make_collapsible("Generate stage grid", expanded=False)
+        grid_layout = QVBoxLayout()
+
+        grid_layout.addWidget(QLabel(
+            "Creates a grid of stage positions around the CURRENT stage XY,\n"
+            "each carrying the same single fixed point. No autofocus, non-batch."
+        ))
+
+        # Enable checkbox: while checked, automated cell selection is locked and
+        # autofocus is forced to None / batch to False.
+        self.grid_enable_check = QCheckBox("Enable grid mode (locks automated selection)")
+        self.grid_enable_check.setChecked(False)
+        self.grid_enable_check.toggled.connect(self._toggle_grid_mode)
+        grid_layout.addWidget(self.grid_enable_check)
+
+        # Fixed point in image (pixel) coordinates -- same point at every FOV.
+        fovx_row = QHBoxLayout()
+        fovx_row.addWidget(QLabel("FOV x (px):"))
+        self.grid_fovx_input = QSpinBox()
+        self.grid_fovx_input.setRange(0, 100000)
+        self.grid_fovx_input.setValue(740)
+        fovx_row.addWidget(self.grid_fovx_input)
+        grid_layout.addLayout(fovx_row)
+
+        fovy_row = QHBoxLayout()
+        fovy_row.addWidget(QLabel("FOV y (px):"))
+        self.grid_fovy_input = QSpinBox()
+        self.grid_fovy_input.setRange(0, 100000)
+        self.grid_fovy_input.setValue(540)
+        fovy_row.addWidget(self.grid_fovy_input)
+        grid_layout.addLayout(fovy_row)
+
+        # Stage grid extent / spacing (real stage units, +/- range about current).
+        xr_row = QHBoxLayout()
+        xr_row.addWidget(QLabel("X range (+/- um):"))
+        self.grid_xrange_input = QDoubleSpinBox()
+        self.grid_xrange_input.setRange(0.0, 1_000_000)
+        self.grid_xrange_input.setValue(100.0)
+        self.grid_xrange_input.setDecimals(2)
+        self.grid_xrange_input.setSingleStep(10.0)
+        xr_row.addWidget(self.grid_xrange_input)
+        grid_layout.addLayout(xr_row)
+
+        yr_row = QHBoxLayout()
+        yr_row.addWidget(QLabel("Y range (+/- um):"))
+        self.grid_yrange_input = QDoubleSpinBox()
+        self.grid_yrange_input.setRange(0.0, 1_000_000)
+        self.grid_yrange_input.setValue(100.0)
+        self.grid_yrange_input.setDecimals(2)
+        self.grid_yrange_input.setSingleStep(10.0)
+        yr_row.addWidget(self.grid_yrange_input)
+        grid_layout.addLayout(yr_row)
+
+        xs_row = QHBoxLayout()
+        xs_row.addWidget(QLabel("X step (um):"))
+        self.grid_xstep_input = QDoubleSpinBox()
+        self.grid_xstep_input.setRange(0.01, 1_000_000)
+        self.grid_xstep_input.setValue(50.0)
+        self.grid_xstep_input.setDecimals(2)
+        self.grid_xstep_input.setSingleStep(5.0)
+        xs_row.addWidget(self.grid_xstep_input)
+        grid_layout.addLayout(xs_row)
+
+        ys_row = QHBoxLayout()
+        ys_row.addWidget(QLabel("Y step (um):"))
+        self.grid_ystep_input = QDoubleSpinBox()
+        self.grid_ystep_input.setRange(0.01, 1_000_000)
+        self.grid_ystep_input.setValue(50.0)
+        self.grid_ystep_input.setDecimals(2)
+        self.grid_ystep_input.setSingleStep(5.0)
+        ys_row.addWidget(self.grid_ystep_input)
+        grid_layout.addLayout(ys_row)
+
+        # Number of identical points placed per position (>=2 for the DAQ,
+        # which needs at least 2 samples per channel).
+        reps_row = QHBoxLayout()
+        reps_row.addWidget(QLabel("Repeats (points per position, >=2):"))
+        self.grid_repeats_input = QSpinBox()
+        self.grid_repeats_input.setRange(2, 1000)
+        self.grid_repeats_input.setValue(2)
+        reps_row.addWidget(self.grid_repeats_input)
+        grid_layout.addLayout(reps_row)
+
+        self.run_grid_sel_btn = QPushButton("Generate grid")
+        self.run_grid_sel_btn.clicked.connect(self.run_grid_selection)
+        grid_layout.addWidget(self.run_grid_sel_btn)
+
+        grid_box.setLayout(grid_layout)
+        outer.addWidget(grid_box)
+
         # ================= AUTOMATED CELL SELECTION SECTION =================
-        sel_box = make_collapsible("Automated cell selection", expanded=False)
+        self.sel_box = make_collapsible("Automated cell selection", expanded=False)
+        sel_box = self.sel_box
         sel_layout = QVBoxLayout()
 
         sel_layout.addWidget(QLabel("Mask region (shared by both buttons):"))
@@ -656,7 +748,7 @@ class HardwareWidget(QWidget):
         outer.addStretch()
 
         # ================= LIVE STAGE POSITION =================
-        self.pos_label = QLabel("Stage:  X --  Y --  Z --")
+        self.pos_label = QLabel("Stage:  X --  Y --")
         self.pos_label.setStyleSheet(
             "QLabel { border-top: 1px solid palette(mid); padding: 4px; "
             "font-family: monospace; }"
@@ -766,25 +858,40 @@ class HardwareWidget(QWidget):
             )
 
     def _update_position_label(self):
-        """Poll the stage for X/Y/Z and update the live readout label.
+        """Poll the stage for X/Y and update the live readout label.
 
-        Kept deliberately cheap and fault-tolerant: it never raises. It keeps
-        polling during an MDA so the readout tracks the time-lapse; a read-only
-        position query is low-risk, and transient failures are swallowed."""
+        Z is deliberately NOT read here: reading the focus device on a timer can
+        contend with the engine while it drives Z during acquisition. X/Y live
+        only. Never raises; transient failures keep the last good reading."""
         if self.core is None:
-            self.pos_label.setText("Stage:  X --  Y --  Z --")
+            self.pos_label.setText("Stage:  X --  Y --")
             return
         try:
             x = self.core.getXPosition()
             y = self.core.getYPosition()
-            z = self.core.getPosition()
             self.pos_label.setText(
-                f"Stage:  X {x:9.2f}  Y {y:9.2f}  Z {z:8.2f}"
+                f"Stage:  X {x:9.2f}  Y {y:9.2f}"
             )
         except Exception:
             # transient failure (device busy, reload in progress) -- leave the
             # last good reading up rather than flickering an error.
             pass
+
+    def _toggle_grid_mode(self, checked):
+        """While grid mode is on, lock the automated cell selection section and
+        force autofocus object -> None and batch -> False (grid selection is
+        inherently no-autofocus, non-batch)."""
+        if checked:
+            self.sel_af_combo.setCurrentText("None")
+            self.sel_batch_combo.setCurrentText("False")
+            # setCurrentText only emits when the text CHANGES; if it was already
+            # "None" the autofocus fields wouldn't refresh, so hide them directly.
+            self._toggle_autofocus_fields("None")
+        else:
+            # restore MDA autofocus field visibility to match the dropdown
+            self._toggle_autofocus_fields(self.sel_af_combo.currentText())
+        # Disabling the container disables all of its child widgets too.
+        self.sel_box.setEnabled(not checked)
 
     def _toggle_zscan_fields(self, checked):
         """Show/hide the z-scan range and steps fields."""
@@ -1820,6 +1927,72 @@ class HardwareWidget(QWidget):
         except Exception as e:
             log.append(f"\n--- manual selection failed: {e} ---\n")
             self.status.setText(f"Status: manual selection failed -- {e}")
+
+    def run_grid_selection(self):
+        """Build a grid of stage positions around the current stage XY, each
+        carrying the same single fixed point (grid_point_selections). No
+        autofocus, non-batch. Stores the (sources, autofocus_p, new_seq) that
+        Run Raman MDA consumes."""
+        if self.core is None:
+            self.status.setText("Status: not connected")
+            return
+        if self.default_engine is None:
+            self.status.setText("Status: no default engine -- reconnect")
+            return
+        if not self.grid_enable_check.isChecked():
+            self.status.setText(
+                "Status: tick 'Generate stage grid' first"
+            )
+            return
+
+        fov_x = int(self.grid_fovx_input.value())
+        fov_y = int(self.grid_fovy_input.value())
+        x_range = float(self.grid_xrange_input.value())
+        y_range = float(self.grid_yrange_input.value())
+        x_step = float(self.grid_xstep_input.value())
+        y_step = float(self.grid_ystep_input.value())
+        repeats = int(self.grid_repeats_input.value())
+        sq_size = float(self.sel_sqsize_input.value())
+        sq_n = int(self.sel_sqn_input.value())
+
+        log = LogWindow(title="Stage grid log")
+        log.show()
+        self._plot_windows.append(log)
+
+        self.status.setText("Status: generating stage grid...")
+        self.repaint()
+
+        try:
+            from cns_control.utils import grid_point_selections
+            from raman_mda_engine.aiming.transformers import Square
+
+            with _StdoutRedirector(log):
+                self._prepare_for_selection()
+                self.core.register_mda_engine(self.default_engine)
+                point_transformer = Square(sq_size, sq_n)
+                sources, autofocus_p, new_seq = grid_point_selections(
+                    self.core, self.viewer, self.main_window,
+                    point_transformer,
+                    fov_x=fov_x, fov_y=fov_y,
+                    x_range=x_range, y_range=y_range,
+                    x_step=x_step, y_step=y_step,
+                    repeats=repeats,
+                )
+
+            self.selection_results = {
+                "sources": sources,
+                "autofocus_p": autofocus_p,
+                "new_seq": new_seq,
+            }
+            n_pos = len(autofocus_p)
+            log.append("\n--- stage grid ready ---\n")
+            self.status.setText(
+                f"Status: stage grid ready ({n_pos} positions, "
+                f"{repeats} pts each at ({fov_x},{fov_y})) -- then Run Raman MDA"
+            )
+        except Exception as e:
+            log.append(f"\n--- stage grid failed: {e} ---\n")
+            self.status.setText(f"Status: stage grid failed -- {e}")
 
     # -------- run raman MDA --------
     def run_raman_mda(self):
