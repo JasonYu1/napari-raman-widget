@@ -486,6 +486,10 @@ class HardwareWidget(QWidget):
         self.run_selection_btn.clicked.connect(self.run_automated_selection)
         sel_layout.addWidget(self.run_selection_btn)
 
+        self.run_manual_btn = QPushButton("Manual selection")
+        self.run_manual_btn.clicked.connect(self.run_manual_selection)
+        sel_layout.addWidget(self.run_manual_btn)
+
         sel_box.setLayout(sel_layout)
         outer.addWidget(sel_box)
 
@@ -1755,6 +1759,67 @@ class HardwareWidget(QWidget):
         except Exception as e:
             log.append(f"\n--- selection failed: {e} ---\n")
             self.status.setText(f"Status: selection failed -- {e}")
+
+    def run_manual_selection(self):
+        """Create empty point-source layers for hand-clicking, mirroring the
+        automated selection's (sources, autofocus_p, new_seq) contract.
+
+        N cells-per-FOV is fixed up front by the 'N per FOV' spinbox. In batch
+        mode positions are repeated N times and you click N cells per FOV; in
+        non-batch mode you click freely."""
+        if self.core is None:
+            self.status.setText("Status: not connected")
+            return
+        if self.default_engine is None:
+            self.status.setText("Status: no default engine -- reconnect")
+            return
+
+        autofocus_object = self.sel_af_combo.currentText()
+        N_per_fov = int(self.sel_npf_input.value())
+        sq_size = float(self.sel_sqsize_input.value())
+        sq_n = int(self.sel_sqn_input.value())
+        batch = self.sel_batch_combo.currentText() == "True"
+
+        log = LogWindow(title="Manual selection log")
+        log.show()
+        self._plot_windows.append(log)
+
+        self.status.setText("Status: setting up manual selection...")
+        self.repaint()
+
+        try:
+            from cns_control.utils import manual_point_selections
+            from raman_mda_engine.aiming.transformers import Square
+
+            with _StdoutRedirector(log):
+                self._prepare_for_selection()
+                self.core.register_mda_engine(self.default_engine)
+                point_transformer = Square(sq_size, sq_n)
+                sources, autofocus_p, new_seq = manual_point_selections(
+                    self.core, self.viewer, self.main_window,
+                    point_transformer,
+                    N=N_per_fov,
+                    autofocus_object=autofocus_object,
+                    batch=batch,
+                )
+
+            self.selection_results = {
+                "sources": sources,
+                "autofocus_p": autofocus_p,
+                "new_seq": new_seq,
+            }
+            hint = (
+                f"click {N_per_fov} cell(s) per FOV"
+                if batch else "click points freely"
+            )
+            log.append("\n--- manual layers ready ---\n")
+            self.status.setText(
+                f"Status: manual selection ready ({len(sources)} layer(s)) -- "
+                f"{hint}, then Run Raman MDA"
+            )
+        except Exception as e:
+            log.append(f"\n--- manual selection failed: {e} ---\n")
+            self.status.setText(f"Status: manual selection failed -- {e}")
 
     # -------- run raman MDA --------
     def run_raman_mda(self):
