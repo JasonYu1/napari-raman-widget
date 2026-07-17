@@ -479,6 +479,13 @@ class HardwareWidget(QWidget):
         reps_row.addWidget(self.grid_repeats_input)
         grid_layout.addLayout(reps_row)
 
+        # Skip the slow per-position BF pre-scan; use a zero-memory blank
+        # placeholder layer to establish dims instead.
+        self.grid_blank_check = QCheckBox("Skip BF pre-scan (use blank images)")
+        self.grid_blank_check.setChecked(True)
+        grid_layout.addWidget(self.grid_blank_check)
+        self.run_grid_sel_btn = QPushButton("Generate grid")
+
         self.run_grid_sel_btn = QPushButton("Generate grid")
         self.run_grid_sel_btn.clicked.connect(self.run_grid_selection)
         grid_layout.addWidget(self.run_grid_sel_btn)
@@ -1977,6 +1984,7 @@ class HardwareWidget(QWidget):
                     x_range=x_range, y_range=y_range,
                     x_step=x_step, y_step=y_step,
                     repeats=repeats,
+                    use_blank_images=self.grid_blank_check.isChecked(),
                 )
 
             self.selection_results = {
