@@ -2104,6 +2104,7 @@ class HardwareWidget(QWidget):
                     image_x=img_x,
                     image_y=img_y,
                     skip_imaging_for_same_pos=True,
+                    config_file=self.cfg_path.text().strip() or "test3.cfg",
                 )
 
                 self.core.register_mda_engine(engine)
