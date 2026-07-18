@@ -636,6 +636,22 @@ class HardwareWidget(QWidget):
         mda_dir_row.addWidget(self.mda_dir_input)
         mda_layout.addLayout(mda_dir_row)
 
+        afp_row = QHBoxLayout()
+        afp_row.addWidget(QLabel("Autofocus positions (comma-sep):"))
+        self.mda_afp_input = QLineEdit()
+        self.mda_afp_input.setText("")
+        self.mda_afp_input.setPlaceholderText("(blank = from selection)")
+        afp_row.addWidget(self.mda_afp_input)
+        mda_layout.addLayout(afp_row)
+
+        imgp_row = QHBoxLayout()
+        imgp_row.addWidget(QLabel("Imaging positions (comma-sep):"))
+        self.mda_imgp_input = QLineEdit()
+        self.mda_imgp_input.setText("")
+        self.mda_imgp_input.setPlaceholderText("(blank = same as autofocus p)")
+        imgp_row.addWidget(self.mda_imgp_input)
+        mda_layout.addLayout(imgp_row)
+
         raman_off_row = QHBoxLayout()
         raman_off_row.addWidget(QLabel("Raman glass offset (um):"))
         self.mda_raman_off_input = QDoubleSpinBox()
@@ -832,13 +848,13 @@ class HardwareWidget(QWidget):
 
         outer.addStretch()
 
-        # ================= LIVE STAGE POSITION =================
-        self.pos_label = QLabel("Stage:  X --  Y --")
-        self.pos_label.setStyleSheet(
-            "QLabel { border-top: 1px solid palette(mid); padding: 4px; "
-            "font-family: monospace; }"
-        )
-        outer.addWidget(self.pos_label)
+        # # ================= LIVE STAGE POSITION =================
+        # self.pos_label = QLabel("Stage:  X --  Y --")
+        # self.pos_label.setStyleSheet(
+        #     "QLabel { border-top: 1px solid palette(mid); padding: 4px; "
+        #     "font-family: monospace; }"
+        # )
+        # outer.addWidget(self.pos_label)
 
         # ================= STATUS BAR (bottom) =================
         self.status = QLabel("Status: disconnected")
@@ -863,11 +879,11 @@ class HardwareWidget(QWidget):
         # Keep references to pop-up windows so they don't get garbage collected.
         self._plot_windows = []
 
-        # Poll the stage position periodically for the live X/Y/Z readout.
-        self._pos_timer = QTimer(self)
-        self._pos_timer.setInterval(500)  # ms
-        self._pos_timer.timeout.connect(self._update_position_label)
-        self._pos_timer.start()
+        # # Poll the stage position periodically for the live X/Y/Z readout.
+        # self._pos_timer = QTimer(self)
+        # self._pos_timer.setInterval(500)  # ms
+        # self._pos_timer.timeout.connect(self._update_position_label)
+        # self._pos_timer.start()
 
     # -------- file pickers --------
     def browse_cfg(self):
@@ -2260,6 +2276,44 @@ class HardwareWidget(QWidget):
         sources = self.selection_results["sources"]
         autofocus_p = self.selection_results["autofocus_p"]
         new_seq = self.selection_results["new_seq"]
+        image_p = autofocus_p
+        afp_text = self.mda_afp_input.text().strip()
+        if afp_text and afp_text.lower() != "none":
+            try:
+                autofocus_p = np.array(
+                    self._parse_int_list(afp_text, "Autofocus positions")
+                )
+            except ValueError as e:
+                self.status.setText(f"Status: {e}")
+                return
+            n_pos = len(new_seq.stage_positions)
+            bad = [p for p in autofocus_p if p < 0 or p >= n_pos]
+            if bad:
+                self.status.setText(
+                    f"Status: autofocus positions out of range {bad} "
+                    f"(sequence has {n_pos} positions)"
+                )
+                return
+            print(f"[autofocus_p] manual override: {autofocus_p.tolist()}")
+        
+        imgp_text = self.mda_imgp_input.text().strip()
+        if imgp_text and imgp_text.lower() != "none":
+            try:
+                image_p = np.array(
+                    self._parse_int_list(imgp_text, "Imaging positions")
+                )
+            except ValueError as e:
+                self.status.setText(f"Status: {e}")
+                return
+            n_pos = len(new_seq.stage_positions)
+            bad = [p for p in image_p if p < 0 or p >= n_pos]
+            if bad:
+                self.status.setText(
+                    f"Status: imaging positions out of range {bad} "
+                    f"(sequence has {n_pos} positions)"
+                )
+                return
+            print(f"[image_p] manual override: {image_p.tolist()}")
 
         af_choice = self.sel_af_combo.currentText()
         autofocus_enabled = af_choice != "None"
@@ -2339,6 +2393,7 @@ class HardwareWidget(QWidget):
                     batch=batch,
                     autofocus=autofocus_enabled,
                     autofocus_p=autofocus_p,
+                    image_p=image_p,
                     autofocus_object=autofocus_object,
                     segment_and_track=segment_and_track,
                     raman_glass_offset=raman_offset,
