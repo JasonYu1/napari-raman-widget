@@ -679,7 +679,7 @@ class HardwareWidget(QWidget):
         search_pts_row.addWidget(self._search_pts_label)
         self.mda_search_pts_input = QSpinBox()
         self.mda_search_pts_input.setRange(2, 500)
-        self.mda_search_pts_input.setValue(8)
+        self.mda_search_pts_input.setValue(4)
         search_pts_row.addWidget(self.mda_search_pts_input)
         mda_layout.addLayout(search_pts_row)
 
@@ -701,7 +701,7 @@ class HardwareWidget(QWidget):
         fine_pts_row.addWidget(self._fine_pts_label)
         self.mda_fine_pts_input = QSpinBox()
         self.mda_fine_pts_input.setRange(2, 500)
-        self.mda_fine_pts_input.setValue(15)
+        self.mda_fine_pts_input.setValue(8)
         fine_pts_row.addWidget(self.mda_fine_pts_input)
         mda_layout.addLayout(fine_pts_row)
 
@@ -714,7 +714,65 @@ class HardwareWidget(QWidget):
             "Segment and track (update aiming each cycle)"
         )
         self.mda_seg_track_check.setChecked(False)
+        self.mda_seg_track_check.toggled.connect(self._toggle_seg_track_fields)
         mda_layout.addWidget(self.mda_seg_track_check)
+        # Seg-track options (shown only when the box is checked)
+        seg_ch_row = QHBoxLayout()
+        self._seg_ch_label = QLabel("Segment channel:")
+        seg_ch_row.addWidget(self._seg_ch_label)
+        self.mda_seg_ch_combo = QComboBox()
+        self.mda_seg_ch_combo.addItem("BF")
+        seg_ch_row.addWidget(self.mda_seg_ch_combo)
+        mda_layout.addLayout(seg_ch_row)
+        seg_scale_row = QHBoxLayout()
+        self._seg_scale_label = QLabel("Image rescale factor:")
+        seg_scale_row.addWidget(self._seg_scale_label)
+        self.mda_seg_scale_input = QDoubleSpinBox()
+        self.mda_seg_scale_input.setRange(0.1, 100.0)
+        self.mda_seg_scale_input.setValue(2.0)
+        self.mda_seg_scale_input.setDecimals(1)
+        self.mda_seg_scale_input.setSingleStep(0.5)
+        seg_scale_row.addWidget(self.mda_seg_scale_input)
+        mda_layout.addLayout(seg_scale_row)
+        
+        # Cellpose model dropdown
+        seg_model_row = QHBoxLayout()
+        self._seg_model_label = QLabel("Cellpose model:")
+        seg_model_row.addWidget(self._seg_model_label)
+        self.mda_seg_model_combo = QComboBox()
+        try:
+            from cellpose import models as _cp_models
+            model_names = list(_cp_models.MODEL_NAMES)
+        except Exception:
+            model_names = ["cyto2"]
+        self.mda_seg_model_combo.addItems(model_names)
+        if "cyto2" in model_names:
+            self.mda_seg_model_combo.setCurrentText("cyto2")
+        seg_model_row.addWidget(self.mda_seg_model_combo)
+        mda_layout.addLayout(seg_model_row)
+        # Crop-around-mask dropdown
+        seg_crop_row = QHBoxLayout()
+        self._seg_crop_label = QLabel("Crop image around mask:")
+        seg_crop_row.addWidget(self._seg_crop_label)
+        self.mda_seg_crop_combo = QComboBox()
+        self.mda_seg_crop_combo.addItems(["True", "False"])
+        seg_crop_row.addWidget(self.mda_seg_crop_combo)
+        mda_layout.addLayout(seg_crop_row)
+        # Tracking config file
+        seg_track_cfg_row = QHBoxLayout()
+        self._seg_track_cfg_label = QLabel("Tracking config (.json):")
+        seg_track_cfg_row.addWidget(self._seg_track_cfg_label)
+        self.mda_track_cfg_input = QLineEdit()
+        self.mda_track_cfg_input.setText("particle_config.json")
+        self.mda_track_cfg_input.setPlaceholderText("particle_config.json")
+        self._seg_track_cfg_browse = QPushButton("...")
+        self._seg_track_cfg_browse.setFixedWidth(30)
+        self._seg_track_cfg_browse.clicked.connect(self.browse_tracking_cfg)
+        seg_track_cfg_row.addWidget(self.mda_track_cfg_input)
+        seg_track_cfg_row.addWidget(self._seg_track_cfg_browse)
+        mda_layout.addLayout(seg_track_cfg_row)
+        # hidden until seg-track is checked
+        self._toggle_seg_track_fields(False)
 
         mda_exp_row = QHBoxLayout()
         mda_exp_row.addWidget(QLabel("Exposure per cell (ms):"))
@@ -800,51 +858,75 @@ class HardwareWidget(QWidget):
         mda_layout.addWidget(self.gen_dataset_btn)
  
         # --- pixel-to-stage calibration ---
-        mda_layout.addWidget(QLabel("Pixel-to-stage calibration:"))
-        px2s_help = QLabel(
+        self.px2stage_check = QCheckBox("Pixel-to-stage calibration")
+        self.px2stage_check.setChecked(False)
+        self.px2stage_check.toggled.connect(self._toggle_px2stage_fields)
+        mda_layout.addWidget(self.px2stage_check)
+
+        self._px2s_help = QLabel(
             "Pick the same feature in each grid position, then fit a\n"
             "pixel->stage Vandermonde model. Uses stage XY from the\n"
             "dataset's useq_sequence attribute."
         )
-        px2s_help.setWordWrap(True)
-        mda_layout.addWidget(px2s_help)
- 
+        self._px2s_help.setWordWrap(True)
+        mda_layout.addWidget(self._px2s_help)
+
         px2s_ds_row = QHBoxLayout()
-        px2s_ds_row.addWidget(QLabel("Dataset (.zarr):"))
+        self._px2s_ds_label = QLabel("Dataset (.zarr):")
+        px2s_ds_row.addWidget(self._px2s_ds_label)
         self.px2stage_ds_path = QLineEdit()
         self.px2stage_ds_path.setPlaceholderText("data/dataset/ds_run_7.zarr")
-        px2s_browse = QPushButton("...")
-        px2s_browse.setFixedWidth(30)
-        px2s_browse.clicked.connect(self.browse_px2stage_ds)
+        self._px2s_ds_browse = QPushButton("...")
+        self._px2s_ds_browse.setFixedWidth(30)
+        self._px2s_ds_browse.clicked.connect(self.browse_px2stage_ds)
         px2s_ds_row.addWidget(self.px2stage_ds_path)
-        px2s_ds_row.addWidget(px2s_browse)
+        px2s_ds_row.addWidget(self._px2s_ds_browse)
         mda_layout.addLayout(px2s_ds_row)
- 
+
         px2s_deg_row = QHBoxLayout()
-        px2s_deg_row.addWidget(QLabel("Vandermonde degree:"))
+        self._px2s_deg_label = QLabel("Vandermonde degree:")
+        px2s_deg_row.addWidget(self._px2s_deg_label)
         self.px2stage_degree_input = QSpinBox()
         self.px2stage_degree_input.setRange(1, 5)
         self.px2stage_degree_input.setValue(1)
         px2s_deg_row.addWidget(self.px2stage_degree_input)
         mda_layout.addLayout(px2s_deg_row)
- 
+
         self.px2stage_pick_btn = QPushButton("Pick points...")
         self.px2stage_pick_btn.clicked.connect(self.open_pixel_stage_picker)
         mda_layout.addWidget(self.px2stage_pick_btn)
- 
+
         px2s_name_row = QHBoxLayout()
-        px2s_name_row.addWidget(QLabel("Model file:"))
+        self._px2s_name_label = QLabel("Model file:")
+        px2s_name_row.addWidget(self._px2s_name_label)
         self.px2stage_name_input = QLineEdit()
         self.px2stage_name_input.setText("vandermonde_model.json")
         px2s_name_row.addWidget(self.px2stage_name_input)
         mda_layout.addLayout(px2s_name_row)
- 
+
         self.px2stage_save_btn = QPushButton("Fit && save model")
         self.px2stage_save_btn.clicked.connect(self.fit_and_save_pixel_stage)
         mda_layout.addWidget(self.px2stage_save_btn)
+
+        # collect the px2stage widgets so they can be hidden as a group
+        self._px2stage_widgets = [
+            self._px2s_help,
+            self._px2s_ds_label, self.px2stage_ds_path, self._px2s_ds_browse,
+            self._px2s_deg_label, self.px2stage_degree_input,
+            self.px2stage_pick_btn,
+            self._px2s_name_label, self.px2stage_name_input,
+            self.px2stage_save_btn,
+        ]
+        # hidden until the box is checked
+        self._toggle_px2stage_fields(False)
  
         mda_box.setLayout(mda_layout)
         outer.addWidget(mda_box)
+
+        # make_collapsible re-shows ALL descendants on expand, which clobbers
+        # our conditional field hiding -- re-apply it after any box expands.
+        for _box in (scan_box, self.sel_box, mda_box):
+            _box.toggled.connect(lambda checked: self._reapply_toggles())
 
         outer.addStretch()
 
@@ -916,6 +998,14 @@ class HardwareWidget(QWidget):
         )
         if path:
             self.sel_vdm_path.setText(path)
+
+    def browse_tracking_cfg(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select tracking config", "",
+            "JSON files (*.json);;All files (*)",
+        )
+        if path:
+            self.mda_track_cfg_input.setText(path)
 
     def _toggle_center_cell_fields(self, checked):
         """Show/hide the Vandermonde model path fields based on center-cell mode."""
@@ -1015,6 +1105,25 @@ class HardwareWidget(QWidget):
         self._zscan_steps_label.setVisible(checked)
         self.scan_zsteps_input.setVisible(checked)
 
+    def _toggle_seg_track_fields(self, checked):
+        """Show/hide the segment-channel and rescale fields."""
+        self._seg_ch_label.setVisible(checked)
+        self.mda_seg_ch_combo.setVisible(checked)
+        self._seg_scale_label.setVisible(checked)
+        self.mda_seg_scale_input.setVisible(checked)
+        self._seg_model_label.setVisible(checked)
+        self.mda_seg_model_combo.setVisible(checked)
+        self._seg_crop_label.setVisible(checked)
+        self.mda_seg_crop_combo.setVisible(checked)
+        self._seg_track_cfg_label.setVisible(checked)
+        self.mda_track_cfg_input.setVisible(checked)
+        self._seg_track_cfg_browse.setVisible(checked)
+
+    def _toggle_px2stage_fields(self, checked):
+        """Show/hide the pixel-to-stage calibration fields."""
+        for w in self._px2stage_widgets:
+            w.setVisible(checked)
+
     def _toggle_autofocus_fields(self, method):
         """Show/hide the MDA autofocus fields based on the chosen object.
 
@@ -1037,6 +1146,13 @@ class HardwareWidget(QWidget):
         self.mda_fine_range_input.setVisible(is_laser)
         self._fine_pts_label.setVisible(is_laser)
         self.mda_fine_pts_input.setVisible(is_laser)
+
+    def _reapply_toggles(self):
+        self._toggle_center_cell_fields(self.sel_center_cell_check.isChecked())
+        self._toggle_seg_track_fields(self.mda_seg_track_check.isChecked())
+        self._toggle_zscan_fields(self.scan_zscan_check.isChecked())
+        self._toggle_autofocus_fields(self.sel_af_combo.currentText())
+        self._toggle_px2stage_fields(self.px2stage_check.isChecked())
 
     # -------- channel row helpers --------
     def _available_channels(self):
@@ -1184,6 +1300,17 @@ class HardwareWidget(QWidget):
                 combo.addItem("(connect first)")
                 combo.setEnabled(False)
             combo.blockSignals(False)
+        
+        combo = self.mda_seg_ch_combo
+        current = combo.currentText()
+        combo.blockSignals(True)
+        combo.clear()
+        if available_all:
+            combo.addItems(available_all)
+            combo.setCurrentText(current if current in available_all else "BF")
+        else:
+            combo.addItem("BF")
+        combo.blockSignals(False)
 
     def _prepare_for_selection(self):
         """Stop live mode, set axis order to tpcz, set z plan to RangeAround."""
@@ -2340,6 +2467,11 @@ class HardwareWidget(QWidget):
         loops = int(self.mda_loops_input.value())
         interval = float(self.mda_interval_input.value())
         refocus_every = int(self.mda_refocus_input.value())
+        segment_channel = self.mda_seg_ch_combo.currentText() or "BF"
+        seg_scale = float(self.mda_seg_scale_input.value())
+        cellpose_model = self.mda_seg_model_combo.currentText() or "cyto2"
+        segment_crop = self.mda_seg_crop_combo.currentText() == "True"
+        tracking_config = self.mda_track_cfg_input.text().strip() or "particle_config.json"
 
         try:
             z_relative = self._parse_float_list(
@@ -2388,7 +2520,6 @@ class HardwareWidget(QWidget):
             with _StdoutRedirector(log):
                 engine = RamanEngine(
                     spectra_collector=self.collector,
-                    scale=2,
                     transformer=self.transformer,
                     batch=batch,
                     autofocus=autofocus_enabled,
@@ -2396,6 +2527,11 @@ class HardwareWidget(QWidget):
                     image_p=image_p,
                     autofocus_object=autofocus_object,
                     segment_and_track=segment_and_track,
+                    scale=seg_scale,
+                    segment_channel=segment_channel,
+                    cellpose_model=cellpose_model,
+                    segment_crop=segment_crop,
+                    tracking_config=tracking_config,
                     raman_glass_offset=raman_offset,
                     autofocus_search_range=af_range,
                     search_pts=search_pts,
