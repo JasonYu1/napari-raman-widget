@@ -36,6 +36,8 @@ class HardwareWidget(QWidget):
         self.selection_results = None
         self.mda_channel_rows = []
         self.mda_writer = None
+        self.px2stage_picker = None
+        self.px2stage_xy = None
 
         outer = QVBoxLayout()
 
@@ -547,6 +549,32 @@ class HardwareWidget(QWidget):
         npf_row.addWidget(self.sel_npf_input)
         sel_layout.addLayout(npf_row)
 
+        # Center-cell mode: split each FOV into one new stage position per
+        # detected cell, each shifted so that cell sits exactly at center.
+        self.sel_center_cell_check = QCheckBox(
+            "Center cell (split FOV into one position per cell, centered)"
+        )
+        self.sel_center_cell_check.setChecked(False)
+        self.sel_center_cell_check.toggled.connect(self._toggle_center_cell_fields)
+        sel_layout.addWidget(self.sel_center_cell_check)
+
+        vdm_row = QHBoxLayout()
+        self._vdm_label = QLabel("Vandermonde model (.json):")
+        vdm_row.addWidget(self._vdm_label)
+        self.sel_vdm_path = QLineEdit()
+        self.sel_vdm_path.setPlaceholderText("vandermonde_model.json")
+        self._vdm_browse = QPushButton("...")
+        self._vdm_browse.setFixedWidth(30)
+        self._vdm_browse.clicked.connect(self.browse_vandermonde)
+        vdm_row.addWidget(self.sel_vdm_path)
+        vdm_row.addWidget(self._vdm_browse)
+        sel_layout.addLayout(vdm_row)
+
+        # Hidden until "Center cell" is checked.
+        self._vdm_label.setVisible(False)
+        self.sel_vdm_path.setVisible(False)
+        self._vdm_browse.setVisible(False)
+
         sq_size_row = QHBoxLayout()
         sq_size_row.addWidget(QLabel("Square size:"))
         self.sel_sqsize_input = QDoubleSpinBox()
@@ -743,12 +771,62 @@ class HardwareWidget(QWidget):
         self.stop_mda_btn.clicked.connect(self.stop_raman_mda)
         mda_btns_row.addWidget(self.run_mda_btn, 3)
         mda_btns_row.addWidget(self.stop_mda_btn, 1)
-        mda_layout.addLayout(mda_btns_row)
 
+        mda_layout.addLayout(mda_btns_row)
+ 
+        # --- separator ---
+        sep = QLabel("-" * 45)
+        sep.setAlignment(Qt.AlignCenter)
+        mda_layout.addWidget(sep)
+ 
         self.gen_dataset_btn = QPushButton("Generate dataset")
         self.gen_dataset_btn.clicked.connect(self.generate_dataset)
         mda_layout.addWidget(self.gen_dataset_btn)
-
+ 
+        # --- pixel-to-stage calibration ---
+        mda_layout.addWidget(QLabel("Pixel-to-stage calibration:"))
+        px2s_help = QLabel(
+            "Pick the same feature in each grid position, then fit a\n"
+            "pixel->stage Vandermonde model. Uses stage XY from the\n"
+            "dataset's useq_sequence attribute."
+        )
+        px2s_help.setWordWrap(True)
+        mda_layout.addWidget(px2s_help)
+ 
+        px2s_ds_row = QHBoxLayout()
+        px2s_ds_row.addWidget(QLabel("Dataset (.zarr):"))
+        self.px2stage_ds_path = QLineEdit()
+        self.px2stage_ds_path.setPlaceholderText("data/dataset/ds_run_7.zarr")
+        px2s_browse = QPushButton("...")
+        px2s_browse.setFixedWidth(30)
+        px2s_browse.clicked.connect(self.browse_px2stage_ds)
+        px2s_ds_row.addWidget(self.px2stage_ds_path)
+        px2s_ds_row.addWidget(px2s_browse)
+        mda_layout.addLayout(px2s_ds_row)
+ 
+        px2s_deg_row = QHBoxLayout()
+        px2s_deg_row.addWidget(QLabel("Vandermonde degree:"))
+        self.px2stage_degree_input = QSpinBox()
+        self.px2stage_degree_input.setRange(1, 5)
+        self.px2stage_degree_input.setValue(1)
+        px2s_deg_row.addWidget(self.px2stage_degree_input)
+        mda_layout.addLayout(px2s_deg_row)
+ 
+        self.px2stage_pick_btn = QPushButton("Pick points...")
+        self.px2stage_pick_btn.clicked.connect(self.open_pixel_stage_picker)
+        mda_layout.addWidget(self.px2stage_pick_btn)
+ 
+        px2s_name_row = QHBoxLayout()
+        px2s_name_row.addWidget(QLabel("Model file:"))
+        self.px2stage_name_input = QLineEdit()
+        self.px2stage_name_input.setText("vandermonde_model.json")
+        px2s_name_row.addWidget(self.px2stage_name_input)
+        mda_layout.addLayout(px2s_name_row)
+ 
+        self.px2stage_save_btn = QPushButton("Fit && save model")
+        self.px2stage_save_btn.clicked.connect(self.fit_and_save_pixel_stage)
+        mda_layout.addWidget(self.px2stage_save_btn)
+ 
         mda_box.setLayout(mda_layout)
         outer.addWidget(mda_box)
 
@@ -814,6 +892,20 @@ class HardwareWidget(QWidget):
         )
         if path:
             self.out_path.setText(path)
+
+    def browse_vandermonde(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Vandermonde model", "",
+            "JSON files (*.json);;All files (*)",
+        )
+        if path:
+            self.sel_vdm_path.setText(path)
+
+    def _toggle_center_cell_fields(self, checked):
+        """Show/hide the Vandermonde model path fields based on center-cell mode."""
+        self._vdm_label.setVisible(checked)
+        self.sel_vdm_path.setVisible(checked)
+        self._vdm_browse.setVisible(checked)
 
     # -------- helpers --------
     def _get_image_xy(self):
@@ -1169,6 +1261,132 @@ class HardwareWidget(QWidget):
             log.append(f"\n--- generation failed: {e} ---\n")
             self.status.setText(f"Status: dataset generation failed - {e}")
 
+    
+    def browse_px2stage_ds(self):
+        # zarr stores are directories
+        path = QFileDialog.getExistingDirectory(
+            self, "Select dataset (.zarr)", "data/dataset"
+        )
+        if path:
+            self.px2stage_ds_path.setText(path)
+ 
+    def open_pixel_stage_picker(self):
+        """Open the frame-by-frame point picker on the selected dataset."""
+        import json as _json
+        path = self.px2stage_ds_path.text().strip()
+        if not path:
+            self.status.setText("Status: select a dataset (.zarr) first")
+            return
+        try:
+            ds = xr.open_zarr(path)
+            if "useq_sequence" not in ds.attrs:
+                self.status.setText(
+                    "Status: dataset has no useq_sequence attr -- "
+                    "regenerate it with the current loader"
+                )
+                return
+            seq = _json.loads(ds.attrs["useq_sequence"])
+            self.px2stage_xy = np.array(
+                [[s["x"], s["y"]] for s in seq["stage_positions"]]
+            )
+            # one frame per position: first t / c / z
+            imgs = ds["image"].isel(t=0, c=0, z=0).values
+            if len(imgs) != len(self.px2stage_xy):
+                print(
+                    f"[px2stage] warning: {len(imgs)} frames vs "
+                    f"{len(self.px2stage_xy)} stage positions"
+                )
+            import matplotlib
+            matplotlib.use("QtAgg")
+            import matplotlib.pyplot as plt
+            from cns_control.calibration import StagePointPicker
+            plt.ion()
+            self.px2stage_picker = StagePointPicker(imgs)
+            plt.show()
+            self.status.setText(
+                f"Status: picker open ({len(imgs)} frames) -- click through, "
+                "then Fit & save"
+            )
+        except Exception as e:
+            self.status.setText(f"Status: picker failed -- {e}")
+ 
+    def fit_and_save_pixel_stage(self):
+        """Fit the centered Vandermonde model on picked points and save it."""
+        if self.px2stage_picker is None or self.px2stage_xy is None:
+            self.status.setText("Status: no picked points -- pick points first")
+            return
+        log = LogWindow(title="Pixel-to-stage fit log")
+        log.show()
+        self._plot_windows.append(log)
+        try:
+            from cns_control.calibration import (
+                apply_vandermonde, fit_vandermonde, save_vandermonde_model,
+            )
+            points = np.asarray(self.px2stage_picker.points, dtype=float)
+            xy = self.px2stage_xy
+            n = min(len(points), len(xy))
+            points, xy = points[:n], xy[:n]
+            valid = ~np.isnan(points).any(axis=1)
+            degree = int(self.px2stage_degree_input.value())
+            n_terms = (degree + 1) * (degree + 2) // 2
+            if valid.sum() < n_terms:
+                self.status.setText(
+                    f"Status: need >= {n_terms} points for degree {degree}, "
+                    f"got {valid.sum()}"
+                )
+                return
+            with _StdoutRedirector(log):
+                img_center = points[valid].mean(axis=0)
+                xy_center = xy[valid].mean(axis=0)
+                points_c = points[valid] - img_center
+                xy_c = xy[valid] - xy_center
+                print(f"Fitting on {valid.sum()}/{n} points")
+                print(f"img_center={img_center}, xy_center={xy_center}")
+                # RMSE comparison across degrees (offset domain)
+                for deg in (1, 2, 3):
+                    if valid.sum() < (deg + 1) * (deg + 2) // 2:
+                        print(f"degree={deg}  (not enough points)")
+                        continue
+                    C_deg = fit_vandermonde(points_c, xy_c, deg)
+                    res = xy_c - apply_vandermonde(points_c, C_deg, deg)
+                    rmse = np.sqrt(np.mean(res**2, axis=0))
+                    print(
+                        f"degree={deg}  RMSE: x={rmse[0]:.4f}, y={rmse[1]:.4f}"
+                    )
+                C = fit_vandermonde(points_c, xy_c, degree)
+                # sanity check: stage step for a 5 px x-offset
+                test = apply_vandermonde(np.array([[5.0, 0.0]]), C, degree)[0]
+                print(f"5px-x step -> stage (degree={degree}): {test}")
+            # save dialog so the user can rename / choose location
+            default_name = (
+                self.px2stage_name_input.text().strip()
+                or "vandermonde_model.json"
+            )
+            if not default_name.lower().endswith(".json"):
+                default_name += ".json"
+            save_path, _ = QFileDialog.getSaveFileName(
+                self, "Save Vandermonde model", default_name,
+                "JSON files (*.json);;All files (*)",
+            )
+            if not save_path:
+                self.status.setText("Status: save cancelled")
+                return
+            save_vandermonde_model(
+                save_path, C, degree,
+                img_center=img_center, xy_center=xy_center,
+            )
+            self.px2stage_name_input.setText(save_path)
+            # make it immediately usable by center-cell mode
+            self.sel_vdm_path.setText(save_path)
+            log.append(f"\n--- saved {save_path} ---\n")
+            self.status.setText(
+                f"Status: Vandermonde model (degree={degree}) saved -> "
+                f"{save_path}"
+            )
+        except Exception as e:
+            log.append(f"\n--- fit failed: {e} ---\n")
+            self.status.setText(f"Status: pixel-to-stage fit failed -- {e}")
+
     # -------- loading actions --------
     def connect(self):
         self.status.setText("Status: connecting...")
@@ -1344,6 +1562,8 @@ class HardwareWidget(QWidget):
         self.main_window = None
         self.selection_results = None
         self.mda_writer = None
+        self.px2stage_picker = None
+        self.px2stage_xy = None
         self.status.setText("Status: disconnected")
         self.connect_btn.setEnabled(True)
         self.disconnect_btn.setEnabled(False)
@@ -1837,6 +2057,15 @@ class HardwareWidget(QWidget):
         bkd_thres = float(self.sel_bkd_input.value())
         batch = self.sel_batch_combo.currentText() == "True"
 
+        center_cell = self.sel_center_cell_check.isChecked()
+        vandermonde_model_path = self.sel_vdm_path.text().strip()
+
+        if center_cell and not vandermonde_model_path:
+            self.status.setText(
+                "Status: Center cell mode requires a Vandermonde model (.json)"
+            )
+            return
+
         log = LogWindow(title="Automated selection log")
         log.show()
         self._plot_windows.append(log)
@@ -1861,6 +2090,10 @@ class HardwareWidget(QWidget):
                     autofocus_object=autofocus_object,
                     bkd_thres=bkd_thres,
                     batch=batch,
+                    center_cell=center_cell,
+                    vandermonde_model_path=(
+                        vandermonde_model_path if center_cell else None
+                    ),
                 )
 
             self.selection_results = {
@@ -1868,11 +2101,16 @@ class HardwareWidget(QWidget):
                 "autofocus_p": autofocus_p,
                 "new_seq": new_seq,
             }
+            n_new = len(new_seq.stage_positions)
             log.append("\n--- selection complete ---\n")
-            self.status.setText("Status: automated selection done OK")
+            extra = (
+                f" ({n_new} centered positions)" if center_cell else ""
+            )
+            self.status.setText(f"Status: automated selection done OK{extra}")
         except Exception as e:
             log.append(f"\n--- selection failed: {e} ---\n")
             self.status.setText(f"Status: selection failed -- {e}")
+
 
     def run_manual_selection(self):
         """Create empty point-source layers for hand-clicking, mirroring the
