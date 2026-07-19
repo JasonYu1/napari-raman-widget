@@ -817,7 +817,7 @@ class HardwareWidget(QWidget):
         # Refocus / re-segment cadence: run autofocus AND segment-and-track
         # only every Nth timepoint (1 = every timepoint).
         refocus_row = QHBoxLayout()
-        refocus_row.addWidget(QLabel("Refocus every (timepoints):"))
+        refocus_row.addWidget(QLabel("Refocus & segment every (timepoints):"))
         self.mda_refocus_input = QSpinBox()
         self.mda_refocus_input.setRange(1, 1_000_000)
         self.mda_refocus_input.setValue(1)
