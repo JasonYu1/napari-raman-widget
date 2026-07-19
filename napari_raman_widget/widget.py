@@ -609,6 +609,20 @@ class HardwareWidget(QWidget):
         batch_row.addWidget(self.sel_batch_combo)
         sel_layout.addLayout(batch_row)
 
+        sel_cp_row = QHBoxLayout()
+        sel_cp_row.addWidget(QLabel("Cellpose model:"))
+        self.sel_cellpose_combo = QComboBox()
+        try:
+            from cellpose import models as _cp_models
+            _sel_model_names = list(_cp_models.MODEL_NAMES)
+        except Exception:
+            _sel_model_names = ["cyto2"]
+        self.sel_cellpose_combo.addItems(_sel_model_names)
+        if "cyto2" in _sel_model_names:
+            self.sel_cellpose_combo.setCurrentText("cyto2")
+        sel_cp_row.addWidget(self.sel_cellpose_combo)
+        sel_layout.addLayout(sel_cp_row)
+
         self.run_selection_btn = QPushButton("Run automated selection")
         self.run_selection_btn.clicked.connect(self.run_automated_selection)
         sel_layout.addWidget(self.run_selection_btn)
@@ -2202,6 +2216,7 @@ class HardwareWidget(QWidget):
 
         center_cell = self.sel_center_cell_check.isChecked()
         vandermonde_model_path = self.sel_vdm_path.text().strip()
+        cellpose_model = self.sel_cellpose_combo.currentText() or "cyto2"
 
         if center_cell and not vandermonde_model_path:
             self.status.setText(
@@ -2237,6 +2252,7 @@ class HardwareWidget(QWidget):
                     vandermonde_model_path=(
                         vandermonde_model_path if center_cell else None
                     ),
+                    cellpose_model=cellpose_model,
                 )
 
             self.selection_results = {
