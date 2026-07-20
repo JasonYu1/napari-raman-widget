@@ -580,23 +580,32 @@ class HardwareWidget(QWidget):
         self.sel_vdm_path.setVisible(False)
         self._vdm_browse.setVisible(False)
 
+
+        shape_row = QHBoxLayout()
+        shape_row.addWidget(QLabel("Aiming pattern:"))
+        self.sel_shape_combo = QComboBox()
+        self.sel_shape_combo.addItems(["Square", "Circle"])
+        shape_row.addWidget(self.sel_shape_combo)
+        sel_layout.addLayout(shape_row)
+
         sq_size_row = QHBoxLayout()
-        sq_size_row.addWidget(QLabel("Square size (px):"))
+        sq_size_row.addWidget(QLabel("Pattern size (px):"))
         self.sel_sqsize_input = QDoubleSpinBox()
         self.sel_sqsize_input.setRange(0.0, 10000.0)
-        self.sel_sqsize_input.setValue(3.0)      # ~ old 0.002 * 1344
+        self.sel_sqsize_input.setValue(3.0)
         self.sel_sqsize_input.setDecimals(1)
         self.sel_sqsize_input.setSingleStep(1.0)
         sq_size_row.addWidget(self.sel_sqsize_input)
         sel_layout.addLayout(sq_size_row)
 
         sq_n_row = QHBoxLayout()
-        sq_n_row.addWidget(QLabel("Square N (subpoints):"))
+        sq_n_row.addWidget(QLabel("N (subpoints):"))
         self.sel_sqn_input = QSpinBox()
         self.sel_sqn_input.setRange(1, 100)
         self.sel_sqn_input.setValue(1)
         sq_n_row.addWidget(self.sel_sqn_input)
         sel_layout.addLayout(sq_n_row)
+
 
         bkd_row = QHBoxLayout()
         bkd_row.addWidget(QLabel("Background distance (px):"))
@@ -1050,17 +1059,19 @@ class HardwareWidget(QWidget):
                 return int(X), int(Y)
         return 1344, 1024
 
-    def _make_square_transformer(self, sq_size_px, sq_n):
-        """Build a Square transformer from a pixel edge length.
+    def _make_point_transformer(self, size_px, n):
+        """Build the selected aiming transformer from a pixel size.
 
-        Square operates in normalized (0-1) image coords, so convert using
-        the current image width. On a non-square sensor the Y extent will be
-        scaled by image_y/image_x relative to the requested pixels.
+        Converts px -> normalized using image width. Square uses it as edge
+        length, Circle as radius.
         """
-        from raman_mda_engine.aiming.transformers import Square
+        from raman_mda_engine.aiming.transformers import Square, Circle
         img_x, _ = self._get_image_xy()
-        edge_norm = float(sq_size_px) / float(img_x)
-        return Square(edge_norm, int(sq_n))
+        length = float(size_px) / float(img_x)
+        n = max(1, int(n))
+        if self.sel_shape_combo.currentText() == "Circle":
+            return Circle(length, n)
+        return Square(length, n)
 
     def _pt_to_volts(self, pt):
         X, Y = self._get_image_xy()
@@ -2261,7 +2272,7 @@ class HardwareWidget(QWidget):
             with _StdoutRedirector(log):
                 self._prepare_for_selection()
                 self.core.register_mda_engine(self.default_engine)
-                point_transformer = self._make_square_transformer(sq_size, sq_n)
+                point_transformer = self._make_point_transformer(sq_size, sq_n)
                 sources, autofocus_p, new_seq = automated_point_selections(
                     self.core, self.viewer, self.main_window,
                     point_transformer,
@@ -2327,7 +2338,7 @@ class HardwareWidget(QWidget):
             with _StdoutRedirector(log):
                 self._prepare_for_selection()
                 self.core.register_mda_engine(self.default_engine)
-                point_transformer = self._make_square_transformer(sq_size, sq_n)
+                point_transformer = self._make_point_transformer(sq_size, sq_n)
                 sources, autofocus_p, new_seq = manual_point_selections(
                     self.core, self.viewer, self.main_window,
                     point_transformer,
@@ -2394,7 +2405,7 @@ class HardwareWidget(QWidget):
             with _StdoutRedirector(log):
                 self._prepare_for_selection()
                 self.core.register_mda_engine(self.default_engine)
-                point_transformer = self._make_square_transformer(sq_size, sq_n)
+                point_transformer = self._make_point_transformer(sq_size, sq_n)
                 sources, autofocus_p, new_seq = grid_point_selections(
                     self.core, self.viewer, self.main_window,
                     point_transformer,
@@ -2486,10 +2497,10 @@ class HardwareWidget(QWidget):
         batch = self.sel_batch_combo.currentText() == "True"
         sq_size = float(self.sel_sqsize_input.value())
         sq_n = int(self.sel_sqn_input.value())
-        if batch and sq_n < 2:
+        if batch and self._make_point_transformer(sq_size, sq_n).multiplier < 2:
             self.status.setText(
-                "Status: batch mode requires Square N >= 2 "
-                "(DAQ needs at least 2 samples per channel)"
+                "Status: batch mode needs a pattern with >= 2 points "
+                "(increase N)"
             )
             return
 
@@ -2585,7 +2596,7 @@ class HardwareWidget(QWidget):
                 self.mda_writer = RamanTiffAndNumpyWriter(out_dir)
                 engine.aiming_sources = sources
 
-                point_transformer = self._make_square_transformer(sq_size, sq_n)
+                point_transformer = self._make_point_transformer(sq_size, sq_n)
 
                 if batch:
                     final_seq = set_up_new_seq(
