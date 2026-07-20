@@ -547,9 +547,15 @@ class HardwareWidget(QWidget):
         r_row.addWidget(self.sel_r_input)
         sel_layout.addLayout(r_row)
 
+        mask_btn_row = QHBoxLayout()
         self.add_mask_btn = QPushButton("Add mask")
         self.add_mask_btn.clicked.connect(self.add_mask)
-        sel_layout.addWidget(self.add_mask_btn)
+        self.click_center_btn = QPushButton("Click to center")
+        self.click_center_btn.setCheckable(True)
+        self.click_center_btn.toggled.connect(self._toggle_click_to_center)
+        mask_btn_row.addWidget(self.add_mask_btn)
+        mask_btn_row.addWidget(self.click_center_btn)
+        sel_layout.addLayout(mask_btn_row)
 
         sel_layout.addWidget(QLabel("Automated point selection:"))
 
@@ -2303,6 +2309,59 @@ class HardwareWidget(QWidget):
             log.append(f"\n--- selection failed: {e} ---\n")
             self.status.setText(f"Status: selection failed -- {e}")
 
+
+    def _toggle_click_to_center(self, checked):
+        """Arm/disarm one-shot click-to-center mode."""
+        if checked:
+            if self._click_center_cb not in self.viewer.mouse_drag_callbacks:
+                self.viewer.mouse_drag_callbacks.append(self._click_center_cb)
+            self.status.setText(
+                "Status: click-to-center ARMED -- click a spot in the image"
+            )
+        else:
+            try:
+                self.viewer.mouse_drag_callbacks.remove(self._click_center_cb)
+            except ValueError:
+                pass
+
+    def _click_center_cb(self, viewer, event):
+        """napari mouse callback: fires on press while armed."""
+        if event.button != 1:          # left click only
+            return
+        yx = np.array(event.position[-2:], dtype=float)
+        # disarm BEFORE moving so a slow move can't eat a second click
+        self.click_center_btn.setChecked(False)
+        self._move_clicked_to_center(yx)
+
+    def _move_clicked_to_center(self, yx):
+        """Move the stage so the clicked pixel lands at (cy, cx)."""
+        if self.core is None:
+            self.status.setText("Status: not connected")
+            return
+        if self.vandermonde is None:
+            self._load_vandermonde()
+        if self.vandermonde is None:
+            self.status.setText(
+                "Status: no Vandermonde model loaded (set it in Loading)"
+            )
+            return
+        try:
+            from cns_control.utils import apply_vandermonde_model
+            C, degree = self.vandermonde
+            cy = int(self.sel_cy_input.value())
+            cx = int(self.sel_cx_input.value())
+            offset_yx = yx - np.array([cy, cx], dtype=float)
+            offset_xy = np.array([offset_yx[1], offset_yx[0]])
+            stage_dx, stage_dy = apply_vandermonde_model(offset_xy, C, degree)
+            x, y = self.core.getXYPosition()
+            self.core.setXYPosition(float(x - stage_dx), float(y - stage_dy))
+            self.core.waitForSystem()
+            self.status.setText(
+                f"Status: moved ({yx[0]:.0f},{yx[1]:.0f}) -> center "
+                f"({cy},{cx})  [dX={-stage_dx:.2f}, dY={-stage_dy:.2f} um]"
+            )
+        except Exception as e:
+            self.status.setText(f"Status: click-to-center failed -- {e}")
 
     def run_manual_selection(self):
         """Create empty point-source layers for hand-clicking, mirroring the
