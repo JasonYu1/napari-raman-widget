@@ -219,42 +219,47 @@ class HardwareWidget(QWidget):
         self.calibrate_btn.clicked.connect(self.run_calibration)
         calib_layout.addWidget(self.calibrate_btn)
 
-        calib_box.setLayout(calib_layout)
-        outer.addWidget(calib_box)
+        # --- recalibration (shown when checked) ---
+        self.recal_check = QCheckBox("Recalibration")
+        self.recal_check.setChecked(False)
+        self.recal_check.toggled.connect(self._toggle_recal_fields)
+        calib_layout.addWidget(self.recal_check)
 
-        # ================= RECALIBRATION SECTION =================
-        recal_box = make_collapsible("Recalibration", expanded=False)
-        recal_layout = QVBoxLayout()
-
-        recal_help = QLabel(
+        self._recal_help = QLabel(
             "Opens manual selector on the last calibration dataset.\n"
             "Click points, Enter to advance, Backspace to go back,\n"
             "R to reset, N to mark as NaN. Close window when done,\n"
             "then click Save to write the new model."
         )
-        recal_help.setWordWrap(True)
-        recal_layout.addWidget(recal_help)
-
+        self._recal_help.setWordWrap(True)
+        calib_layout.addWidget(self._recal_help)
         model_name_row = QHBoxLayout()
-        model_name_row.addWidget(QLabel("Model name:"))
+        self._recal_model_name_label = QLabel("Model name:")
+        model_name_row.addWidget(self._recal_model_name_label)
         self.model_name_input = QLineEdit()
         self.model_name_input.setPlaceholderText("model_2026-01-08")
         model_name_row.addWidget(self.model_name_input)
-        recal_layout.addLayout(model_name_row)
-
+        calib_layout.addLayout(model_name_row)
         self.open_selector_btn = QPushButton("Open manual selector")
         self.open_selector_btn.clicked.connect(self.open_selector)
-        recal_layout.addWidget(self.open_selector_btn)
-
+        calib_layout.addWidget(self.open_selector_btn)
         self.save_model_btn = QPushButton("Save recalibrated model")
         self.save_model_btn.clicked.connect(self.save_recalibration)
-        recal_layout.addWidget(self.save_model_btn)
+        calib_layout.addWidget(self.save_model_btn)
 
-        recal_box.setLayout(recal_layout)
-        outer.addWidget(recal_box)
+        # collect recal widgets so they can be hidden as a group
+        self._recal_widgets = [
+            self._recal_help,
+            self._recal_model_name_label, self.model_name_input,
+            self.open_selector_btn, self.save_model_btn,
+        ]
+        self._toggle_recal_fields(False)   # hidden until checked
+
+        calib_box.setLayout(calib_layout)
+        outer.addWidget(calib_box)
 
         # ================= COLLECT REFERENCE SPECTRA SECTION =================
-        ref_box = make_collapsible("Collect reference spectra", expanded=False)
+        ref_box = make_collapsible("Axial background scan", expanded=False)
         ref_layout = QVBoxLayout()
 
         ref_name_row = QHBoxLayout()
@@ -576,12 +581,12 @@ class HardwareWidget(QWidget):
         self._vdm_browse.setVisible(False)
 
         sq_size_row = QHBoxLayout()
-        sq_size_row.addWidget(QLabel("Square size:"))
+        sq_size_row.addWidget(QLabel("Square size (px):"))
         self.sel_sqsize_input = QDoubleSpinBox()
-        self.sel_sqsize_input.setRange(0.001, 10.0)
-        self.sel_sqsize_input.setValue(0.002)
-        self.sel_sqsize_input.setDecimals(4)
-        self.sel_sqsize_input.setSingleStep(0.0005)
+        self.sel_sqsize_input.setRange(0.0, 10000.0)
+        self.sel_sqsize_input.setValue(3.0)      # ~ old 0.002 * 1344
+        self.sel_sqsize_input.setDecimals(1)
+        self.sel_sqsize_input.setSingleStep(1.0)
         sq_size_row.addWidget(self.sel_sqsize_input)
         sel_layout.addLayout(sq_size_row)
 
@@ -594,7 +599,7 @@ class HardwareWidget(QWidget):
         sel_layout.addLayout(sq_n_row)
 
         bkd_row = QHBoxLayout()
-        bkd_row.addWidget(QLabel("Background threshold:"))
+        bkd_row.addWidget(QLabel("Background distance (px):"))
         self.sel_bkd_input = QDoubleSpinBox()
         self.sel_bkd_input.setRange(0.0, 1_000_000.0)
         self.sel_bkd_input.setValue(80)
@@ -603,7 +608,7 @@ class HardwareWidget(QWidget):
         sel_layout.addLayout(bkd_row)
 
         batch_row = QHBoxLayout()
-        batch_row.addWidget(QLabel("Batch:"))
+        batch_row.addWidget(QLabel("Integrated batch collection:"))
         self.sel_batch_combo = QComboBox()
         self.sel_batch_combo.addItems(["False", "True"])
         batch_row.addWidget(self.sel_batch_combo)
@@ -725,7 +730,7 @@ class HardwareWidget(QWidget):
 
         # Segment-and-track toggle (independent of autofocus)
         self.mda_seg_track_check = QCheckBox(
-            "Segment and track (update aiming each cycle)"
+            "Segment and track (update aiming)"
         )
         self.mda_seg_track_check.setChecked(False)
         self.mda_seg_track_check.toggled.connect(self._toggle_seg_track_fields)
@@ -939,7 +944,7 @@ class HardwareWidget(QWidget):
 
         # make_collapsible re-shows ALL descendants on expand, which clobbers
         # our conditional field hiding -- re-apply it after any box expands.
-        for _box in (scan_box, self.sel_box, mda_box):
+        for _box in (calib_box, scan_box, self.sel_box, mda_box):
             _box.toggled.connect(lambda checked: self._reapply_toggles())
 
         outer.addStretch()
@@ -1045,6 +1050,18 @@ class HardwareWidget(QWidget):
                 return int(X), int(Y)
         return 1344, 1024
 
+    def _make_square_transformer(self, sq_size_px, sq_n):
+        """Build a Square transformer from a pixel edge length.
+
+        Square operates in normalized (0-1) image coords, so convert using
+        the current image width. On a non-square sensor the Y extent will be
+        scaled by image_y/image_x relative to the requested pixels.
+        """
+        from raman_mda_engine.aiming.transformers import Square
+        img_x, _ = self._get_image_xy()
+        edge_norm = float(sq_size_px) / float(img_x)
+        return Square(edge_norm, int(sq_n))
+
     def _pt_to_volts(self, pt):
         X, Y = self._get_image_xy()
         return self.transformer.BF_to_volts(
@@ -1138,6 +1155,11 @@ class HardwareWidget(QWidget):
         for w in self._px2stage_widgets:
             w.setVisible(checked)
 
+    def _toggle_recal_fields(self, checked):
+        """Show/hide the recalibration fields."""
+        for w in self._recal_widgets:
+            w.setVisible(checked)
+
     def _toggle_autofocus_fields(self, method):
         """Show/hide the MDA autofocus fields based on the chosen object.
 
@@ -1167,6 +1189,8 @@ class HardwareWidget(QWidget):
         self._toggle_zscan_fields(self.scan_zscan_check.isChecked())
         self._toggle_autofocus_fields(self.sel_af_combo.currentText())
         self._toggle_px2stage_fields(self.px2stage_check.isChecked())
+        self._toggle_px2stage_fields(self.px2stage_check.isChecked())
+        self._toggle_recal_fields(self.recal_check.isChecked())
 
     # -------- channel row helpers --------
     def _available_channels(self):
@@ -2233,12 +2257,11 @@ class HardwareWidget(QWidget):
 
         try:
             from cns_control.utils import automated_point_selections
-            from raman_mda_engine.aiming.transformers import Square
 
             with _StdoutRedirector(log):
                 self._prepare_for_selection()
                 self.core.register_mda_engine(self.default_engine)
-                point_transformer = Square(sq_size, sq_n)
+                point_transformer = self._make_square_transformer(sq_size, sq_n)
                 sources, autofocus_p, new_seq = automated_point_selections(
                     self.core, self.viewer, self.main_window,
                     point_transformer,
@@ -2300,12 +2323,11 @@ class HardwareWidget(QWidget):
 
         try:
             from cns_control.utils import manual_point_selections
-            from raman_mda_engine.aiming.transformers import Square
 
             with _StdoutRedirector(log):
                 self._prepare_for_selection()
                 self.core.register_mda_engine(self.default_engine)
-                point_transformer = Square(sq_size, sq_n)
+                point_transformer = self._make_square_transformer(sq_size, sq_n)
                 sources, autofocus_p, new_seq = manual_point_selections(
                     self.core, self.viewer, self.main_window,
                     point_transformer,
@@ -2368,12 +2390,11 @@ class HardwareWidget(QWidget):
 
         try:
             from cns_control.utils import grid_point_selections
-            from raman_mda_engine.aiming.transformers import Square
 
             with _StdoutRedirector(log):
                 self._prepare_for_selection()
                 self.core.register_mda_engine(self.default_engine)
-                point_transformer = Square(sq_size, sq_n)
+                point_transformer = self._make_square_transformer(sq_size, sq_n)
                 sources, autofocus_p, new_seq = grid_point_selections(
                     self.core, self.viewer, self.main_window,
                     point_transformer,
@@ -2524,7 +2545,6 @@ class HardwareWidget(QWidget):
             from raman_mda_engine import (
                 RamanEngine, RamanTiffAndNumpyWriter,
             )
-            from raman_mda_engine.aiming.transformers import Square
             from cns_control.utils import set_up_new_seq
 
             try:
@@ -2565,7 +2585,7 @@ class HardwareWidget(QWidget):
                 self.mda_writer = RamanTiffAndNumpyWriter(out_dir)
                 engine.aiming_sources = sources
 
-                point_transformer = Square(sq_size, sq_n)
+                point_transformer = self._make_square_transformer(sq_size, sq_n)
 
                 if batch:
                     final_seq = set_up_new_seq(
