@@ -10,7 +10,7 @@ from qtpy.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel,
     QLineEdit, QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget, QMessageBox
 )
-
+from .field_help import apply_tooltips
 from .log_window import LogWindow, _StdoutRedirector
 from .plot_windows import (
     CalibrationPlotWindow, GridScanPlotWindow, ReferenceSpectraWindow,
@@ -1009,7 +1009,8 @@ class HardwareWidget(QWidget):
 
         # Keep references to pop-up windows so they don't get garbage collected.
         self._plot_windows = []
-
+        # attach hover help text to every field
+        apply_tooltips(self)
         # # Poll the stage position periodically for the live X/Y/Z readout.
         # self._pos_timer = QTimer(self)
         # self._pos_timer.setInterval(500)  # ms
