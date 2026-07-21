@@ -5,10 +5,10 @@ import uuid
 import xarray as xr
 import napari
 import numpy as np
-from qtpy.QtCore import Qt, QTimer
+from qtpy.QtCore import Qt, QTimer, QUrl
 from qtpy.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel,
-    QLineEdit, QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
+    QLineEdit, QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget, QMessageBox
 )
 
 from .log_window import LogWindow, _StdoutRedirector
@@ -17,7 +17,8 @@ from .plot_windows import (
     SpectrumWindow, DatasetViewerWindow,
 )
 from .ui_helpers import make_collapsible
-
+from pathlib import Path
+from qtpy.QtGui import QDesktopServices
 
 class HardwareWidget(QWidget):
     def __init__(self, viewer: napari.Viewer):
@@ -41,6 +42,18 @@ class HardwareWidget(QWidget):
         self.px2stage_xy = None
 
         outer = QVBoxLayout()
+
+        self.manual_link = QLabel(
+            '<a href="manual" '
+            'style="color:white; font-weight:bold; text-decoration:none;">'
+            'Help</a>'
+        )
+        self.manual_link.setAlignment(Qt.AlignRight)
+        self.manual_link.setOpenExternalLinks(False)
+        self.manual_link.setToolTip("Open the user manual")
+        self.manual_link.linkActivated.connect(self.open_user_manual)
+
+        outer.addWidget(self.manual_link)
 
         # ================= LOADING SECTION =================
         loading_box = make_collapsible("Loading", expanded=True)
@@ -1003,6 +1016,23 @@ class HardwareWidget(QWidget):
         # self._pos_timer.timeout.connect(self._update_position_label)
         # self._pos_timer.start()
 
+    def open_user_manual(self, _link=None):
+        pdf_path = (
+            Path(__file__).resolve().parent
+            / "resources"
+            / "napari-raman-widget-manual.pdf"
+        )
+
+        if not pdf_path.exists():
+            QMessageBox.warning(
+                self,
+                "Manual not found",
+                f"The user manual could not be found:\n{pdf_path}",
+            )
+            return
+
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(pdf_path)))
+
     # -------- file pickers --------
     def browse_cfg(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -1380,15 +1410,19 @@ class HardwareWidget(QWidget):
             return
 
         try:
-            from useq import ZRangeAround
+            from useq import ZRangeAround, TIntervalLoops
+            import datetime as _dt
             seq = mda_settings.value()
             new_seq = seq.replace(
                 axis_order=("t", "p", "c", "z"),
                 z_plan=ZRangeAround(range=0.0, step=1.0),
+                time_plan=TIntervalLoops(
+                    interval=_dt.timedelta(seconds=0), loops=1
+                ),
             )
             if hasattr(mda_settings, "setValue"):
                 mda_settings.setValue(new_seq)
-                print("[mda setup] axis_order=tpcz, z_plan=ZRangeAround OK")
+                print("[mda setup] axis_order=tpcz, z_plan, t=1loop OK")
             else:
                 print("[mda setup] no setValue method -- can't push sequence back")
                 print(
@@ -1642,8 +1676,7 @@ class HardwareWidget(QWidget):
             self.wl_update_btn.setEnabled(True)
             self.refresh_wavelength()
             self.refresh_wavelength()
-            self.grating_update_btn.setEnabled(True)
-            time.sleep(2)   
+            self.grating_update_btn.setEnabled(True)   
             self.refresh_gratings()
 
             msg = "Status: connected OK"
