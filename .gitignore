@@ -31,7 +31,3 @@ model_*.json
 # OS
 .DS_Store
 Thumbs.db
-
-
-# pdf
-*.pdf binary
