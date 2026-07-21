@@ -1643,6 +1643,7 @@ class HardwareWidget(QWidget):
             self.refresh_wavelength()
             self.refresh_wavelength()
             self.grating_update_btn.setEnabled(True)
+            time.sleep(2)   
             self.refresh_gratings()
 
             msg = "Status: connected OK"
@@ -1696,21 +1697,24 @@ class HardwareWidget(QWidget):
             self.status.setText(f"Status: wavelength update failed -- {e}")
 
     def refresh_gratings(self):
-        """Populate the grating dropdown from the spectrograph. Read-only --
-        this does NOT move the turret."""
         if self.collector is None:
             return
         try:
-            n = self.collector.get_number_gratings()
-            current = self.collector.get_grating()
+            n = int(self.collector.get_number_gratings())
+            current = int(self.collector.get_grating())
+            # ensure the list is at least long enough to hold `current`
+            n = max(n, current)
             self.grating_combo.blockSignals(True)
             self.grating_combo.clear()
             self.grating_combo.addItems([str(i) for i in range(1, n + 1)])
-            idx = current - 1                       # gratings are 1-indexed
-            if 0 <= idx < n:
+            self.grating_combo.blockSignals(False)
+            idx = current - 1
+            if 0 <= idx < self.grating_combo.count():
                 self.grating_combo.setCurrentIndex(idx)
             self.grating_combo.setEnabled(True)
-            self.grating_combo.blockSignals(False)
+            print(f"[gratings] n={n} current={current} "
+                  f"count={self.grating_combo.count()} "
+                  f"shown={self.grating_combo.currentText()}")
         except Exception as e:
             self.status.setText(f"Status: couldn't read gratings -- {e}")
 
@@ -2642,6 +2646,10 @@ class HardwareWidget(QWidget):
         cellpose_model = self.mda_seg_model_combo.currentText() or "cyto2"
         segment_crop = self.mda_seg_crop_combo.currentText() == "True"
         tracking_config = self.mda_track_cfg_input.text().strip() or "particle_config.json"
+        cy = int(self.sel_cy_input.value())
+        cx = int(self.sel_cx_input.value())
+        circle_center=(cy, cx)
+        circle_radius = int(self.sel_r_input.value())
 
         try:
             z_relative = self._parse_float_list(
@@ -2711,6 +2719,8 @@ class HardwareWidget(QWidget):
                     image_y=img_y,
                     skip_imaging_for_same_pos=True,
                     config_file=self.cfg_path.text().strip() or "test3.cfg",
+                    circle_center=circle_center,
+                    circle_radius=circle_radius,
                 )
 
                 self.core.register_mda_engine(engine)
