@@ -977,6 +977,10 @@ class HardwareWidget(QWidget):
         for _box in (calib_box, scan_box, self.sel_box, mda_box):
             _box.toggled.connect(lambda checked: self._reapply_toggles())
 
+        from .chat_panel import ChatPanel
+        self.chat_panel = ChatPanel(self)
+        outer.addWidget(self.chat_panel)
+        
         outer.addStretch()
 
         # # ================= LIVE STAGE POSITION =================
