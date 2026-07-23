@@ -1,24 +1,61 @@
-"""The main HardwareWidget: a dockable napari panel for the CNS Raman rig."""
+"""The main HardwareWidget: a dockable napari panel for the Raman rig."""
+
 import os
 import time
 import uuid
-import xarray as xr
+from pathlib import Path
+
 import napari
 import numpy as np
+import xarray as xr
 from qtpy.QtCore import Qt, QTimer, QUrl
+from qtpy.QtGui import QDesktopServices
 from qtpy.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel,
-    QLineEdit, QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget, QMessageBox
+    QCheckBox,
+    QComboBox,
+    QDoubleSpinBox,
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
+)
+
+from .acquisition import autofocus_w_bkd, unload
+from .calibration import (
+    Calibrator,
+    CoordTransformer,
+    ManualImageSelector,
+    StagePointPicker,
+    apply_vandermonde,
+    apply_vandermonde_model,
+    fit_vandermonde,
+    load_vandermonde_model,
+    save_vandermonde_model,
 )
 from .field_help import apply_tooltips
 from .log_window import LogWindow, _StdoutRedirector
 from .plot_windows import (
-    CalibrationPlotWindow, GridScanPlotWindow, ReferenceSpectraWindow,
-    SpectrumWindow, DatasetViewerWindow,
+    CalibrationPlotWindow,
+    DatasetViewerWindow,
+    GridScanPlotWindow,
+    ReferenceSpectraWindow,
+    SpectrumWindow,
+)
+from .selection import (
+    add_mask_with_hole,
+    automated_point_selections,
+    center_manual_selections,
+    grid_point_selections,
+    manual_point_selections,
 )
 from .ui_helpers import make_collapsible
-from pathlib import Path
-from qtpy.QtGui import QDesktopServices
+from .workflows import set_up_new_seq
 
 class HardwareWidget(QWidget):
     def __init__(self, viewer: napari.Viewer):
@@ -1104,7 +1141,6 @@ class HardwareWidget(QWidget):
             self.vandermonde = None
             return " (no vandermonde)"
         try:
-            from cns_control.utils import load_vandermonde_model
             C, degree = load_vandermonde_model(path)
             self.vandermonde = (C, degree)
             return f" (vandermonde deg={degree} OK)"
@@ -1530,7 +1566,6 @@ class HardwareWidget(QWidget):
             import matplotlib
             matplotlib.use("QtAgg")
             import matplotlib.pyplot as plt
-            from cns_control.calibration import StagePointPicker
             plt.ion()
             self.px2stage_picker = StagePointPicker(imgs)
             plt.show()
@@ -1550,9 +1585,6 @@ class HardwareWidget(QWidget):
         log.show()
         self._plot_windows.append(log)
         try:
-            from cns_control.calibration import (
-                apply_vandermonde, fit_vandermonde, save_vandermonde_model,
-            )
             points = np.asarray(self.px2stage_picker.points, dtype=float)
             xy = self.px2stage_xy
             n = min(len(points), len(xy))
@@ -1638,7 +1670,6 @@ class HardwareWidget(QWidget):
         try:
             from pymmcore_plus import CMMCorePlus
             from raman_control.andor import AndorSpectraCollector
-            from cns_control.coordtransformer import CoordTransformer
 
             self.core = CMMCorePlus.instance()
 
@@ -1703,7 +1734,6 @@ class HardwareWidget(QWidget):
             self.status.setText("Status: no transformer path set")
             return
         try:
-            from cns_control.coordtransformer import CoordTransformer
             self.transformer = CoordTransformer.from_json(tf)
             vdm_msg = self._load_vandermonde()
             self.status.setText(f"Status: transformer reloaded OK{vdm_msg}")
@@ -1784,7 +1814,6 @@ class HardwareWidget(QWidget):
     def disconnect(self):
         try:
             if self.core is not None:
-                from cns_control.utils import unload
                 unload(self.core)
         except Exception as e:
             print(f"unload error: {e}")
@@ -1880,15 +1909,13 @@ class HardwareWidget(QWidget):
         self.repaint()
 
         try:
-            from cns_control.calibration import Calibrator
-
             self.calibrator = Calibrator(
                 self.core, self.daq, self.transformer, self.collector,
-                N=N, exp=exp, max_volts=max_volts,
+                repeats=N, exposure=exp, max_volts=max_volts,
             )
             with _StdoutRedirector(log):
                 self.calibration_ds = self.calibrator.calibrate(
-                    grid, thres=thres, plot=False
+                    grid, threshold=thres, plot=False
                 )
 
             log.append("\n--- calibration complete ---\n")
@@ -1915,7 +1942,6 @@ class HardwareWidget(QWidget):
             import matplotlib
             matplotlib.use("QtAgg")
             import matplotlib.pyplot as plt
-            from cns_control.calibration import ManualImageSelector
 
             plt.ion()
             self.selector = ManualImageSelector(self.calibration_ds)
@@ -1945,8 +1971,6 @@ class HardwareWidget(QWidget):
             return
 
         try:
-            from cns_control.coordtransformer import CoordTransformer
-
             selected_points = self.selector.selected_points
             self.calibrator.save_new_model(
                 self.calibration_ds, selected_points, model_name
@@ -1987,8 +2011,6 @@ class HardwareWidget(QWidget):
         self._plot_windows.append(log)
 
         try:
-            from cns_control.autofocus import autofocus_w_bkd
-
             pt = self.viewer.layers[-1].data[0, -2:]
             volts = self._pt_to_volts(pt)
             volts_tiled = np.array([volts[0] for _ in range(N)])
@@ -2249,11 +2271,6 @@ class HardwareWidget(QWidget):
     # -------- automated cell selection --------
     def add_mask(self):
         """Add the masked overlay to the viewer using current center/radius."""
-        try:
-            from cns_control.utils import add_mask_with_hole
-        except Exception as e:
-            self.status.setText(f"Status: import failed -- {e}")
-            return
 
         X, Y = self._get_image_xy()
         cy = int(self.sel_cy_input.value())
@@ -2314,16 +2331,28 @@ class HardwareWidget(QWidget):
         self.repaint()
 
         try:
-            from cns_control.utils import automated_point_selections
-
             with _StdoutRedirector(log):
                 self._prepare_for_selection()
                 self.core.register_mda_engine(self.default_engine)
                 point_transformer = self._make_point_transformer(sq_size, sq_n)
+                no_autofocus = (
+                    autofocus_object is None
+                    or str(autofocus_object).strip().lower()
+                    in {"", "none"}
+                )
+
+                selection_limit = (
+                    N_per_fov
+                    if center_cell or no_autofocus
+                    else N_per_fov + 1
+                )
+
                 sources, autofocus_p, new_seq = automated_point_selections(
-                    self.core, self.viewer, self.main_window,
+                    self.core,
+                    self.viewer,
+                    self.main_window,
                     point_transformer,
-                    N=N_per_fov + 1,
+                    N=selection_limit,
                     center=(cy, cx),
                     radius=r,
                     autofocus_object=autofocus_object,
@@ -2331,11 +2360,12 @@ class HardwareWidget(QWidget):
                     batch=batch,
                     center_cell=center_cell,
                     vandermonde_model_path=(
-                        vandermonde_model_path if center_cell else None
+                        vandermonde_model_path
+                        if center_cell
+                        else None
                     ),
                     cellpose_model=cellpose_model,
                 )
-
             self.selection_results = {
                 "sources": sources,
                 "autofocus_p": autofocus_p,
@@ -2388,7 +2418,6 @@ class HardwareWidget(QWidget):
             )
             return
         try:
-            from cns_control.utils import apply_vandermonde_model
             C, degree = self.vandermonde
             cy = int(self.sel_cy_input.value())
             cx = int(self.sel_cx_input.value())
@@ -2433,8 +2462,6 @@ class HardwareWidget(QWidget):
         self.repaint()
 
         try:
-            from cns_control.utils import manual_point_selections
-
             with _StdoutRedirector(log):
                 self._prepare_for_selection()
                 self.core.register_mda_engine(self.default_engine)
@@ -2498,7 +2525,6 @@ class HardwareWidget(QWidget):
         self.status.setText("Status: centering clicked cells...")
         self.repaint()
         try:
-            from cns_control.utils import center_manual_selections
             with _StdoutRedirector(log):
                 point_transformer = self._make_point_transformer(sq_size, sq_n)
                 sources, autofocus_p, new_seq = center_manual_selections(
@@ -2557,8 +2583,6 @@ class HardwareWidget(QWidget):
         self.repaint()
 
         try:
-            from cns_control.utils import grid_point_selections
-
             with _StdoutRedirector(log):
                 self._prepare_for_selection()
                 self.core.register_mda_engine(self.default_engine)
@@ -2724,8 +2748,6 @@ class HardwareWidget(QWidget):
             from raman_mda_engine import (
                 RamanEngine, RamanTiffAndNumpyWriter,
             )
-            from cns_control.utils import set_up_new_seq
-
             try:
                 img_x = int(self.core.getImageWidth())
                 img_y = int(self.core.getImageHeight())

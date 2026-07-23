@@ -1,5 +1,6 @@
 """Pop-up matplotlib windows used to display calibration, spectra, and scans."""
 import numpy as np
+from napari_raman_widget.spectra import filter_mean
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QHBoxLayout, QLabel, QMainWindow, QPushButton, QSlider, QVBoxLayout,
@@ -87,7 +88,6 @@ class SpectrumWindow(QMainWindow):
         self._redraw()
 
     def _redraw(self):
-        from cns_control.utils import filter_mean
         import matplotlib.cm as cm
 
         self.ax.clear()
@@ -121,7 +121,6 @@ class ReferenceSpectraWindow(QMainWindow):
             FigureCanvasQTAgg, NavigationToolbar2QT,
         )
         from matplotlib.colors import Normalize
-        from cns_control.utils import filter_mean
 
         central = QWidget()
         layout = QVBoxLayout(central)

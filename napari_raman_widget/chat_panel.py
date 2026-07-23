@@ -1,4 +1,4 @@
-"""LLM-backed chat panel for the CNS Raman HardwareWidget.
+"""LLM-backed chat panel for the Raman HardwareWidget.
 
 The assistant does exactly one thing: it maps a plain-English message to one
 of the widget's existing GUI actions (the same methods the buttons call),
@@ -220,45 +220,120 @@ def _reveal_dock(dw):
         pass
 
 
-def _h_open_mm_widget(hw, inp):
-    """Reveal a napari-micromanager sub-dock (MDA, Stages, ...).
+def _q_action_cls():
+    """QAction lives in QtWidgets (Qt5) or QtGui (Qt6); handle both."""
+    try:
+        from qtpy.QtWidgets import QAction
+        return QAction
+    except Exception:
+        try:
+            from qtpy.QtGui import QAction
+            return QAction
+        except Exception:
+            return None
 
-    In current napari-micromanager everything lives inside one 'Main Window';
-    the individual tools are registered in main_window._dock_widgets. We
-    reveal the matching one directly rather than trying to open a separate
-    plugin widget.
+
+# Friendly words -> the exact toolbar label napari-micromanager uses.
+_MM_ALIASES = {
+    "mda": "MDA",
+    "stage": "Stage Control",
+    "stages": "Stage Control",
+    "stage controller": "Stage Control",
+    "stage control": "Stage Control",
+    "camera": "Camera ROI",
+    "roi": "Camera ROI",
+    "groups": "Groups and Presets",
+    "presets": "Groups and Presets",
+    "property": "Property Browser",
+    "properties": "Property Browser",
+    "config": "Configuration",
+    "configuration": "Configuration",
+    "pixel": "Pixel Configuration",
+    "snap": "Snap Live",
+    "live": "Snap Live",
+    "snap/live": "Snap Live",
+}
+
+
+def _mm_actions(mw):
+    """Return {clean_label: QAction} for every action on the MM main window."""
+    qaction = _q_action_cls()
+    out = {}
+    if qaction is None or mw is None:
+        return out
+    try:
+        for act in mw.findChildren(qaction):
+            label = (act.text() or "").replace("&", "").strip()
+            if label and label not in out:
+                out[label] = act
+    except Exception:
+        pass
+    return out
+
+
+def _mm_find_action(actions, target):
+    """Exact (case-insensitive) then substring match into the actions dict."""
+    tl = target.lower()
+    for label, act in actions.items():
+        if label.lower() == tl:
+            return label, act
+    for label, act in actions.items():
+        if tl in label.lower():
+            return label, act
+    return None, None
+
+
+def _h_open_mm_widget(hw, inp):
+    """Open a napari-micromanager tool (MDA, Stage Control, ...).
+
+    These docks are created lazily when their toolbar button is clicked, so
+    an empty _dock_widgets is expected. We invoke the main window's own show
+    method (or trigger the matching toolbar action), which creates the dock
+    if needed -- exactly what a click does.
     """
     which = str(inp.get("widget") or "MDA").strip()
     mw = hw.main_window
+    if mw is None:
+        return ("napari-micromanager main window not captured -- reconnect "
+                "hardware first.")
 
-    # 1) reveal a registered sub-dock by fuzzy name match
-    dws = getattr(mw, "_dock_widgets", None) if mw is not None else None
+    target = _MM_ALIASES.get(which.lower(), which)
+
+    # 1) preferred: the toolbar's own show method (creates + shows the dock)
+    show = getattr(mw, "_show_dock_widget", None)
+    if callable(show):
+        for key in dict.fromkeys([target, which]):
+            try:
+                show(key)
+                return f"Opened napari-micromanager '{key}'."
+            except Exception:
+                continue
+
+    # 2) trigger the matching toolbar action (same effect as a click)
+    actions = _mm_actions(mw)
+    label, act = _mm_find_action(actions, target)
+    if act is None:
+        label, act = _mm_find_action(actions, which)
+    if act is not None:
+        try:
+            if act.isCheckable() and act.isChecked():
+                return f"'{label}' is already open."
+            act.trigger()
+            return f"Opened napari-micromanager '{label}'."
+        except Exception as e:
+            return f"Found '{label}' but couldn't open it: {e}"
+
+    # 3) last resort: reveal an already-created dock
+    dws = getattr(mw, "_dock_widgets", None)
     if isinstance(dws, dict) and dws:
-        key = None
         for k in dws:
-            if which.lower() == k.lower():
-                key = k
-                break
-        if key is None:
-            for k in dws:
-                if which.lower() in k.lower():
-                    key = k
-                    break
-        if key is not None:
-            _reveal_dock(dws[key])
-            return f"Revealed napari-micromanager '{key}'."
-        return (f"No sub-dock matching '{which}'. "
-                f"Available: {', '.join(dws.keys())}.")
+            if target.lower() == k.lower() or target.lower() in k.lower():
+                _reveal_dock(dws[k])
+                return f"Revealed napari-micromanager '{k}'."
 
-    # 2) fall back to opening a top-level plugin widget by name
-    try:
-        hw.viewer.window.add_plugin_dock_widget(
-            "napari-micromanager", widget_name=which
-        )
-        return f"Opened napari-micromanager '{which}'."
-    except Exception as e:
-        return (f"Couldn't open '{which}': {e}. "
-                "Use inspect_mm to list the real widget names.")
+    avail = ", ".join(actions.keys()) or "(none found)"
+    return (f"Couldn't open '{which}'. Toolbar items I can see: {avail}. "
+            "Retry with one of those names.")
 
 
 def _h_inspect_mm(hw, inp):
@@ -269,17 +344,16 @@ def _h_inspect_mm(hw, inp):
         return ("napari-micromanager main window not captured -- "
                 "reconnect hardware first.")
     parts = [f"main_window type: {type(mw).__name__}"]
+    parts.append(
+        "_show_dock_widget: "
+        + ("yes" if callable(getattr(mw, "_show_dock_widget", None)) else "no")
+    )
     dws = getattr(mw, "_dock_widgets", None)
     if isinstance(dws, dict):
-        parts.append("sub-docks: " + (", ".join(dws.keys()) or "(empty)"))
-    else:
-        parts.append("no _dock_widgets dict")
-    meths = [
-        m for m in dir(mw)
-        if any(k in m.lower() for k in ("dock", "widget", "show", "tool"))
-        and not m.startswith("__")
-    ]
-    parts.append("methods: " + (", ".join(meths[:25]) or "(none)"))
+        parts.append("created docks: " + (", ".join(dws.keys()) or "(none)"))
+    actions = _mm_actions(mw)
+    if actions:
+        parts.append("toolbar items: " + ", ".join(actions.keys()))
     return " | ".join(parts)
 
 
