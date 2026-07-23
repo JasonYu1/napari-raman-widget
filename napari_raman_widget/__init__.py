@@ -1,4 +1,4 @@
-"""napari widget for controlling the CNS Raman microscopy rig."""
+"""napari widget for controlling the Raman microscopy rig."""
 from .widget import HardwareWidget
 from .dataset import load_experiment
 

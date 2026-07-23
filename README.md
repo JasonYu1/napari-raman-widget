@@ -33,9 +33,9 @@ switched to on connect.
 pip install -e .
 ```
 
-This assumes `pymmcore-plus`, `raman-control`, `raman-mda-engine`, and
-`cns-control` are already installed in the same environment (they are not
-on PyPI and must be installed from your internal/local sources).
+The editable installation installs the declared dependencies automatically.
+The project-specific `raman-control` and `raman-mda-engine` packages are
+installed from their public GitHub repositories.
 
 The AI assistant is optional. To enable it, also install the Anthropic SDK
 and set an API key (see [AI assistant](#ai-assistant-chat-panel)):
@@ -152,11 +152,10 @@ confirmation dialog (not recommended on live hardware).
 - `napari_raman_widget/resources/napari-raman-widget-manual.pdf` - the user
   manual opened by the Help link (LaTeX source kept alongside).
 
-Hardware-library imports (`pymmcore_plus`, `cns_control`, etc.) are done
-lazily inside methods, so the package imports cleanly on machines without
-the rig. The `anthropic` import used by the chat panel is likewise lazy, so
-the package still imports (and the assistant simply reports it is unavailable)
-when the SDK or API key is missing.
+Hardware control, calibration, point selection, acquisition workflows, and
+spectral processing are included under `napari_raman_widget`. The optional
+assistant reports that it is unavailable when the Anthropic SDK or API key is
+missing.
 
 ## License
 

@@ -89,7 +89,7 @@ HELP = {
     ),
     "cal_thres_input": (
         "Detection threshold used to accept/localize calibration responses "
-        "(interpreted by cns-control.Calibrator)."
+        "(interpreted by Calibrator)."
     ),
     "calibrate_btn": (
         "Acquire a new calibration dataset with the active transformer, then "
