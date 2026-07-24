@@ -193,9 +193,10 @@ def center_manual_selections(
     main_window: Any,
     point_transformer: Any,
     sources: list[Any],
-    vandermonde_model_path: str | Path,
+    vandermonde_model_path: str | Path | None,
     autofocus_object: str | None = "glass",
     center: tuple[float, float] | None = None,
+    direct_pixel_to_stage: bool = False,
 ):
     """Convert manually selected cells into centered stage positions.
 
@@ -244,11 +245,11 @@ def center_manual_selections(
     no_autofocus = _is_no_autofocus(
         autofocus_object
     )
-    coefficients, degree = (
-        load_vandermonde_model(
-            vandermonde_model_path
-        )
-    )
+    coefficients = degree = None
+    if not direct_pixel_to_stage:
+        if vandermonde_model_path is None:
+            raise ValueError("vandermonde_model_path is required")
+        coefficients, degree = load_vandermonde_model(vandermonde_model_path)
     sequence = get_seq_from_napari(
         main_window
     )
@@ -383,13 +384,16 @@ def center_manual_selections(
                 ]
             )
 
-            stage_dx, stage_dy = (
-                apply_vandermonde_model(
+            if direct_pixel_to_stage:
+                # The shared correction below subtracts these values.  Negate
+                # the direct offsets so the demo stage moves toward the cell.
+                stage_dx, stage_dy = -pixel_offset_xy
+            else:
+                stage_dx, stage_dy = apply_vandermonde_model(
                     pixel_offset_xy,
                     coefficients,
                     degree,
                 )
-            )
 
             corrected_positions.append(
                 original_position.replace(

@@ -52,6 +52,16 @@ From inside the repo, with your conda environment active:
 python run_napari.py
 ```
 
+For the hardware-free simulated microscope, use the dedicated demo launcher:
+
+```bash
+python launch_demo_napari.py
+```
+
+The demo launcher connects automatically and does not require a Micro-Manager
+configuration or coordinate-transform model.
+On Windows, you can also double-click `launch_demo_napari.bat`.
+
 ### One-click launcher (Windows)
 
 A `launch_napari.bat` script is included for convenience. Double-click it to:
@@ -141,7 +151,14 @@ confirmation dialog (not recommended on live hardware).
 
 - `run_napari.py` - entry point; just launches napari with the widget.
 - `launch_napari.bat` - Windows one-click launcher (activates env + runs script).
-- `napari_raman_widget/widget.py` - the main `HardwareWidget` class.
+- `napari_raman_widget/hardware_widget.py` - standalone real-hardware widget;
+  it contains no simulator imports or demo-mode branches.
+- `napari_raman_widget/demo_widget.py` - standalone simulated widget used by
+  `launch_demo_napari.py`; it does not inherit from `HardwareWidget`.
+- `napari_raman_widget/widget.py` - compatibility import for existing code that
+  still imports `HardwareWidget` from the old module path.
+- `napari_raman_widget/demo/` - simulated world, camera/DAQ backend, collector,
+  Cellpose preprocessing, and coordinate transformer.
 - `napari_raman_widget/field_help.py` - central hover-tooltip text and the
   `apply_tooltips()` helper.
 - `napari_raman_widget/chat_panel.py` - optional LLM-backed assistant that

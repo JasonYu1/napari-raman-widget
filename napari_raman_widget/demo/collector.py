@@ -11,15 +11,29 @@ from .world import DemoWorld
 class DemoSpectraCollector:
     """Generate spectra with the same point-by-pixel shape as real data."""
 
-    def __init__(self, world: DemoWorld, daq: DemoDAQ) -> None:
+    def __init__(self, world: DemoWorld, daq: DemoDAQ, core=None) -> None:
         self.world = world
         self.daq = daq
+        self.core = core
+
+    def _sync_stage(self) -> None:
+        """Read the authoritative stage state from the shared core."""
+        if self.core is None:
+            return
+        try:
+            x, y = self.core.getXYPosition()
+            self.world.stage_x = float(x)
+            self.world.stage_y = float(y)
+            self.world.stage_z = float(self.core.getPosition())
+        except Exception:
+            return
 
     def collect_spectra_pts(
         self,
         volts: np.ndarray,
         exposure: float,
     ) -> np.ndarray:
+        self._sync_stage()
         volts = np.asarray(volts, dtype=float)
         if volts.ndim == 1:
             volts = volts.reshape(1, 2)
@@ -32,6 +46,29 @@ class DemoSpectraCollector:
                 self.world.render_spectrum(voltage_xy, exposure, sample_index=index)
             )
         return np.asarray(spectra)
+
+    def collect_spectra_image_points(
+        self,
+        points_yx: np.ndarray,
+        exposure: float,
+    ) -> np.ndarray:
+        """Collect directly at napari image points without galvo calibration."""
+        self._sync_stage()
+        points_yx = np.asarray(points_yx, dtype=float)
+        if points_yx.ndim == 1:
+            points_yx = points_yx.reshape(1, 2)
+        if points_yx.ndim != 2 or points_yx.shape[1] != 2:
+            raise ValueError("points_yx must have shape (N, 2).")
+        if len(points_yx):
+            self.world.set_laser_pixel(points_yx[-1])
+        return np.asarray(
+            [
+                self.world.render_spectrum_at_pixel(
+                    point_yx, exposure, sample_index=index
+                )
+                for index, point_yx in enumerate(points_yx)
+            ]
+        )
 
     def get_wavelength(self) -> float:
         return self.world.wavelength_nm

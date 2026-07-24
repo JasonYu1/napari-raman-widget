@@ -13,6 +13,7 @@ authors = [
 ]
 dependencies = [
     "matplotlib",
+    "mda-simulator",
     "napari",
     "napari-broadcastable-points",
     "napari-micromanager",

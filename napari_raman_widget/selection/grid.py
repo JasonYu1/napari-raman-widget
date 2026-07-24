@@ -99,6 +99,8 @@ def grid_point_selections(
     repeats: int = 2,
     use_blank_images: bool = True,
     autofocus_object: str | None = "None",
+    sequence: Any | None = None,
+    block_mda: bool = False,
 ):
     """Generate a stage grid with a fixed Raman point in each field.
 
@@ -131,6 +133,8 @@ def grid_point_selections(
     autofocus_object
         Autofocus target. Use ``None`` or ``"None"`` to create only the
         cell layer.
+    block_mda
+        Wait for the optional grid imaging run to finish before returning.
 
     Returns
     -------
@@ -161,9 +165,11 @@ def grid_point_selections(
     no_autofocus = _is_no_autofocus(
         autofocus_object
     )
-    sequence = get_seq_from_napari(
-        main_window
-    )
+    sequence_was_supplied = sequence is not None
+    if sequence is None:
+        sequence = get_seq_from_napari(
+            main_window
+        )
 
     if not sequence.stage_positions:
         raise ValueError(
@@ -201,10 +207,11 @@ def grid_point_selections(
     new_sequence = sequence.replace(
         stage_positions=grid_positions
     )
-    new_sequence = _update_mda_widget(
-        main_window,
-        new_sequence,
-    )
+    if not sequence_was_supplied:
+        new_sequence = _update_mda_widget(
+            main_window,
+            new_sequence,
+        )
 
     sources = _create_sources(
         viewer,
@@ -248,7 +255,10 @@ def grid_point_selections(
             name="Grid placeholder",
         )
     else:
-        core.run_mda(new_sequence)
+        try:
+            core.run_mda(new_sequence, block=bool(block_mda))
+        except TypeError:
+            core.run_mda(new_sequence)
 
     cell_points = np.asarray(
         [

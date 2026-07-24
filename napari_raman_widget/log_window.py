@@ -38,8 +38,9 @@ class _StdoutRedirector:
         self._orig_stdout = None
 
     def write(self, s):
-        if self._orig_stdout is not None:
-            self._orig_stdout.write(s)
+        original = getattr(self, "_orig_stdout", None)
+        if original is not None and original is not self:
+            original.write(s)
         try:
             self.log_window.append(s)
             from qtpy.QtWidgets import QApplication
@@ -48,8 +49,9 @@ class _StdoutRedirector:
             pass
 
     def flush(self):
-        if self._orig_stdout is not None:
-            self._orig_stdout.flush()
+        original = getattr(self, "_orig_stdout", None)
+        if original is not None and original is not self:
+            original.flush()
 
     def __enter__(self):
         self._orig_stdout = sys.stdout
@@ -57,4 +59,6 @@ class _StdoutRedirector:
         return self
 
     def __exit__(self, *exc):
-        sys.stdout = self._orig_stdout
+        original = getattr(self, "_orig_stdout", None)
+        if sys.stdout is self and original is not None:
+            sys.stdout = original

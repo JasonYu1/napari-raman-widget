@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -75,6 +76,11 @@ def automated_point_selections(
     cellpose_model: str = "cyto2",
     stage_settle_time: float = 5,
     image_settle_time: float = 1,
+    direct_pixel_to_stage: bool = False,
+    block_mda: bool = False,
+    show_masks: bool = False,
+    cellpose_upsample: int = 1,
+    cell_point_refiner: Callable[[np.ndarray], np.ndarray] | None = None,
 ):
     """Segment images and add automatically selected Raman targets.
 
@@ -115,6 +121,9 @@ def automated_point_selections(
         Delay after moving to a stage position.
     image_settle_time
         Delay after acquiring an image.
+    cell_point_refiner
+        Optional demo-only correction applied to Cellpose cell centers. The
+        autofocus/background point, when present, is left unchanged.
 
     Returns
     -------
@@ -137,7 +146,7 @@ def automated_point_selections(
     coefficients = None
     degree = None
 
-    if center_cell:
+    if center_cell and not direct_pixel_to_stage:
         if vandermonde_model_path is None:
             raise ValueError(
                 "vandermonde_model_path is required "
@@ -188,15 +197,38 @@ def automated_point_selections(
 
         images.append(image)
 
-        mask = segment_single_img(
-            image,
-            scale=1,
-            cellpose_model=cellpose_model,
-            circle_center=center,
-            circle_radius=radius,
-        )
+        if int(cellpose_upsample) > 1:
+            from napari_raman_widget.demo.cellpose import (
+                segment_upsampled_demo_region,
+            )
+
+            mask = segment_upsampled_demo_region(
+                image,
+                center_yx=(
+                    center
+                    if center is not None
+                    else tuple(np.asarray(image.shape, dtype=float) / 2)
+                ),
+                radius=radius,
+                upsample=int(cellpose_upsample),
+                cellpose_model=cellpose_model,
+                segmenter=segment_single_img,
+            )
+        else:
+            mask = segment_single_img(
+                image,
+                scale=1,
+                cellpose_model=cellpose_model,
+                circle_center=center,
+                circle_radius=radius,
+            )
         mask = np.asarray(mask)
         masks.append(mask)
+        if show_masks:
+            viewer.add_labels(
+                mask,
+                name=f"Cellpose mask p{position_index}",
+            )
 
         if center_cell:
             requested_points = (
@@ -226,6 +258,21 @@ def automated_point_selections(
                     bkd_threshold=bkd_thres,
                 )
             )
+
+        if cell_point_refiner is not None and selected_points.size:
+            cell_start = 0 if no_autofocus else 1
+            refined_points = np.asarray(selected_points, dtype=float).copy()
+            if len(refined_points) > cell_start:
+                refined_cells = np.asarray(
+                    cell_point_refiner(refined_points[cell_start:]),
+                    dtype=float,
+                )
+                if refined_cells.shape != refined_points[cell_start:].shape:
+                    raise ValueError(
+                        "cell_point_refiner must preserve the cell point shape."
+                    )
+                refined_points[cell_start:] = refined_cells
+            selected_points = refined_points
 
         selected_by_position.append(
             selected_points
@@ -267,13 +314,16 @@ def automated_point_selections(
                 ]
             )
 
-            stage_dx, stage_dy = (
-                apply_vandermonde_model(
+            if direct_pixel_to_stage:
+                # The shared correction below subtracts these values.  Negate
+                # the direct offsets so the demo stage moves toward the cell.
+                stage_dx, stage_dy = -offset_xy
+            else:
+                stage_dx, stage_dy = apply_vandermonde_model(
                     offset_xy,
                     coefficients,
                     degree,
                 )
-            )
 
             corrected_position = (
                 original_position.replace(
@@ -302,6 +352,7 @@ def automated_point_selections(
             corrected_positions=corrected_positions,
             no_autofocus=no_autofocus,
             center=center,
+            block_mda=block_mda,
         )
 
     return _finish_original_position_selection(
@@ -312,6 +363,7 @@ def automated_point_selections(
         selected_by_position=selected_by_position,
         no_autofocus=no_autofocus,
         batch=batch,
+        block_mda=block_mda,
     )
 
 
@@ -337,6 +389,14 @@ def _create_sources(
     )
 
 
+def _run_selection_mda(core: Any, sequence: Any, block_mda: bool) -> Any:
+    """Run the short selection MDA, blocking when the core supports it."""
+    try:
+        return core.run_mda(sequence, block=bool(block_mda))
+    except TypeError:
+        return core.run_mda(sequence)
+
+
 def _finish_centered_selection(
     core: Any,
     viewer: Any,
@@ -347,6 +407,7 @@ def _finish_centered_selection(
     corrected_positions: list[Any],
     no_autofocus: bool,
     center: tuple[float, float] | None,
+    block_mda: bool = False,
 ):
     """Create point sources for independently centered cells."""
     new_sequence = sequence.replace(
@@ -359,7 +420,7 @@ def _finish_centered_selection(
     )
 
     if corrected_positions:
-        core.run_mda(new_sequence)
+        _run_selection_mda(core, new_sequence, block_mda)
 
     if center is None:
         if not images:
@@ -433,6 +494,7 @@ def _finish_original_position_selection(
     selected_by_position: list[np.ndarray],
     no_autofocus: bool,
     batch: bool,
+    block_mda: bool = False,
 ):
     """Create point sources while retaining original positions."""
     if no_autofocus:
@@ -469,7 +531,7 @@ def _finish_original_position_selection(
 
     if batch:
         if repeated_positions:
-            core.run_mda(new_sequence)
+            _run_selection_mda(core, new_sequence, block_mda)
 
         expanded_indices = [
             original_index
@@ -527,7 +589,7 @@ def _finish_original_position_selection(
             new_sequence,
         )
 
-    core.run_mda(sequence)
+    _run_selection_mda(core, sequence, block_mda)
 
     for position_index in range(
         len(sequence.stage_positions)

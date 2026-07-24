@@ -9,6 +9,23 @@ import numpy as np
 from .world import DemoWorld
 
 
+def configure_demo_channels(core: Any) -> None:
+    """Replace an MM demo config's channels with deterministic BF/RM presets."""
+    group = "Channel"
+    if group in {str(name) for name in core.getAvailableConfigGroups()}:
+        core.deleteConfigGroup(group)
+    # Empty configurations are indistinguishable to MMCore: selecting RM
+    # would immediately report BF again.  Use two harmless DemoCamera gain
+    # values so each preset has a genuine, trackable hardware state.  The
+    # FakeDemoCamera override produces the actual image data.
+    camera = str(core.getCameraDevice())
+    gain = float(core.getProperty(camera, "Gain"))
+    core.defineConfig(group, "BF", camera, "Gain", f"{gain:g}")
+    core.defineConfig(group, "RM", camera, "Gain", f"{gain + 1:g}")
+    core.setChannelGroup(group)
+    core.setConfig(group, "BF")
+
+
 class DemoMDARunner:
     """Minimal MDA state exposed through ``core.mda``."""
 
@@ -74,14 +91,8 @@ class DemoCore:
 
     def getAvailableConfigs(self, group: str) -> tuple[str, ...]:
         if group.lower() == "channel":
-            return ("BF", "RM", "GFP")
+            return ("BF", "RM")
         return ()
-
-    def setAutoShutter(self, enabled: bool) -> None:
-        self.world.auto_shutter = bool(enabled)
-
-    def setShutterOpen(self, shutter: str, is_open: bool) -> None:
-        self.world.shutters[str(shutter)] = bool(is_open)
 
     def snap(self) -> np.ndarray:
         self._last_image = self.world.render_image()
