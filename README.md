@@ -85,6 +85,20 @@ You can also pin the launcher to the taskbar or Start menu:
 3. Optionally click Change Icon to give it a recognizable icon.
 4. Right-click the shortcut -> Pin to taskbar (or drag it to the desktop).
 
+### Hardware defaults file
+
+To prefill machine-specific configuration, model, output, wavelength, and
+selection fields whenever the hardware widget opens:
+
+1. Copy `napari_raman_defaults.example.json` to
+   `napari_raman_defaults.json` in the repository root.
+2. Edit the copied file with your paths and preferred values.
+3. Restart napari.
+
+The local defaults filename is ignored by Git. Relative paths inside it are
+resolved relative to the defaults file. To keep the file elsewhere, set the
+`NAPARI_RAMAN_DEFAULTS` environment variable to its full path before launch.
+
 ## Inline help and manual
 
 Two forms of built-in documentation ship with the panel:
@@ -155,6 +169,8 @@ confirmation dialog (not recommended on live hardware).
   it contains no simulator imports or demo-mode branches.
 - `napari_raman_widget/core_guard.py` - runtime retry protection installed on
   the shared `CMMCorePlus` instance before napari-micromanager is loaded.
+- `napari_raman_widget/hardware_defaults.py` - discovers and parses the
+  machine-local hardware defaults file.
 - `napari_raman_widget/demo_widget.py` - standalone simulated widget used by
   `launch_demo_napari.py`; it does not inherit from `HardwareWidget`.
 - `napari_raman_widget/widget.py` - compatibility import for existing code that

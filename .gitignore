@@ -24,6 +24,7 @@ data/
 grid_scan_data_*.zarr/
 *.npy
 model_*.json
+napari_raman_defaults.json
 
 # Jupyter
 .ipynb_checkpoints/

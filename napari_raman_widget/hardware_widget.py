@@ -40,6 +40,7 @@ from .calibration import (
 )
 from .core_guard import install_core_guard
 from .field_help import apply_tooltips
+from .hardware_defaults import load_hardware_defaults, resolve_defaults_path
 from .log_window import LogWindow, _StdoutRedirector
 from .plot_windows import (
     CalibrationPlotWindow,
@@ -1066,6 +1067,8 @@ class HardwareWidget(QWidget):
 
         # Keep references to pop-up windows so they don't get garbage collected.
         self._plot_windows = []
+        self.defaults_path = None
+        self._load_user_defaults()
         # attach hover help text to every field
         apply_tooltips(self)
         # # Poll the stage position periodically for the live X/Y/Z readout.
@@ -1090,6 +1093,80 @@ class HardwareWidget(QWidget):
             return
 
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(pdf_path)))
+
+    def _load_user_defaults(self):
+        """Prefill hardware controls from a machine-local JSON file."""
+        try:
+            defaults_path, values = load_hardware_defaults()
+        except (OSError, ValueError) as error:
+            print(f"[hardware defaults] {error}")
+            return
+
+        if defaults_path is None:
+            return
+
+        self.defaults_path = defaults_path
+        path_fields = {
+            "micro_manager_config": self.cfg_path,
+            "transformer_model": self.tf_path,
+            "vandermonde_model": self.sel_vdm_path,
+            "output_folder": self.out_path,
+            "tracking_config": self.mda_track_cfg_input,
+        }
+        text_fields = {
+            "mda_output_directory": self.mda_dir_input,
+        }
+        number_fields = {
+            "center_wavelength_nm": self.wl_input,
+            "raman_exposure_ms": self.exposure_input,
+            "raman_repeats": self.n_input,
+            "selection_center_x": self.sel_cx_input,
+            "selection_center_y": self.sel_cy_input,
+            "selection_radius": self.sel_r_input,
+        }
+        combo_fields = {
+            "selection_cellpose_model": self.sel_cellpose_combo,
+            "mda_cellpose_model": self.mda_seg_model_combo,
+        }
+
+        for key, widget in path_fields.items():
+            if key in values and values[key] is not None:
+                widget.setText(resolve_defaults_path(values[key], defaults_path))
+        for key, widget in text_fields.items():
+            if key in values and values[key] is not None:
+                widget.setText(str(values[key]))
+        for key, widget in number_fields.items():
+            if key in values and values[key] is not None:
+                try:
+                    number = float(values[key])
+                    if isinstance(widget, QSpinBox):
+                        widget.setValue(int(round(number)))
+                    else:
+                        widget.setValue(number)
+                except (TypeError, ValueError):
+                    print(
+                        f"[hardware defaults] ignored invalid {key}: "
+                        f"{values[key]!r}"
+                    )
+        for key, widget in combo_fields.items():
+            if key not in values or values[key] is None:
+                continue
+            choice = str(values[key])
+            index = widget.findText(choice)
+            if index >= 0:
+                widget.setCurrentIndex(index)
+            else:
+                print(
+                    f"[hardware defaults] ignored unavailable {key}: "
+                    f"{choice!r}"
+                )
+
+        supported = set(path_fields) | set(text_fields) | set(number_fields)
+        supported |= set(combo_fields)
+        unknown = sorted(set(values) - supported)
+        if unknown:
+            print(f"[hardware defaults] ignored unknown keys: {unknown}")
+        print(f"[hardware defaults] loaded {defaults_path}")
 
     # -------- file pickers --------
     def browse_cfg(self):
