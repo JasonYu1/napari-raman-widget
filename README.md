@@ -19,7 +19,7 @@ It also includes three usability features layered on top of the panel:
 
 - **Inline help** - every field has a hover tooltip explaining what it does,
   and a **Help** link at the top of the panel opens the full PDF user manual.
-- **AI assistant** - an optional chat box that maps plain-English commands to
+- **AI assistant** - a built-in chat box that maps plain-English commands to
   the panel's existing actions (see [AI assistant](#ai-assistant-chat-panel)).
 
 All outputs (reference `.npy` files, `grid_scan_*.zarr`, recalibrated models,
@@ -117,7 +117,7 @@ Two forms of built-in documentation ship with the panel:
 
 ## AI assistant (chat panel)
 
-`napari_raman_widget/chat_panel.py` adds an optional chat box that turns
+`napari_raman_widget/chat_panel.py` provides the chat box that turns
 plain-English requests into the panel's existing GUI actions. It never
 touches hardware directly - it drives the same methods the buttons call (and
 a few napari / Micro-Manager operations), so it reuses every existing range
@@ -147,14 +147,8 @@ a confirmation dialog first; read-only queries run automatically.
 3. Set `MODEL` at the top of `chat_panel.py` to a model your account can
    access.
 
-**Enable it in the widget** by adding, near the end of `HardwareWidget.__init__`
-(before the scroll wrapper):
-
-```python
-from .chat_panel import ChatPanel
-self.chat_panel = ChatPanel(self)
-outer.addWidget(self.chat_panel)
-```
+The assistant is created automatically when `HardwareWidget` opens; no widget
+source changes are required.
 
 Adding a new capability is a one-entry change to the `ACTIONS` registry in
 `chat_panel.py`; the API tool schemas are generated from it automatically.
@@ -179,7 +173,7 @@ confirmation dialog (not recommended on live hardware).
   Cellpose preprocessing, and coordinate transformer.
 - `napari_raman_widget/field_help.py` - central hover-tooltip text and the
   `apply_tooltips()` helper.
-- `napari_raman_widget/chat_panel.py` - optional LLM-backed assistant that
+- `napari_raman_widget/chat_panel.py` - built-in LLM-backed assistant that
   drives the panel's actions.
 - `napari_raman_widget/plot_windows.py` - matplotlib pop-up windows.
 - `napari_raman_widget/log_window.py` - streaming stdout log window.

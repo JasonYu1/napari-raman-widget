@@ -21,10 +21,7 @@ Requirements
     pip install anthropic
     set ANTHROPIC_API_KEY in the environment before launching napari.
 
-Integration (in widget.py, near the end of __init__, before the scroll wrap):
-    from .chat_panel import ChatPanel
-    self.chat_panel = ChatPanel(self)
-    outer.addWidget(self.chat_panel)
+``HardwareWidget`` creates this panel automatically when it opens.
 """
 
 import threading
