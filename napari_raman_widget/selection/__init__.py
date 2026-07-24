@@ -12,6 +12,10 @@ from .masks import (
     find_clear_center_point,
     get_n_most_centered_coms,
 )
+from .refine import (
+    refine_cell_source_points,
+    refine_points_to_label_centers,
+)
 
 __all__ = [
     "add_mask_with_hole",
@@ -22,4 +26,6 @@ __all__ = [
     "get_n_most_centered_coms",
     "grid_point_selections",
     "manual_point_selections",
+    "refine_cell_source_points",
+    "refine_points_to_label_centers",
 ]

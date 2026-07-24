@@ -49,12 +49,15 @@ from .plot_windows import (
     ReferenceSpectraWindow,
     SpectrumWindow,
 )
+from .position_specs import resolve_position_specs
+from .qt_messages import install_qt_message_filter
 from .selection import (
     add_mask_with_hole,
     automated_point_selections,
     center_manual_selections,
     grid_point_selections,
     manual_point_selections,
+    refine_cell_source_points,
 )
 from .ui_helpers import make_collapsible
 from .workflows import set_up_new_seq
@@ -68,8 +71,12 @@ class HardwareWidget(QWidget):
         show_ai_assistant: bool = True,
     ):
         super().__init__()
+        install_qt_message_filter()
         self.viewer = viewer
         self.core = None
+        self.core_guard = None
+        self._raman_mda_guard_paused = False
+        self._raman_mda_finish_callback = None
         self.collector = None
         self.daq = None
         self.transformer = None
@@ -505,7 +512,7 @@ class HardwareWidget(QWidget):
         fovx_row.addWidget(QLabel("FOV x (px):"))
         self.grid_fovx_input = QSpinBox()
         self.grid_fovx_input.setRange(0, 100000)
-        self.grid_fovx_input.setValue(256)
+        self.grid_fovx_input.setValue(740)
         fovx_row.addWidget(self.grid_fovx_input)
         grid_layout.addLayout(fovx_row)
 
@@ -513,7 +520,7 @@ class HardwareWidget(QWidget):
         fovy_row.addWidget(QLabel("FOV y (px):"))
         self.grid_fovy_input = QSpinBox()
         self.grid_fovy_input.setRange(0, 100000)
-        self.grid_fovy_input.setValue(256)
+        self.grid_fovy_input.setValue(540)
         fovy_row.addWidget(self.grid_fovy_input)
         grid_layout.addLayout(fovy_row)
 
@@ -708,6 +715,22 @@ class HardwareWidget(QWidget):
         self.run_selection_btn.clicked.connect(self.run_automated_selection)
         sel_layout.addWidget(self.run_selection_btn)
 
+        refine_scale_row = QHBoxLayout()
+        refine_scale_row.addWidget(QLabel("Refinement scale:"))
+        self.refine_scale_input = QSpinBox()
+        self.refine_scale_input.setRange(1, 16)
+        self.refine_scale_input.setValue(4)
+        refine_scale_row.addWidget(self.refine_scale_input)
+        sel_layout.addLayout(refine_scale_row)
+
+        self.refine_cell_points_btn = QPushButton(
+            "Refine cell points to centers"
+        )
+        self.refine_cell_points_btn.clicked.connect(
+            self.refine_selected_cell_points
+        )
+        sel_layout.addWidget(self.refine_cell_points_btn)
+
         manual_row = QHBoxLayout()
         self.run_manual_btn = QPushButton("Manual selection")
         self.run_manual_btn.clicked.connect(self.run_manual_selection)
@@ -737,18 +760,22 @@ class HardwareWidget(QWidget):
         mda_layout.addLayout(mda_dir_row)
 
         afp_row = QHBoxLayout()
-        afp_row.addWidget(QLabel("Autofocus positions (comma-sep):"))
+        afp_row.addWidget(QLabel("Autofocus positions:"))
         self.mda_afp_input = QLineEdit()
         self.mda_afp_input.setText("")
-        self.mda_afp_input.setPlaceholderText("(blank = from selection)")
+        self.mda_afp_input.setPlaceholderText(
+            "N=every Nth; commas=exact; blank=selection"
+        )
         afp_row.addWidget(self.mda_afp_input)
         mda_layout.addLayout(afp_row)
 
         imgp_row = QHBoxLayout()
-        imgp_row.addWidget(QLabel("Imaging positions (comma-sep):"))
+        imgp_row.addWidget(QLabel("Imaging positions:"))
         self.mda_imgp_input = QLineEdit()
         self.mda_imgp_input.setText("")
-        self.mda_imgp_input.setPlaceholderText("(blank = same as autofocus p)")
+        self.mda_imgp_input.setPlaceholderText(
+            "N=every Nth; commas=exact; blank=selection"
+        )
         imgp_row.addWidget(self.mda_imgp_input)
         mda_layout.addLayout(imgp_row)
 
@@ -828,7 +855,7 @@ class HardwareWidget(QWidget):
         self._seg_scale_label = QLabel("Image rescale factor:")
         seg_scale_row.addWidget(self._seg_scale_label)
         self.mda_seg_scale_input = QDoubleSpinBox()
-        self.mda_seg_scale_input.setRange(0.1, 100.0)
+        self.mda_seg_scale_input.setRange(1.0, 100.0)
         self.mda_seg_scale_input.setValue(2.0)
         self.mda_seg_scale_input.setDecimals(1)
         self.mda_seg_scale_input.setSingleStep(0.5)
@@ -1766,9 +1793,13 @@ class HardwareWidget(QWidget):
             from raman_control.andor import AndorSpectraCollector
 
             self.core = CMMCorePlus.instance()
+            cfg = self.cfg_path.text().strip()
             # Patch the shared singleton before napari-micromanager is loaded,
             # so its controller, stage, live, and snap widgets are guarded too.
-            install_core_guard(self.core)
+            self.core_guard = install_core_guard(
+                self.core,
+                config_file=(cfg or None),
+            )
 
             try:
                 self.core.unloadAllDevices()
@@ -1776,7 +1807,6 @@ class HardwareWidget(QWidget):
             except Exception:
                 pass
 
-            cfg = self.cfg_path.text().strip()
             if cfg:
                 self.core.loadSystemConfiguration(cfg)
                 try:
@@ -1812,9 +1842,9 @@ class HardwareWidget(QWidget):
             self.grating_update_btn.setEnabled(True)   
             self.refresh_gratings()
 
-            msg = "Status: connected OK (core retries enabled)"
+            msg = "Status: connected OK (core retries + config recovery enabled)"
             if not cfg:
-                msg += " (no cfg loaded)"
+                msg += " (reload disabled: no cfg loaded)"
             if not tf:
                 msg += " (no transformer)"
             msg += vdm_msg
@@ -2558,6 +2588,70 @@ class HardwareWidget(QWidget):
             except ValueError:
                 pass
 
+    def refine_selected_cell_points(self):
+        """Re-segment selected FOVs and snap only cell points to centroids."""
+        if self.core is None:
+            self.status.setText("Status: not connected")
+            return
+        if self.selection_results is None:
+            self.status.setText(
+                "Status: run automated, manual, or grid selection first"
+            )
+            return
+
+        sources = self.selection_results.get("sources", ())
+        cell_source = next(
+            (
+                source
+                for source in sources
+                if "cell" in str(getattr(source, "name", "")).lower()
+            ),
+            None,
+        )
+        if cell_source is None:
+            self.status.setText("Status: selection has no cells layer")
+            return
+
+        log = LogWindow(title="Refine cell points log")
+        log.show()
+        self._plot_windows.append(log)
+        self.status.setText(
+            "Status: acquiring BF images and refining cell points..."
+        )
+        self.repaint()
+
+        try:
+            with _StdoutRedirector(log):
+                result = refine_cell_source_points(
+                    self.core,
+                    cell_source,
+                    self.selection_results["new_seq"],
+                    center_yx=(
+                        float(self.sel_cy_input.value()),
+                        float(self.sel_cx_input.value()),
+                    ),
+                    radius=float(self.sel_r_input.value()),
+                    max_distance=80.0,
+                    cellpose_model=(
+                        self.sel_cellpose_combo.currentText() or "cyto2"
+                    ),
+                    channel=(self.mda_seg_ch_combo.currentText() or "BF"),
+                    stage_settle_time=0.5,
+                    segmentation_scale=int(self.refine_scale_input.value()),
+                )
+            log.append(
+                "\n--- refinement complete: "
+                f"{result['moved']} moved, "
+                f"{result['unmatched']} unmatched ---\n"
+            )
+            self.status.setText(
+                f"Status: refined {result['matched']}/{result['total']} "
+                f"cell point(s); {result['moved']} moved"
+            )
+        except Exception as e:
+            log.append(f"\n--- refinement failed: {e} ---\n")
+            self.status.setText(f"Status: point refinement failed -- {e}")
+
     def _click_center_cb(self, viewer, event):
         """napari mouse callback: fires on press while armed."""
         if event.button != 1:          # left click only
@@ -2800,43 +2894,24 @@ class HardwareWidget(QWidget):
         sources = self.selection_results["sources"]
         autofocus_p = self.selection_results["autofocus_p"]
         new_seq = self.selection_results["new_seq"]
-        image_p = autofocus_p
+        n_pos = len(new_seq.stage_positions)
         afp_text = self.mda_afp_input.text().strip()
-        if afp_text and afp_text.lower() != "none":
-            try:
-                autofocus_p = np.array(
-                    self._parse_int_list(afp_text, "Autofocus positions")
-                )
-            except ValueError as e:
-                self.status.setText(f"Status: {e}")
-                return
-            n_pos = len(new_seq.stage_positions)
-            bad = [p for p in autofocus_p if p < 0 or p >= n_pos]
-            if bad:
-                self.status.setText(
-                    f"Status: autofocus positions out of range {bad} "
-                    f"(sequence has {n_pos} positions)"
-                )
-                return
-            print(f"[autofocus_p] manual override: {autofocus_p.tolist()}")
-        
         imgp_text = self.mda_imgp_input.text().strip()
+        try:
+            autofocus_values, imaging_values = resolve_position_specs(
+                afp_text,
+                imgp_text,
+                n_pos,
+                autofocus_p,
+            )
+        except ValueError as e:
+            self.status.setText(f"Status: {e}")
+            return
+        autofocus_p = np.asarray(autofocus_values, dtype=int)
+        image_p = np.asarray(imaging_values, dtype=int)
+        if afp_text and afp_text.lower() != "none":
+            print(f"[autofocus_p] manual override: {autofocus_p.tolist()}")
         if imgp_text and imgp_text.lower() != "none":
-            try:
-                image_p = np.array(
-                    self._parse_int_list(imgp_text, "Imaging positions")
-                )
-            except ValueError as e:
-                self.status.setText(f"Status: {e}")
-                return
-            n_pos = len(new_seq.stage_positions)
-            bad = [p for p in image_p if p < 0 or p >= n_pos]
-            if bad:
-                self.status.setText(
-                    f"Status: imaging positions out of range {bad} "
-                    f"(sequence has {n_pos} positions)"
-                )
-                return
             print(f"[image_p] manual override: {image_p.tolist()}")
 
         af_choice = self.selection_results.get(
@@ -3023,13 +3098,45 @@ class HardwareWidget(QWidget):
                     f"[debug] engine._autofocus={engine._autofocus}, "
                     f"engine._segment_and_track={engine._segment_and_track}"
                 )
+                self._pause_core_guard_for_raman_mda()
                 self.core.run_mda(final_seq)
 
             log.append("\n--- MDA started ---\n")
             self.status.setText("Status: Raman MDA started OK")
         except Exception as e:
+            self._resume_core_guard_after_raman_mda()
             log.append(f"\n--- MDA failed: {e} ---\n")
             self.status.setText(f"Status: MDA failed -- {e}")
+
+    def _pause_core_guard_for_raman_mda(self):
+        """Give RamanEngine sole ownership of retries for one MDA run."""
+        guard = self.core_guard
+        if guard is None or self._raman_mda_guard_paused:
+            return
+
+        def _resume_after_finish(*_args):
+            self._resume_core_guard_after_raman_mda()
+
+        events = self.core.mda.events
+        events.sequenceFinished.connect(_resume_after_finish)
+        self._raman_mda_finish_callback = _resume_after_finish
+        guard.pause()
+        self._raman_mda_guard_paused = True
+
+    def _resume_core_guard_after_raman_mda(self):
+        """Restore widget-level retries after Raman MDA finishes or fails."""
+        callback = self._raman_mda_finish_callback
+        self._raman_mda_finish_callback = None
+        if callback is not None and self.core is not None:
+            try:
+                self.core.mda.events.sequenceFinished.disconnect(callback)
+            except Exception:
+                pass
+
+        if self._raman_mda_guard_paused:
+            self._raman_mda_guard_paused = False
+            if self.core_guard is not None:
+                self.core_guard.resume()
 
     def stop_raman_mda(self):
         if self.core is None:

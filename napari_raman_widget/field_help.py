@@ -250,6 +250,16 @@ HELP = {
         "Prepare the MDA widget, run Cellpose-based selection, create source "
         "layers and a new sequence, and store them for Raman MDA."
     ),
+    "refine_scale_input": (
+        "Cellpose downscaling used by Refine cell points. The default 4 is "
+        "faster; use 1 for full-resolution segmentation when cells are small. "
+        "Only the Center/Radius ROI is processed, and the model is reused."
+    ),
+    "refine_cell_points_btn": (
+        "After any selection, acquire fresh BF images and move each cells-layer "
+        "point to the center of its segmented cell. Progress appears in the "
+        "refinement log; autofocus points and stage positions are not changed."
+    ),
     "run_manual_btn": (
         "Create empty point-source layers to hand-click cells. Batch = click "
         "exactly N per FOV; non-batch = click freely. Finish clicking before "
@@ -265,13 +275,15 @@ HELP = {
         "Directory for Raman TIFF/NumPy outputs. Blank uses data/run."
     ),
     "mda_afp_input": (
-        "Optional comma-separated 0-based position indices to autofocus, e.g. "
-        "0,2,5. Blank or 'None' = use the selection. Out-of-range is rejected."
+        "A single positive integer N autofocuses every Nth position starting "
+        "at 0. A comma-separated value such as 0,2,5 uses exactly those "
+        "zero-based indices. Blank or 'None' uses the selection."
     ),
     "mda_imgp_input": (
-        "Optional comma-separated 0-based indices to image. Initialized from "
-        "the selection's autofocus list; set explicitly when overriding "
-        "autofocus differently."
+        "A single positive integer N images every Nth position starting at 0. "
+        "A comma-separated value such as 0,2,5 uses exactly those zero-based "
+        "indices. Blank or 'None' uses the original selection, independently "
+        "of any autofocus override."
     ),
     "mda_raman_off_input": "Axial offset used for the Raman measurement (um).",
     "mda_af_range_input": "Coarse autofocus range. Hidden if autofocus is None.",
@@ -284,7 +296,9 @@ HELP = {
         "Re-segment images and update aiming during the time series."
     ),
     "mda_seg_ch_combo": "Micro-Manager channel used for segmentation.",
-    "mda_seg_scale_input": "Image scale used during segmentation.",
+    "mda_seg_scale_input": (
+        "Image scale used during segmentation. Minimum value is 1."
+    ),
     "mda_seg_model_combo": (
         "Cellpose model for time-series re-segmentation (cyto2 preferred)."
     ),
