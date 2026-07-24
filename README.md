@@ -112,8 +112,8 @@ You can also pin the launcher to the taskbar or Start menu:
 
 ### Hardware defaults file
 
-To prefill machine-specific configuration, model, output, wavelength, and
-selection fields whenever the hardware widget opens:
+To prefill machine-specific configuration, model, wavelength, and selection
+fields whenever the hardware widget opens:
 
 1. Copy `napari_raman_defaults.example.json` to
    `napari_raman_defaults.json` in the repository root.

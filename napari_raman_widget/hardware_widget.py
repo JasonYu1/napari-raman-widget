@@ -591,7 +591,7 @@ class HardwareWidget(QWidget):
         cy_row.addWidget(QLabel("Center Y:"))
         self.sel_cy_input = QSpinBox()
         self.sel_cy_input.setRange(0, 100000)
-        self.sel_cy_input.setValue(740)
+        self.sel_cy_input.setValue(540)
         cy_row.addWidget(self.sel_cy_input)
         sel_layout.addLayout(cy_row)
 
@@ -599,7 +599,7 @@ class HardwareWidget(QWidget):
         cx_row.addWidget(QLabel("Center X:"))
         self.sel_cx_input = QSpinBox()
         self.sel_cx_input.setRange(0, 100000)
-        self.sel_cx_input.setValue(540)
+        self.sel_cx_input.setValue(740)
         cx_row.addWidget(self.sel_cx_input)
         sel_layout.addLayout(cx_row)
 
@@ -1110,7 +1110,6 @@ class HardwareWidget(QWidget):
             "micro_manager_config": self.cfg_path,
             "transformer_model": self.tf_path,
             "vandermonde_model": self.sel_vdm_path,
-            "output_folder": self.out_path,
             "tracking_config": self.mda_track_cfg_input,
         }
         text_fields = {
