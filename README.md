@@ -1,5 +1,7 @@
 # napari-raman-widget
 
+[![CI](https://github.com/JasonYu1/napari-raman-widget/actions/workflows/ci.yml/badge.svg)](https://github.com/JasonYu1/napari-raman-widget/actions/workflows/ci.yml)
+
 A napari dock widget for controlling the Raman microscopy rig.
 
 ## What it does
