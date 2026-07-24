@@ -31,13 +31,23 @@ switched to on connect.
 
 ## Install
 
+For normal use, install the widget directly from GitHub:
+
 ```bash
-pip install -e .
+pip install git+https://github.com/JasonYu1/napari-raman-widget.git
 ```
 
-The editable installation installs the declared dependencies automatically.
-The project-specific `raman-control` and `raman-mda-engine` packages are
-installed from their public GitHub repositories.
+This installs the declared dependencies automatically, including the
+project-specific `raman-control` and `raman-mda-engine` packages from their
+public GitHub repositories.
+
+For development, clone the repository and install it in editable mode:
+
+```bash
+git clone https://github.com/JasonYu1/napari-raman-widget.git
+cd napari-raman-widget
+pip install -e .
+```
 
 The AI assistant is optional. To enable it, also install the Anthropic SDK
 and set an API key (see [AI assistant](#ai-assistant-chat-panel)):
