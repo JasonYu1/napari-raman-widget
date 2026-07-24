@@ -29,6 +29,15 @@ the MDA writer directory) are written relative to the current working
 directory - or an output folder you set in the Loading section, which is
 switched to on connect.
 
+## Supporting your hardware
+
+> **For most users, adapting the platform to different microscope hardware
+> requires changes only in `raman-control`.** Typically, you only need to
+> update its **collector** to communicate with your Raman spectrometer or
+> detector and its **DAQ implementation** to communicate with your DAQ board
+> and connected devices. The napari widget and MDA engine use the existing
+> `raman-control` interface and should not require hardware-specific changes.
+
 ## Install
 
 For normal use, install the widget directly from GitHub:
