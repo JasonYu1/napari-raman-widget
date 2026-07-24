@@ -32,11 +32,14 @@ switched to on connect.
 ## Supporting your hardware
 
 > **For most users, adapting the platform to different microscope hardware
-> requires changes only in `raman-control`.** Typically, you only need to
+> requires changes only in
+> [`raman-control`](https://github.com/JasonYu1/raman-control).** Typically, you only need to
 > update its **collector** to communicate with your Raman spectrometer or
 > detector and its **DAQ implementation** to communicate with your DAQ board
-> and connected devices. The napari widget and MDA engine use the existing
-> `raman-control` interface and should not require hardware-specific changes.
+> and connected devices. The napari widget and
+> [`raman-mda-engine`](https://github.com/JasonYu1/raman-mda-engine) use the
+> existing `raman-control` interface and should not require hardware-specific
+> changes.
 
 ## Install
 
@@ -47,8 +50,9 @@ pip install git+https://github.com/JasonYu1/napari-raman-widget.git
 ```
 
 This installs the declared dependencies automatically, including the
-project-specific `raman-control` and `raman-mda-engine` packages from their
-public GitHub repositories.
+project-specific [`raman-control`](https://github.com/JasonYu1/raman-control)
+and [`raman-mda-engine`](https://github.com/JasonYu1/raman-mda-engine) packages
+from their public GitHub repositories.
 
 For development, clone the repository and install it in editable mode:
 
