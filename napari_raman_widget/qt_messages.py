@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import sys
 
-from qtpy.QtCore import qInstallMessageHandler
-
 
 _installed = False
 _previous_handler = None
@@ -42,6 +40,12 @@ def install_qt_message_filter() -> None:
     """Install the filter once, retaining any pre-existing Qt handler."""
     global _installed, _previous_handler
     if _installed:
+        return
+    try:
+        # Import lazily so headless test/package environments that intentionally
+        # install qtpy without PyQt/PySide can still import this module.
+        from qtpy.QtCore import qInstallMessageHandler
+    except ImportError:
         return
     _previous_handler = qInstallMessageHandler(_message_handler)
     _installed = True
