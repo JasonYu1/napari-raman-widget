@@ -38,6 +38,7 @@ from .calibration import (
     load_vandermonde_model,
     save_vandermonde_model,
 )
+from .core_guard import install_core_guard
 from .field_help import apply_tooltips
 from .log_window import LogWindow, _StdoutRedirector
 from .plot_windows import (
@@ -1689,6 +1690,9 @@ class HardwareWidget(QWidget):
             from raman_control.andor import AndorSpectraCollector
 
             self.core = CMMCorePlus.instance()
+            # Patch the shared singleton before napari-micromanager is loaded,
+            # so its controller, stage, live, and snap widgets are guarded too.
+            install_core_guard(self.core)
 
             try:
                 self.core.unloadAllDevices()
@@ -1732,7 +1736,7 @@ class HardwareWidget(QWidget):
             self.grating_update_btn.setEnabled(True)   
             self.refresh_gratings()
 
-            msg = "Status: connected OK"
+            msg = "Status: connected OK (core retries enabled)"
             if not cfg:
                 msg += " (no cfg loaded)"
             if not tf:

@@ -153,6 +153,8 @@ confirmation dialog (not recommended on live hardware).
 - `launch_napari.bat` - Windows one-click launcher (activates env + runs script).
 - `napari_raman_widget/hardware_widget.py` - standalone real-hardware widget;
   it contains no simulator imports or demo-mode branches.
+- `napari_raman_widget/core_guard.py` - runtime retry protection installed on
+  the shared `CMMCorePlus` instance before napari-micromanager is loaded.
 - `napari_raman_widget/demo_widget.py` - standalone simulated widget used by
   `launch_demo_napari.py`; it does not inherit from `HardwareWidget`.
 - `napari_raman_widget/widget.py` - compatibility import for existing code that
