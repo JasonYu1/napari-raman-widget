@@ -22,6 +22,7 @@ from qtpy.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSpinBox,
+    QApplication,
     QVBoxLayout,
     QWidget,
 )
@@ -41,6 +42,7 @@ from .calibration import (
 from .core_guard import install_core_guard
 from .field_help import apply_tooltips
 from .hardware_defaults import load_hardware_defaults, resolve_defaults_path
+from .hardware_shutdown import shutdown_core_hardware
 from .log_window import LogWindow, _StdoutRedirector
 from .plot_windows import (
     CalibrationPlotWindow,
@@ -77,6 +79,9 @@ class HardwareWidget(QWidget):
         self.core_guard = None
         self._raman_mda_guard_paused = False
         self._raman_mda_finish_callback = None
+        self._raman_mda_thread = None
+        self._active_raman_engine = None
+        self._hardware_shutdown_started = False
         self.collector = None
         self.daq = None
         self.transformer = None
@@ -1958,6 +1963,10 @@ class HardwareWidget(QWidget):
         self.mda_writer = None
         self.px2stage_picker = None
         self.px2stage_xy = None
+
+        app = QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self.shutdown_hardware)
         self.vandermonde = None
         self.status.setText("Status: disconnected")
         self.connect_btn.setEnabled(True)
@@ -3023,6 +3032,7 @@ class HardwareWidget(QWidget):
                     circle_radius=circle_radius,
                     shutter_device="Fluoshutter",
                 )
+                self._active_raman_engine = engine
 
                 self.core.register_mda_engine(engine)
 
@@ -3099,7 +3109,7 @@ class HardwareWidget(QWidget):
                     f"engine._segment_and_track={engine._segment_and_track}"
                 )
                 self._pause_core_guard_for_raman_mda()
-                self.core.run_mda(final_seq)
+                self._raman_mda_thread = self.core.run_mda(final_seq)
 
             log.append("\n--- MDA started ---\n")
             self.status.setText("Status: Raman MDA started OK")
@@ -3154,6 +3164,39 @@ class HardwareWidget(QWidget):
             self.status.setText("Status: stop requested OK")
         except Exception as e:
             self.status.setText(f"Status: stop failed -- {e}")
+
+    def shutdown_hardware(self):
+        """Release MMCore devices before the Napari process can linger."""
+        if self._hardware_shutdown_started:
+            return
+        self._hardware_shutdown_started = True
+
+        if self.core is None:
+            return
+
+        engine = self._active_raman_engine
+        request_shutdown = getattr(engine, "request_shutdown", None)
+        if callable(request_shutdown):
+            try:
+                request_shutdown()
+            except Exception:
+                pass
+
+        print("[shutdown] stopping acquisition and releasing hardware...")
+        result = shutdown_core_hardware(
+            self.core,
+            guard=self.core_guard,
+            mda_thread=self._raman_mda_thread,
+            join_timeout=5.0,
+            release_delay=1.0,
+        )
+        self._resume_core_guard_after_raman_mda()
+
+        if result.errors:
+            for error in result.errors:
+                print(f"[shutdown] {error}")
+        if result.devices_unloaded:
+            print("[shutdown] MMCore devices unloaded; COM ports released")
 
 
 __all__ = ["HardwareWidget"]

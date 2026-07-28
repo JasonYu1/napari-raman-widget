@@ -4,6 +4,10 @@
 
 A napari dock widget for controlling the Raman microscopy rig.
 
+![napari Raman widget showing the simulated microscope sample and Raman control panel](napari-raman-widget-screenshot.PNG)
+
+*The widget running in demonstration mode with the simulated microscope.*
+
 ## What it does
 
 Provides a single collapsible sidebar panel inside napari with sections for:

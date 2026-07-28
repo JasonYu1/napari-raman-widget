@@ -55,6 +55,13 @@ class WidgetSeparationTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("Property,Core,XYStage,XYStage", config)
 
+    def test_hardware_launcher_guarantees_shutdown_cleanup(self) -> None:
+        hardware = (PACKAGE / "hardware_widget.py").read_text(encoding="utf-8")
+        launcher = (PACKAGE.parent / "run_napari.py").read_text(encoding="utf-8")
+        self.assertIn("app.aboutToQuit.connect(self.shutdown_hardware)", hardware)
+        self.assertIn("finally:", launcher)
+        self.assertIn("widget.shutdown_hardware()", launcher)
+
     def test_demo_widget_is_a_standalone_qwidget(self) -> None:
         source = (PACKAGE / "demo_widget.py").read_text(encoding="utf-8")
         tree = ast.parse(source)

@@ -10,4 +10,10 @@ if __name__ == "__main__":
     viewer.axes.visible = False  # napari-micromanager axes crash workaround
     widget = HardwareWidget(viewer)
     viewer.window.add_dock_widget(widget, name="Raman", area="right")
-    napari.run()
+    try:
+        napari.run()
+    finally:
+        # aboutToQuit normally performs this first. The finally block covers
+        # alternate event-loop exits and remains safe because cleanup is
+        # idempotent.
+        widget.shutdown_hardware()
