@@ -1,0 +1,157 @@
+{
+    "metadata": {
+        ".zattrs": {
+            "time": "2026-07-28T19:33:30.529860"
+        },
+        ".zgroup": {
+            "zarr_format": 2
+        },
+        "BF_bkd/.zarray": {
+            "chunks": [
+                256,
+                672
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 5,
+                "cname": "lz4",
+                "id": "blosc",
+                "shuffle": 1
+            },
+            "dtype": "<u2",
+            "fill_value": null,
+            "filters": null,
+            "order": "C",
+            "shape": [
+                1024,
+                1344
+            ],
+            "zarr_format": 2
+        },
+        "BF_bkd/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "Y",
+                "X"
+            ]
+        },
+        "imgs/.zarray": {
+            "chunks": [
+                2,
+                256,
+                672
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 5,
+                "cname": "lz4",
+                "id": "blosc",
+                "shuffle": 1
+            },
+            "dtype": "<u2",
+            "fill_value": null,
+            "filters": null,
+            "order": "C",
+            "shape": [
+                6,
+                1024,
+                1344
+            ],
+            "zarr_format": 2
+        },
+        "imgs/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "idx",
+                "Y",
+                "X"
+            ]
+        },
+        "laser_pos/.zarray": {
+            "chunks": [
+                6,
+                2
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 5,
+                "cname": "lz4",
+                "id": "blosc",
+                "shuffle": 1
+            },
+            "dtype": "<f8",
+            "fill_value": "NaN",
+            "filters": null,
+            "order": "C",
+            "shape": [
+                6,
+                2
+            ],
+            "zarr_format": 2
+        },
+        "laser_pos/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "idx",
+                "volt"
+            ]
+        },
+        "rel_BF_pos/.zarray": {
+            "chunks": [
+                6,
+                2
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 5,
+                "cname": "lz4",
+                "id": "blosc",
+                "shuffle": 1
+            },
+            "dtype": "<f8",
+            "fill_value": "NaN",
+            "filters": null,
+            "order": "C",
+            "shape": [
+                6,
+                2
+            ],
+            "zarr_format": 2
+        },
+        "rel_BF_pos/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "idx",
+                "rel_BF"
+            ]
+        },
+        "specs/.zarray": {
+            "chunks": [
+                6,
+                2,
+                2000
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 5,
+                "cname": "lz4",
+                "id": "blosc",
+                "shuffle": 1
+            },
+            "dtype": "<i4",
+            "fill_value": null,
+            "filters": null,
+            "order": "C",
+            "shape": [
+                6,
+                2,
+                2000
+            ],
+            "zarr_format": 2
+        },
+        "specs/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "idx",
+                "N",
+                "spec_dim"
+            ]
+        }
+    },
+    "zarr_consolidated_format": 1
+}

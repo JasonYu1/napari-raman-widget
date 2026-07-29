@@ -1,0 +1,9 @@
+{
+    "channel_exposures_ms": {},
+    "raman_exposure_ms": 1000.0,
+    "time": "2026-07-29 00:08:31.010189",
+    "z_offset": 4.0,
+    "z_range_max": 3.0,
+    "z_range_min": -3.0,
+    "z_steps": 3
+}
