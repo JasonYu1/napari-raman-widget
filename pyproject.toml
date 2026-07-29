@@ -12,6 +12,7 @@ authors = [
     { name = "Jason W. Yu" },
 ]
 dependencies = [
+    "cellpose",
     "matplotlib",
     "mda-simulator",
     "napari",
