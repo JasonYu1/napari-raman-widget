@@ -35,19 +35,12 @@ switched to on connect.
 
 ## Video demonstrations
 
-These short screen recordings demonstrate the main widget procedures in order:
-
-1. [Load the software](demo_videos/00_loading_software.mp4)
-2. [Connect and disconnect the hardware](demo_videos/01_connect_and_disconnect_hardware.mp4)
-3. [Collect spectra with a Points layer](demo_videos/02_collect_spectra_with_points_layer.mp4)
-4. [Run laser aiming calibration and recalibration](demo_videos/03_laser_aiming_calibration_and_recalibration.mp4)
-5. [Run an axial background scan](demo_videos/04_axial_background_scan.mp4)
-6. [Run spatial mapping](demo_videos/05_spatial_mapping.mp4)
-7. [Generate a stage grid](demo_videos/06_generate_stage_grid.mp4)
-8. [Run automated cell selection](demo_videos/07_automated_cell_selection.mp4)
-9. [Run a Raman MDA](demo_videos/08_run_raman_mda.mp4)
-10. [Generate a dataset](demo_videos/09_generate_dataset.mp4)
-11. [Run pixel-to-stage calibration](demo_videos/10_pixel_to_stage_calibration.mp4)
+Watch the complete procedure series on the
+[napari-raman-widget YouTube channel](https://www.youtube.com/@napari-raman-widget).
+The videos cover software loading, hardware connection, point-based spectrum
+collection, laser aiming calibration, axial background scanning, spatial
+mapping, stage-grid generation, automated cell selection, Raman MDA, dataset
+generation, and pixel-to-stage calibration.
 
 ## Supporting your hardware
 
