@@ -137,6 +137,48 @@ The local defaults filename is ignored by Git. Relative paths inside it are
 resolved relative to the defaults file. To keep the file elsewhere, set the
 `NAPARI_RAMAN_DEFAULTS` environment variable to its full path before launch.
 
+### Slack alerts for Raman MDA failures
+
+Slack alerts are optional and are disabled when no webhook is configured.
+Set an incoming-webhook URL in the environment before launching napari:
+
+```powershell
+$env:NAPARI_RAMAN_SLACK_WEBHOOK_URL = "https://hooks.slack.com/services/..."
+python run_napari.py
+```
+
+For a persistent Windows setting, use `setx` and open a new terminal before
+launching napari:
+
+```powershell
+setx NAPARI_RAMAN_SLACK_WEBHOOK_URL "https://hooks.slack.com/services/..."
+```
+
+Do not put the webhook URL in Git or in the shared defaults JSON. The hardware
+widget sends a channel alert with the traceback only when Raman MDA setup or
+its background acquisition thread raises an exception. Ordinary Python
+warnings remain visible in the log, continue using the normal warning rules,
+and do not trigger Slack.
+
+Other synchronous operations can use the same helper directly:
+
+```python
+from napari_raman_widget.slack_notifications import (
+    send_slack_message,
+    set_webhook_url,
+    slack_notify,
+)
+
+@slack_notify
+def my_operation():
+    ...
+```
+
+`set_webhook_url(...)` provides a process-local override when environment
+configuration is not convenient, and `send_slack_message(...)` sends a manual
+message. Webhook/network failures are logged but never replace the original
+microscope exception.
+
 ## Inline help and manual
 
 Two forms of built-in documentation ship with the panel:
@@ -205,6 +247,8 @@ confirmation dialog (not recommended on live hardware).
   it contains no simulator imports or demo-mode branches.
 - `napari_raman_widget/core_guard.py` - runtime retry protection installed on
   the shared `CMMCorePlus` instance before napari-micromanager is loaded.
+- `napari_raman_widget/slack_notifications.py` - optional webhook alerts for
+  real exceptions raised during background Raman MDA runs.
 - `napari_raman_widget/hardware_defaults.py` - discovers and parses the
   machine-local hardware defaults file.
 - `napari_raman_widget/demo_widget.py` - standalone simulated widget used by

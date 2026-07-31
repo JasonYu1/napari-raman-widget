@@ -23,6 +23,7 @@ dependencies = [
     "pandas",
     "pymmcore-plus",
     "qtpy",
+    "requests",
     "raman-control @ git+https://github.com/JasonYu1/raman-control.git@74b2a965e55e18aa662de1e170e1855e3b5047a7",
     "raman-mda-engine @ git+https://github.com/JasonYu1/raman-mda-engine.git@a90f67e660c2d3b25fdad24bf6b0e70091368aad",
     "scikit-image",

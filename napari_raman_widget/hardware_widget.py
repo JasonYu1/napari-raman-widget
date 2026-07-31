@@ -8,7 +8,7 @@ from pathlib import Path
 import napari
 import numpy as np
 import xarray as xr
-from qtpy.QtCore import Qt, QUrl
+from qtpy.QtCore import Qt, QUrl, Signal
 from qtpy.QtGui import QDesktopServices
 from qtpy.QtWidgets import (
     QCheckBox,
@@ -61,6 +61,10 @@ from .selection import (
     manual_point_selections,
     refine_cell_source_points,
 )
+from .slack_notifications import (
+    notify_exception,
+    run_mda_with_notifications,
+)
 from .spectral_calibration_ui import (
     add_spectral_calibration_loader,
     browse_spectral_calibration,
@@ -72,6 +76,8 @@ from .workflows import set_up_new_seq
 
 
 class HardwareWidget(QWidget):
+    _raman_mda_failed = Signal(str)
+
     def __init__(
         self,
         viewer: napari.Viewer,
@@ -79,6 +85,7 @@ class HardwareWidget(QWidget):
         show_ai_assistant: bool = True,
     ):
         super().__init__()
+        self._raman_mda_failed.connect(self._on_raman_mda_failed)
         install_qt_message_filter()
         self.viewer = viewer
         self.core = None
@@ -3145,14 +3152,29 @@ class HardwareWidget(QWidget):
                     f"engine._segment_and_track={engine._segment_and_track}"
                 )
                 self._pause_core_guard_for_raman_mda()
-                self._raman_mda_thread = self.core.run_mda(final_seq)
+                self._raman_mda_thread = run_mda_with_notifications(
+                    self.core,
+                    final_seq,
+                    on_error=lambda error: self._raman_mda_failed.emit(
+                        f"{type(error).__name__}: {error}"
+                    ),
+                )
 
             log.append("\n--- MDA started ---\n")
             self.status.setText("Status: Raman MDA started OK")
+        except Warning as warning:
+            self._resume_core_guard_after_raman_mda()
+            log.append(f"\n--- MDA warning: {warning} ---\n")
+            self.status.setText(f"Status: MDA warning -- {warning}")
         except Exception as e:
             self._resume_core_guard_after_raman_mda()
+            notify_exception(e, context="Raman MDA startup")
             log.append(f"\n--- MDA failed: {e} ---\n")
             self.status.setText(f"Status: MDA failed -- {e}")
+
+    def _on_raman_mda_failed(self, message):
+        """Display an acquisition-thread failure on the Qt main thread."""
+        self.status.setText(f"Status: Raman MDA failed -- {message}")
 
     def _pause_core_guard_for_raman_mda(self):
         """Give RamanEngine sole ownership of retries for one MDA run."""
