@@ -166,7 +166,11 @@ a confirmation dialog first; read-only queries run automatically.
 
 - Run any panel action (connect, calibrate, collect spectra, run selection,
   run the Raman MDA, generate a dataset, ...).
-- Read state: connection, status, wavelength, grating, and image size.
+- Read state: connection, status, wavelength, grating, image size, selection
+  readiness, and every editable widget setting.
+- Change settings without starting a run, or supply all settings consumed by
+  an action in the same request (including selection `n_x`, aiming pattern,
+  Cellpose options, scan/MDA channels, autofocus, and tracking controls).
 - Create napari Points/Shapes layers.
 - Set camera exposure and channel; snap; start/stop live.
 - Move the stage by a relative offset (clamped by a safety limit), and read

@@ -7,9 +7,9 @@ it drives the GUI, so it reuses every existing range check and validation.
 
 Design
 ------
-* ACTIONS is a small registry. Each entry names a widget method, the fields it
-  may set (attribute + kind), and whether it is read-only (safe) or moves
-  hardware (gated by a confirm dialog).
+* ACTIONS is a registry. Each entry names a widget method, the fields it may
+  set (attribute + kind), and whether it is read-only (safe) or moves hardware
+  (gated by a confirm dialog). WIDGET_PARAMS inventories every editable field.
 * Tool schemas for the Anthropic API are generated from ACTIONS, so adding a
   new capability means adding one registry entry -- no schema by hand.
 * The API call runs on a worker thread (never blocks napari). When the model
@@ -33,6 +33,8 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from .field_help import HELP as _FIELD_HELP
+
 # Model to use. Change this to whatever your Anthropic account can access.
 MODEL = "claude-sonnet-4-5"
 MAX_TOKENS = 1024
@@ -51,6 +53,24 @@ MAX_STAGE_STEP_UM = 500.0
 
 _AF_OBJECTS = ["None", "laser", "software", "quartz", "glass", "cell"]
 _BATCH = ["False", "True"]
+_AIMING_PATTERNS = ["Square", "Circle"]
+_CHANNELS_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "channel": {
+                "type": "string",
+                "description": "Micro-Manager channel config name.",
+            },
+            "exposure_ms": {
+                "type": "number",
+                "description": "Exposure for this channel in ms.",
+            },
+        },
+        "required": ["channel", "exposure_ms"],
+    },
+}
 
 
 def _p(name, attr, kind, description, enum=None, schema=None):
@@ -66,6 +86,303 @@ def _p(name, attr, kind, description, enum=None, schema=None):
     if schema is not None:
         d["schema"] = schema
     return d
+
+
+def _wp(name, attr, kind, *, enum=None, schema=None, description=None):
+    """Parameter backed by a HardwareWidget control.
+
+    Field help is the canonical description shared with the GUI tooltip. This
+    keeps the assistant's vocabulary in sync with what a user sees on hover.
+    """
+    return _p(
+        name,
+        attr,
+        kind,
+        description or _FIELD_HELP.get(attr, f"Widget field '{attr}'."),
+        enum=enum,
+        schema=schema,
+    )
+
+
+# Every editable control in HardwareWidget, grouped into one safe configuration
+# tool below and used by get_state. Action-specific tools repeat the relevant
+# subset so a request such as "run selection with n_x=3" remains one tool call.
+WIDGET_PARAMS = [
+    # Loading
+    _wp("config_file", "cfg_path", "text"),
+    _wp("transformer_model", "tf_path", "text"),
+    _wp("vandermonde_model", "sel_vdm_path", "text"),
+    _wp("output_folder", "out_path", "text"),
+    _wp("center_wavelength_nm", "wl_input", "float"),
+    _wp("grating", "grating_combo", "combo"),
+    # Collect spectra
+    _wp("spectrum_exposure_ms", "exposure_input", "float"),
+    _wp("spectrum_repeats", "n_input", "int"),
+    _wp("spectrum_save_as", "collect_save_input", "text"),
+    # Calibration and reference
+    _wp("calibration_repeats", "cal_n_input", "int"),
+    _wp("calibration_exposure_ms", "cal_exp_input", "float"),
+    _wp("calibration_max_volts", "cal_volts_input", "float"),
+    _wp("calibration_grid_size", "cal_grid_input", "int"),
+    _wp("calibration_threshold", "cal_thres_input", "float"),
+    _wp("show_recalibration", "recal_check", "check"),
+    _wp("recalibrated_model_name", "model_name_input", "text"),
+    _wp("reference_name", "ref_name_input", "text"),
+    _wp("reference_exposure_ms", "ref_exp_input", "float"),
+    _wp("reference_spectra_per_z", "ref_n_input", "int"),
+    _wp("reference_search_range_um", "ref_range_input", "float"),
+    _wp("reference_search_points", "ref_pts_input", "int"),
+    # Spatial map
+    _wp("scan_file_name", "scan_name_input", "text"),
+    _wp("scan_raman_exposure_ms", "scan_exp_input", "float"),
+    _wp("scan_grid_side", "scan_n_input", "int"),
+    _wp("scan_z_offset_um", "scan_z_input", "float"),
+    _wp("scan_z_enabled", "scan_zscan_check", "check"),
+    _wp("scan_z_half_range_um", "scan_zrange_input", "float"),
+    _wp("scan_z_steps", "scan_zsteps_input", "int"),
+    _wp(
+        "scan_channels",
+        "channel_rows",
+        "scan_channels",
+        schema=_CHANNELS_SCHEMA,
+        description=(
+            "Extra spatial-map channels as objects with channel and "
+            "exposure_ms. Replaces the current channel rows; [] clears them."
+        ),
+    ),
+    # Stage grid
+    _wp("grid_autofocus_object", "grid_af_combo", "combo", enum=_AF_OBJECTS),
+    _wp("grid_fov_x_px", "grid_fovx_input", "int"),
+    _wp("grid_fov_y_px", "grid_fovy_input", "int"),
+    _wp("grid_x_half_range_um", "grid_xrange_input", "float"),
+    _wp("grid_y_half_range_um", "grid_yrange_input", "float"),
+    _wp("grid_x_step_um", "grid_xstep_input", "float"),
+    _wp("grid_y_step_um", "grid_ystep_input", "float"),
+    _wp("grid_repeats", "grid_repeats_input", "int"),
+    _wp("grid_use_blank_images", "grid_blank_check", "check"),
+    # Cell selection and aiming pattern. n_x is deliberately named exactly as
+    # it is in the GUI because it is easy to confuse with cells-per-FOV.
+    _wp("mask_center_y_px", "sel_cy_input", "int"),
+    _wp("mask_center_x_px", "sel_cx_input", "int"),
+    _wp("mask_radius_px", "sel_r_input", "int"),
+    _wp("selection_autofocus_object", "sel_af_combo", "combo", enum=_AF_OBJECTS),
+    _wp("cells_per_fov", "sel_npf_input", "int"),
+    _wp("center_cell", "sel_center_cell_check", "check"),
+    _wp("aiming_pattern", "sel_shape_combo", "combo", enum=_AIMING_PATTERNS),
+    _wp("pattern_size_px", "sel_sqsize_input", "float"),
+    _wp("n_x", "sel_sqn_input", "int"),
+    _wp("background_distance_px", "sel_bkd_input", "float"),
+    _wp("batch", "sel_batch_combo", "combo", enum=_BATCH),
+    _wp("selection_cellpose_model", "sel_cellpose_combo", "combo"),
+    _wp("refinement_scale", "refine_scale_input", "int"),
+    # Raman MDA
+    _wp("mda_output_dir", "mda_dir_input", "text"),
+    _wp("autofocus_positions", "mda_afp_input", "text"),
+    _wp("imaging_positions", "mda_imgp_input", "text"),
+    _wp("raman_glass_offset_um", "mda_raman_off_input", "float"),
+    _wp("autofocus_search_range_um", "mda_af_range_input", "float"),
+    _wp("autofocus_search_points", "mda_search_pts_input", "int"),
+    _wp("laser_fine_search_range_um", "mda_fine_range_input", "float"),
+    _wp("laser_fine_search_points", "mda_fine_pts_input", "int"),
+    _wp("segment_and_track", "mda_seg_track_check", "check"),
+    _wp("segment_channel", "mda_seg_ch_combo", "combo"),
+    _wp("segmentation_scale", "mda_seg_scale_input", "float"),
+    _wp("tracking_cellpose_model", "mda_seg_model_combo", "combo"),
+    _wp("crop_segmentation_to_mask", "mda_seg_crop_combo", "combo", enum=_BATCH),
+    _wp("tracking_config", "mda_track_cfg_input", "text"),
+    _wp("exposure_per_cell_ms", "mda_exp_input", "float"),
+    _wp("loops", "mda_loops_input", "int"),
+    _wp("interval_s", "mda_interval_input", "float"),
+    _wp("refocus_every", "mda_refocus_input", "int"),
+    _wp("z_relative_um", "mda_zrel_input", "text"),
+    _wp("raman_z_indices", "mda_rz_input", "text"),
+    _wp(
+        "mda_channels",
+        "mda_channel_rows",
+        "mda_channels",
+        schema=_CHANNELS_SCHEMA,
+        description=(
+            "Extra Raman-MDA imaging channels as objects with channel and "
+            "exposure_ms. Replaces the current channel rows; [] clears them."
+        ),
+    ),
+    # Pixel-to-stage calibration
+    _wp("show_pixel_to_stage", "px2stage_check", "check"),
+    _wp("pixel_to_stage_dataset", "px2stage_ds_path", "text"),
+    _wp("vandermonde_degree", "px2stage_degree_input", "int"),
+    _wp("pixel_to_stage_model_file", "px2stage_name_input", "text"),
+    # DemoWidget-only controls (silently omitted from real-hardware state)
+    _wp(
+        "demonstration_mode",
+        "demo_mode_check",
+        "check",
+        description="Whether the dedicated demo widget uses simulated hardware.",
+    ),
+    _wp(
+        "demo_stage_x_um",
+        "demo_x_input",
+        "float",
+        description="Target X position for the simulated stage in um.",
+    ),
+    _wp(
+        "demo_stage_y_um",
+        "demo_y_input",
+        "float",
+        description="Target Y position for the simulated stage in um.",
+    ),
+    _wp(
+        "demo_stage_z_um",
+        "demo_z_input",
+        "float",
+        description="Target Z position for the simulated stage in um.",
+    ),
+    _wp(
+        "demo_live",
+        "demo_live_check",
+        "check",
+        description="Whether timer-driven simulated live imaging is running.",
+    ),
+    _wp(
+        "demo_cell_motion_speed",
+        "demo_speed_input",
+        "float",
+        description="Simulated cell-motion and live-frame speed multiplier.",
+    ),
+]
+
+CONFIGURABLE_WIDGET_PARAMS = [
+    param
+    for param in WIDGET_PARAMS
+    if param["attr"] not in {"demo_mode_check", "demo_live_check"}
+]
+
+
+def _as_bool(value):
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+        raise ValueError(f"expected a boolean, got {value!r}")
+    return bool(value)
+
+
+def _replace_channel_rows(hw, value, *, mda):
+    if not isinstance(value, list):
+        raise ValueError("channels must be a list")
+
+    normalized = []
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise ValueError(f"channel {index} must be an object")
+        channel = str(item.get("channel") or "").strip()
+        if not channel:
+            raise ValueError(f"channel {index} has no channel name")
+        try:
+            exposure = float(item["exposure_ms"])
+        except (KeyError, TypeError, ValueError) as e:
+            raise ValueError(
+                f"channel {index} needs a numeric exposure_ms"
+            ) from e
+        normalized.append((channel, exposure))
+
+    # Channel combos are populated from the connected Micro-Manager core.
+    # Validate before replacing rows so a typo cannot silently select the
+    # first available channel or destroy the user's current configuration.
+    if normalized:
+        if hw.core is None:
+            raise ValueError("connect hardware before configuring channels")
+        available = list(hw.core.getAvailableConfigs("Channel"))
+        if not mda:
+            available = [channel for channel in available if channel != "BF"]
+        unknown = [channel for channel, _ in normalized if channel not in available]
+        if unknown:
+            raise ValueError(
+                f"unknown channel(s): {', '.join(unknown)}; "
+                f"available: {', '.join(available) or '(none)'}"
+            )
+
+    rows_attr = "mda_channel_rows" if mda else "channel_rows"
+    remove_name = "_remove_mda_channel_row" if mda else "_remove_channel_row"
+    add_name = "_add_mda_channel_row" if mda else "_add_channel_row"
+    rows = getattr(hw, rows_attr)
+    remove = getattr(hw, remove_name)
+    add = getattr(hw, add_name)
+    for entry in list(rows):
+        remove(entry)
+    for channel, exposure in normalized:
+        add(channel=channel, exposure=exposure)
+
+
+def _set_widget_parameter(hw, param, value):
+    """Set one ACTIONS parameter through the corresponding GUI control."""
+    kind = param["kind"]
+    if kind == "scan_channels":
+        _replace_channel_rows(hw, value, mda=False)
+        return
+    if kind == "mda_channels":
+        _replace_channel_rows(hw, value, mda=True)
+        return
+
+    widget = getattr(hw, param["attr"], None)
+    if widget is None:
+        raise AttributeError(f"widget has no field '{param['attr']}'")
+    if kind == "text":
+        widget.setText(str(value))
+    elif kind == "int":
+        widget.setValue(int(round(float(value))))
+    elif kind == "float":
+        widget.setValue(float(value))
+    elif kind == "combo":
+        requested = str(value)
+        widget.setCurrentText(requested)
+        if widget.currentText() != requested:
+            raise ValueError(
+                f"{requested!r} is not available for {param['name']}"
+            )
+    elif kind == "check":
+        widget.setChecked(_as_bool(value))
+    else:
+        raise ValueError(f"unsupported widget field kind {kind!r}")
+
+
+def _read_widget_parameter(hw, param):
+    kind = param["kind"]
+    if kind in {"scan_channels", "mda_channels"}:
+        rows = getattr(hw, param["attr"], [])
+        return [
+            {
+                "channel": entry["combo"].currentText(),
+                "exposure_ms": float(entry["exp"].value()),
+            }
+            for entry in rows
+            if entry["combo"].isEnabled()
+        ]
+
+    widget = getattr(hw, param["attr"], None)
+    if widget is None:
+        raise AttributeError(param["attr"])
+    if kind == "text":
+        return widget.text()
+    if kind in {"int", "float"}:
+        return widget.value()
+    if kind == "combo":
+        return widget.currentText()
+    if kind == "check":
+        return widget.isChecked()
+    raise ValueError(f"unsupported widget field kind {kind!r}")
+
+
+def _read_widget_settings(hw):
+    values = []
+    for param in WIDGET_PARAMS:
+        try:
+            value = _read_widget_parameter(hw, param)
+        except (AttributeError, KeyError, TypeError, ValueError):
+            continue
+        values.append(f"{param['name']}={value!r}")
+    return "; ".join(values)
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +516,21 @@ def _h_center_on_pixel(hw, inp):
     except Exception:
         st = ""
     return f"Moved so pixel (y={y:.0f}, x={x:.0f}) -> mask center. {st}"
+
+
+def _h_arm_click_to_center(hw, inp):
+    enabled = _as_bool(inp.get("enabled", True))
+    hw.click_center_btn.setChecked(enabled)
+    return "Click-to-center armed." if enabled else "Click-to-center disarmed."
+
+
+def _h_set_demo_live(hw, inp):
+    control = getattr(hw, "demo_live_check", None)
+    if control is None:
+        return "This is not the demonstration widget."
+    enabled = _as_bool(inp.get("enabled", True))
+    control.setChecked(enabled)
+    return "Demo live mode started." if enabled else "Demo live mode stopped."
 
 
 def _reveal_dock(dw):
@@ -536,10 +868,29 @@ ACTIONS = [
         "method": None,          # handled specially
         "params": [],
         "description": (
-            "Report connection status, the status-bar text, the current "
-            "center wavelength label and the selected grating. Use this when "
-            "unsure of the rig state before proposing an action."
+            "Report connection status, status text, image geometry, and every "
+            "editable setting in the Raman widget. Use this when unsure of "
+            "the rig state or current GUI values before proposing an action."
         ),
+    },
+    {
+        "name": "configure_widget",
+        "label": "Configure widget settings",
+        "readonly": True,  # changes fields only; does not press a run button
+        "method": "_reapply_toggles",
+        "params": CONFIGURABLE_WIDGET_PARAMS,
+        "description": (
+            "Change any Raman-widget setting without starting an acquisition "
+            "or moving hardware. Include only settings the user requested."
+        ),
+    },
+    {
+        "name": "open_user_manual",
+        "label": "Open user manual",
+        "readonly": True,
+        "method": "open_user_manual",
+        "params": [],
+        "description": "Open the Raman widget's bundled PDF user manual.",
     },
 
     # ---- loading ----
@@ -547,7 +898,12 @@ ACTIONS = [
         "name": "connect_hardware",
         "label": "Connect hardware",
         "method": "connect",
-        "params": [],
+        "params": [
+            _wp("config_file", "cfg_path", "text"),
+            _wp("transformer_model", "tf_path", "text"),
+            _wp("vandermonde_model", "sel_vdm_path", "text"),
+            _wp("output_folder", "out_path", "text"),
+        ],
         "description": "Connect the rig: load config, devices, models.",
     },
     {
@@ -556,6 +912,19 @@ ACTIONS = [
         "method": "disconnect",
         "params": [],
         "description": "Unload all devices and clear session state.",
+    },
+    {
+        "name": "reload_transformer",
+        "label": "Reload transformer models",
+        "method": "reload_transformer",
+        "params": [
+            _wp("transformer_model", "tf_path", "text"),
+            _wp("vandermonde_model", "sel_vdm_path", "text"),
+        ],
+        "description": (
+            "Reload the Raman coordinate transformer and pixel-to-stage "
+            "Vandermonde model from their current paths."
+        ),
     },
     {
         "name": "set_wavelength",
@@ -604,6 +973,29 @@ ACTIONS = [
         ],
         "description": "Sweep the laser grid and fit a new transformer.",
     },
+    {
+        "name": "open_recalibration_selector",
+        "label": "Open calibration point selector",
+        "readonly": True,
+        "method": "open_selector",
+        "params": [],
+        "description": (
+            "Open the manual point selector for the most recent calibration "
+            "dataset."
+        ),
+    },
+    {
+        "name": "save_recalibrated_model",
+        "label": "Save recalibrated model",
+        "method": "save_recalibration",
+        "params": [
+            _wp("model_name", "model_name_input", "text"),
+        ],
+        "description": (
+            "Fit, save, and activate a corrected transformer from the points "
+            "chosen in the manual calibration selector."
+        ),
+    },
 
     # ---- axial background scan ----
     {
@@ -631,6 +1023,19 @@ ACTIONS = [
             _p("exposure_ms", "scan_exp_input", "float", "Raman exposure ms."),
             _p("grid_side", "scan_n_input", "int", "N x N grid side."),
             _p("z_offset", "scan_z_input", "float", "Z offset in um."),
+            _wp("z_scan", "scan_zscan_check", "check"),
+            _wp("z_half_range_um", "scan_zrange_input", "float"),
+            _wp("z_steps", "scan_zsteps_input", "int"),
+            _wp(
+                "extra_channels",
+                "channel_rows",
+                "scan_channels",
+                schema=_CHANNELS_SCHEMA,
+                description=(
+                    "Extra image channels as channel/exposure_ms objects. "
+                    "Replaces the spatial-map channel rows."
+                ),
+            ),
         ],
         "description": (
             "Raman-map the rectangle in the last Shapes layer."
@@ -645,11 +1050,18 @@ ACTIONS = [
         "params": [
             _p("autofocus_object", "grid_af_combo", "combo",
                "Autofocus mode.", enum=_AF_OBJECTS),
+            _wp("fov_x", "grid_fovx_input", "int"),
+            _wp("fov_y", "grid_fovy_input", "int"),
             _p("x_range", "grid_xrange_input", "float", "X half-range um."),
             _p("y_range", "grid_yrange_input", "float", "Y half-range um."),
             _p("x_step", "grid_xstep_input", "float", "X spacing um."),
             _p("y_step", "grid_ystep_input", "float", "Y spacing um."),
             _p("repeats", "grid_repeats_input", "int", "Points/position (>=2)."),
+            _wp("use_blank_images", "grid_blank_check", "check"),
+            _wp("aiming_pattern", "sel_shape_combo", "combo",
+                enum=_AIMING_PATTERNS),
+            _wp("pattern_size_px", "sel_sqsize_input", "float"),
+            _wp("n_x", "sel_sqn_input", "int"),
         ],
         "description": "Build a stage-position grid around the current XY.",
     },
@@ -668,6 +1080,24 @@ ACTIONS = [
         "description": "Show the circular selection mask in the viewer.",
     },
     {
+        "name": "arm_click_to_center",
+        "label": "Arm click to center",
+        "handler": _h_arm_click_to_center,
+        "params": [
+            _p(
+                "enabled",
+                None,
+                "check",
+                "True arms the next viewer click; False disarms it.",
+                schema={"type": "boolean"},
+            ),
+        ],
+        "description": (
+            "Arm or disarm the widget's one-shot viewer click that moves the "
+            "clicked feature to the configured mask center."
+        ),
+    },
+    {
         "name": "run_automated_selection",
         "label": "Run automated cell selection",
         "method": "run_automated_selection",
@@ -678,10 +1108,21 @@ ACTIONS = [
             _p("autofocus_object", "sel_af_combo", "combo",
                "Autofocus mode.", enum=_AF_OBJECTS),
             _p("n_per_fov", "sel_npf_input", "int", "Cells per FOV."),
+            _wp("center_cell", "sel_center_cell_check", "check"),
+            _wp("aiming_pattern", "sel_shape_combo", "combo",
+                enum=_AIMING_PATTERNS),
+            _wp("pattern_size_px", "sel_sqsize_input", "float"),
+            _wp("n_x", "sel_sqn_input", "int"),
+            _wp("background_distance_px", "sel_bkd_input", "float"),
             _p("batch", "sel_batch_combo", "combo",
                "Batch collection.", enum=_BATCH),
+            _wp("cellpose_model", "sel_cellpose_combo", "combo"),
+            _wp("vandermonde_model", "sel_vdm_path", "text"),
         ],
-        "description": "Segment cells in the mask and prepare the MDA.",
+        "description": (
+            "Segment cells in the mask and prepare the MDA. n_x is the "
+            "aiming-pattern subpoint count, not the number of cells per FOV."
+        ),
     },
     {
         "name": "run_manual_selection",
@@ -691,16 +1132,48 @@ ACTIONS = [
             _p("autofocus_object", "sel_af_combo", "combo",
                "Autofocus mode.", enum=_AF_OBJECTS),
             _p("n_per_fov", "sel_npf_input", "int", "Cells per FOV."),
+            _wp("aiming_pattern", "sel_shape_combo", "combo",
+                enum=_AIMING_PATTERNS),
+            _wp("pattern_size_px", "sel_sqsize_input", "float"),
+            _wp("n_x", "sel_sqn_input", "int"),
             _p("batch", "sel_batch_combo", "combo",
                "Batch collection.", enum=_BATCH),
         ],
         "description": "Create empty layers for hand-clicking cells.",
     },
     {
+        "name": "refine_cell_points",
+        "label": "Refine cell points to centers",
+        "method": "refine_selected_cell_points",
+        "params": [
+            _wp("center_y", "sel_cy_input", "int"),
+            _wp("center_x", "sel_cx_input", "int"),
+            _wp("radius", "sel_r_input", "int"),
+            _wp("refinement_scale", "refine_scale_input", "int"),
+            _wp("cellpose_model", "sel_cellpose_combo", "combo"),
+            _wp("segment_channel", "mda_seg_ch_combo", "combo"),
+        ],
+        "description": (
+            "Re-segment selected fields and move existing cell points to the "
+            "nearest segmented cell centers."
+        ),
+    },
+    {
         "name": "center_clicked_cells",
         "label": "Center clicked cells",
         "method": "center_manual_cells",
-        "params": [],
+        "params": [
+            _wp("center_y", "sel_cy_input", "int"),
+            _wp("center_x", "sel_cx_input", "int"),
+            _wp("autofocus_object", "sel_af_combo", "combo",
+                enum=_AF_OBJECTS),
+            _wp("aiming_pattern", "sel_shape_combo", "combo",
+                enum=_AIMING_PATTERNS),
+            _wp("pattern_size_px", "sel_sqsize_input", "float"),
+            _wp("n_x", "sel_sqn_input", "int"),
+            _wp("batch", "sel_batch_combo", "combo", enum=_BATCH),
+            _wp("vandermonde_model", "sel_vdm_path", "text"),
+        ],
         "description": "Turn non-batch clicked cells into centered positions.",
     },
 
@@ -711,15 +1184,51 @@ ACTIONS = [
         "method": "run_raman_mda",
         "params": [
             _p("output_dir", "mda_dir_input", "text", "Writer output dir."),
+            _wp("autofocus_positions", "mda_afp_input", "text"),
+            _wp("imaging_positions", "mda_imgp_input", "text"),
+            _wp("raman_glass_offset_um", "mda_raman_off_input", "float"),
+            _wp("autofocus_search_range_um", "mda_af_range_input", "float"),
+            _wp("autofocus_search_points", "mda_search_pts_input", "int"),
+            _wp("laser_fine_search_range_um", "mda_fine_range_input", "float"),
+            _wp("laser_fine_search_points", "mda_fine_pts_input", "int"),
+            _wp("segment_and_track", "mda_seg_track_check", "check"),
+            _wp("segment_channel", "mda_seg_ch_combo", "combo"),
+            _wp("segmentation_scale", "mda_seg_scale_input", "float"),
+            _wp("cellpose_model", "mda_seg_model_combo", "combo"),
+            _wp("crop_segmentation_to_mask", "mda_seg_crop_combo", "combo",
+                enum=_BATCH),
+            _wp("tracking_config", "mda_track_cfg_input", "text"),
+            _wp("autofocus_object", "sel_af_combo", "combo",
+                enum=_AF_OBJECTS),
+            _wp("batch", "sel_batch_combo", "combo", enum=_BATCH),
             _p("exposure_per_cell_ms", "mda_exp_input", "float",
                "Exposure per cell in ms."),
             _p("loops", "mda_loops_input", "int", "Time points."),
             _p("interval_s", "mda_interval_input", "float",
                "Interval between time points in seconds."),
+            _wp("refocus_every", "mda_refocus_input", "int"),
             _p("z_relative", "mda_zrel_input", "text",
                "Comma-separated relative z planes, e.g. '0, 4'."),
             _p("raman_z_indices", "mda_rz_input", "text",
                "Comma-separated z indices for Raman, e.g. '0'."),
+            _wp("mask_center_y", "sel_cy_input", "int"),
+            _wp("mask_center_x", "sel_cx_input", "int"),
+            _wp("mask_radius", "sel_r_input", "int"),
+            _wp("config_file", "cfg_path", "text"),
+            _wp("aiming_pattern", "sel_shape_combo", "combo",
+                enum=_AIMING_PATTERNS),
+            _wp("pattern_size_px", "sel_sqsize_input", "float"),
+            _wp("n_x", "sel_sqn_input", "int"),
+            _wp(
+                "extra_channels",
+                "mda_channel_rows",
+                "mda_channels",
+                schema=_CHANNELS_SCHEMA,
+                description=(
+                    "Extra imaging channels as channel/exposure_ms objects. "
+                    "Replaces the Raman-MDA channel rows."
+                ),
+            ),
         ],
         "description": (
             "Launch the time-lapse Raman acquisition. Requires a selection "
@@ -733,6 +1242,45 @@ ACTIONS = [
         "method": "stop_raman_mda",
         "params": [],
         "description": "Request a clean stop of the running MDA.",
+    },
+    {
+        "name": "generate_dataset",
+        "label": "Generate dataset",
+        "method": "generate_dataset",
+        "params": [
+            _wp("default_run_dir", "mda_dir_input", "text"),
+            _wp("batch", "sel_batch_combo", "combo", enum=_BATCH),
+        ],
+        "description": (
+            "Open the run-folder chooser and generate the Zarr/DataFrame "
+            "dataset using the selected batch mode."
+        ),
+    },
+    {
+        "name": "open_pixel_to_stage_picker",
+        "label": "Open pixel-to-stage point picker",
+        "readonly": True,
+        "method": "open_pixel_stage_picker",
+        "params": [
+            _wp("dataset", "px2stage_ds_path", "text"),
+        ],
+        "description": (
+            "Open the point picker for a generated dataset in preparation "
+            "for fitting a pixel-to-stage model."
+        ),
+    },
+    {
+        "name": "fit_pixel_to_stage_model",
+        "label": "Fit and save pixel-to-stage model",
+        "method": "fit_and_save_pixel_stage",
+        "params": [
+            _wp("degree", "px2stage_degree_input", "int"),
+            _wp("default_model_file", "px2stage_name_input", "text"),
+        ],
+        "description": (
+            "Fit a Vandermonde model from points in the open picker and show "
+            "the existing save-file dialog."
+        ),
     },
 
     # ---- napari layers (safe: viewer only) ----
@@ -822,6 +1370,45 @@ ACTIONS = [
         "handler": _h_stop_live,
         "params": [],
         "description": "Stop live / sequence acquisition.",
+    },
+
+    # ---- dedicated demonstration-widget controls ----
+    {
+        "name": "move_demo_stage",
+        "label": "Move demonstration stage",
+        "method": "_move_demo_stage",
+        "params": [
+            _wp("x", "demo_x_input", "float",
+                description="Target simulated stage X in um."),
+            _wp("y", "demo_y_input", "float",
+                description="Target simulated stage Y in um."),
+            _wp("z", "demo_z_input", "float",
+                description="Target simulated stage Z in um."),
+        ],
+        "description": "Move the simulated XYZ stage in the demo widget.",
+    },
+    {
+        "name": "snap_demo_image",
+        "label": "Snap demonstration image",
+        "readonly": True,
+        "method": "_snap_demo_image",
+        "params": [],
+        "description": "Refresh the simulated camera image in the demo widget.",
+    },
+    {
+        "name": "set_demo_live",
+        "label": "Set demonstration live mode",
+        "handler": _h_set_demo_live,
+        "params": [
+            _p(
+                "enabled",
+                None,
+                "check",
+                "True starts timer-driven demo live imaging; False stops it.",
+                schema={"type": "boolean"},
+            ),
+        ],
+        "description": "Start or stop live imaging in the demo widget.",
     },
 
     # ---- image geometry (safe queries) ----
@@ -1175,34 +1762,18 @@ class ChatPanel(QWidget):
         handler = action.get("handler")
 
         if handler is None:
-            # button action: set any provided fields (reusing the widgets'
-            # own validation), then call the bound method.
-            applied = []
-            for p in action["params"]:
-                if p["name"] not in tool_input:
-                    continue
-                val = tool_input[p["name"]]
-                w = getattr(hw, p["attr"], None)
-                if w is None:
-                    continue
-                try:
-                    kind = p["kind"]
-                    if kind == "text":
-                        w.setText(str(val))
-                    elif kind == "int":
-                        w.setValue(int(round(float(val))))
-                    elif kind == "float":
-                        w.setValue(float(val))
-                    elif kind == "combo":
-                        w.setCurrentText(str(val))
-                    elif kind == "check":
-                        w.setChecked(bool(val))
-                    applied.append(f"{p['name']}={val}")
-                except Exception as e:
-                    return f"Couldn't set {p['name']} to {val!r}: {e}"
+            # Delay field changes until after confirmation. Declining a run
+            # must leave the user's current GUI configuration untouched.
+            requested = [
+                (param, tool_input[param["name"]])
+                for param in action["params"]
+                if param["name"] in tool_input
+            ]
+            applied = [f"{param['name']}={value}" for param, value in requested]
         else:
             # handler action (layers / camera / stage / MDA): the handler
             # reads tool_input directly, so just summarize the inputs.
+            requested = []
             applied = [f"{k}={v}" for k, v in tool_input.items()]
 
         self._post.emit("tool", f"{action['label']}"
@@ -1220,6 +1791,12 @@ class ChatPanel(QWidget):
                 )
                 if reply != QMessageBox.Yes:
                     return "User declined to run this action."
+
+        for param, value in requested:
+            try:
+                _set_widget_parameter(hw, param, value)
+            except Exception as e:
+                return f"Couldn't set {param['name']} to {value!r}: {e}"
 
         if handler is not None:
             try:
@@ -1245,6 +1822,7 @@ class ChatPanel(QWidget):
     def _read_state(self):
         hw = self.hw
         connected = hw.core is not None
+        selection_ready = getattr(hw, "selection_results", None) is not None
         try:
             status = hw.status.text()
         except Exception:
@@ -1263,7 +1841,9 @@ class ChatPanel(QWidget):
                    f"center (y,x)=({y_size // 2},{x_size // 2})")
         except Exception:
             img = "image size unknown"
+        settings = _read_widget_settings(hw)
         return (
             f"connected={connected}; status={status!r}; "
-            f"wavelength={wl}; grating={grating}; {img}"
+            f"selection_ready={selection_ready}; wavelength={wl}; "
+            f"grating={grating}; {img}; settings: {settings}"
         )

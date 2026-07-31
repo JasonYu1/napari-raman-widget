@@ -1,11 +1,48 @@
 """Pop-up matplotlib windows used to display calibration, spectra, and scans."""
 import numpy as np
 from napari_raman_widget.spectra import filter_mean
+from napari_raman_widget.spectral_calibration import (
+    PixelToWavenumberCalibration,
+    save_pixel_to_wavenumber_calibration,
+)
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
-    QHBoxLayout, QLabel, QMainWindow, QPushButton, QSlider, QVBoxLayout,
-    QWidget,
+    QCheckBox, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QMainWindow,
+    QMessageBox, QPushButton, QSlider, QSpinBox, QVBoxLayout, QWidget,
 )
+
+
+def _spectral_x(length, calibration, show_pixels):
+    pixels = np.arange(length, dtype=float)
+    if calibration is None or show_pixels:
+        return pixels
+    return calibration.transform(pixels)
+
+
+def _set_spectral_line_axis(ax, lines, calibration, show_pixels):
+    """Update spectrum line x data and label for the selected axis units."""
+    for line in lines:
+        line.set_xdata(
+            _spectral_x(len(line.get_ydata()), calibration, show_pixels)
+        )
+    if calibration is not None and not show_pixels:
+        ax.set_xlabel("Raman shift (cm⁻¹)")
+    else:
+        ax.set_xlabel("Pixel")
+    ax.relim()
+    ax.autoscale_view()
+
+
+def _make_pixel_axis_checkbox(calibration, callback):
+    checkbox = QCheckBox("Show pixels")
+    checkbox.setChecked(calibration is None)
+    checkbox.setEnabled(calibration is not None)
+    if calibration is None:
+        checkbox.setToolTip("Load a pixel-to-wavenumber calibration first")
+    else:
+        checkbox.setToolTip("Use detector pixels instead of Raman shift")
+    checkbox.toggled.connect(callback)
+    return checkbox
 
 
 class CalibrationPlotWindow(QMainWindow):
@@ -43,12 +80,25 @@ class CalibrationPlotWindow(QMainWindow):
 class SpectrumWindow(QMainWindow):
     """Pop-up plot window with a toggle between mean and all-traces views."""
 
-    def __init__(self, spec, title="Spectrum"):
+    def __init__(
+        self,
+        spec,
+        title="Spectrum",
+        spectral_calibration=None,
+        calibration_changed=None,
+    ):
         super().__init__()
         self.setWindowTitle(title)
         self.resize(700, 550)
         self.spec = np.asarray(spec)
         self._show_mean = True
+        self.spectral_calibration = spectral_calibration
+        self._calibration_changed = calibration_changed
+        self._calibrating = False
+        self._pending_pixel = None
+        self._calibration_pixels = []
+        self._known_shifts = []
+        self._show_pixels_before_calibration = spectral_calibration is None
         import matplotlib
         matplotlib.use("QtAgg")
         from matplotlib.figure import Figure
@@ -57,9 +107,51 @@ class SpectrumWindow(QMainWindow):
         )
         central = QWidget()
         layout = QVBoxLayout(central)
+        controls = QHBoxLayout()
         self.toggle_btn = QPushButton("Show all traces")
         self.toggle_btn.clicked.connect(self._toggle)
-        layout.addWidget(self.toggle_btn)
+        controls.addWidget(self.toggle_btn)
+        self.pixel_axis_check = _make_pixel_axis_checkbox(
+            spectral_calibration, self._redraw
+        )
+        controls.addWidget(self.pixel_axis_check)
+        self.calibration_btn = QPushButton("Pixel-to-wavenumber calibration")
+        self.calibration_btn.clicked.connect(self._start_calibration)
+        controls.addWidget(self.calibration_btn)
+        layout.addLayout(controls)
+
+        self.calibration_controls = QWidget()
+        calibration_layout = QHBoxLayout(self.calibration_controls)
+        calibration_layout.setContentsMargins(0, 0, 0, 0)
+        calibration_layout.addWidget(QLabel("Polynomial degree:"))
+        self.calibration_degree_input = QSpinBox()
+        initial_degree = (
+            spectral_calibration.degree
+            if spectral_calibration is not None
+            else 2
+        )
+        self.calibration_degree_input.setRange(1, max(9, initial_degree))
+        self.calibration_degree_input.setValue(initial_degree)
+        self.calibration_degree_input.setToolTip(
+            "Degree d requires at least d + 1 calibration peaks. "
+            "Degree 2 is recommended unless residual errors justify a "
+            "higher degree."
+        )
+        self.calibration_degree_input.valueChanged.connect(
+            self._on_calibration_degree_changed
+        )
+        calibration_layout.addWidget(self.calibration_degree_input)
+        self.calibration_help = QLabel()
+        self.calibration_help.setWordWrap(True)
+        calibration_layout.addWidget(self.calibration_help, 1)
+        self.finish_calibration_btn = QPushButton("Finish and save")
+        self.finish_calibration_btn.clicked.connect(self._finish_calibration)
+        calibration_layout.addWidget(self.finish_calibration_btn)
+        self.cancel_calibration_btn = QPushButton("Cancel")
+        self.cancel_calibration_btn.clicked.connect(self._cancel_calibration)
+        calibration_layout.addWidget(self.cancel_calibration_btn)
+        self.calibration_controls.hide()
+        layout.addWidget(self.calibration_controls)
         self.fig = Figure(figsize=(7, 4.5))
         self.canvas = FigureCanvasQTAgg(self.fig)
         self.toolbar = NavigationToolbar2QT(self.canvas, self)
@@ -67,6 +159,8 @@ class SpectrumWindow(QMainWindow):
         layout.addWidget(self.toolbar)
         layout.addWidget(self.canvas)
         self.setCentralWidget(central)
+        self.canvas.mpl_connect("button_press_event", self._on_calibration_click)
+        self.canvas.mpl_connect("key_press_event", self._on_calibration_key)
         self._redraw()
 
     def _toggle(self):
@@ -79,24 +173,248 @@ class SpectrumWindow(QMainWindow):
     def _redraw(self):
         import matplotlib.cm as cm
         self.ax.clear()
+        lines = []
         if self._show_mean:
-            self.ax.plot(filter_mean(self.spec))
+            lines.extend(self.ax.plot(filter_mean(self.spec)))
         else:
             n = self.spec.shape[0]
             colors = cm.viridis(np.linspace(0, 1, n))
             for i in range(n):
-                self.ax.plot(self.spec[i], color=colors[i], linewidth=0.8)
-        self.ax.set_xlabel("Pixels")
+                lines.extend(
+                    self.ax.plot(
+                        self.spec[i], color=colors[i], linewidth=0.8
+                    )
+                )
+        _set_spectral_line_axis(
+            self.ax,
+            lines,
+            self.spectral_calibration,
+            self.pixel_axis_check.isChecked(),
+        )
         self.ax.set_ylabel("Intensity (a.u.)")
         self.ax.set_title(self.windowTitle())
+        if self._calibrating:
+            self._draw_calibration_artists()
         self.fig.tight_layout()
         self.canvas.draw_idle()
+
+    def _start_calibration(self):
+        self._calibrating = True
+        self._show_pixels_before_calibration = (
+            self.pixel_axis_check.isChecked()
+        )
+        self._pending_pixel = None
+        self._calibration_pixels = []
+        self._known_shifts = []
+        self._show_mean = True
+        self.toggle_btn.setText("Show all traces")
+        self.toggle_btn.setEnabled(False)
+        self.calibration_btn.setEnabled(False)
+        self.pixel_axis_check.setChecked(True)
+        self.pixel_axis_check.setEnabled(False)
+        self.calibration_controls.show()
+        self.finish_calibration_btn.setEnabled(False)
+        self._update_calibration_progress()
+        self._redraw()
+        self.canvas.setFocusPolicy(Qt.StrongFocus)
+        self.canvas.setFocus()
+
+    def _spectrum_for_calibration(self):
+        return np.asarray(filter_mean(self.spec), dtype=float)
+
+    def _nearest_peak_pixel(self, x):
+        y = self._spectrum_for_calibration()
+        center = int(np.clip(round(x), 0, len(y) - 1))
+        start = max(0, center - 8)
+        stop = min(len(y), center + 9)
+        return start + int(np.nanargmax(y[start:stop]))
+
+    def _on_calibration_click(self, event):
+        if (
+            not self._calibrating
+            or event.inaxes is not self.ax
+            or event.xdata is None
+            or event.button != 1
+        ):
+            return
+        self._pending_pixel = self._nearest_peak_pixel(event.xdata)
+        self._set_calibration_help(
+            f"Selected peak at pixel {self._pending_pixel}. "
+            "Press Enter to enter its known Raman shift."
+        )
+        self._redraw()
+        self.canvas.setFocus()
+
+    def _on_calibration_key(self, event):
+        if not self._calibrating:
+            return
+        if event.key in ("enter", "return"):
+            self._accept_pending_calibration_point()
+        elif event.key == "escape":
+            self._cancel_calibration()
+
+    def _accept_pending_calibration_point(self):
+        if self._pending_pixel is None:
+            self._set_calibration_help("Click a peak before pressing Enter.")
+            return
+        pixel = int(self._pending_pixel)
+        if pixel in self._calibration_pixels:
+            QMessageBox.warning(
+                self,
+                "Duplicate calibration pixel",
+                f"Pixel {pixel} is already in this calibration.",
+            )
+            return
+        shift, accepted = QInputDialog.getDouble(
+            self,
+            "Known Raman shift",
+            f"Raman shift for pixel {pixel} (cm⁻¹):",
+            0.0,
+            -10_000_000.0,
+            10_000_000.0,
+            4,
+        )
+        if not accepted:
+            return
+        self._calibration_pixels.append(pixel)
+        self._known_shifts.append(float(shift))
+        self._pending_pixel = None
+        self._update_calibration_progress()
+        self._redraw()
+        self.canvas.setFocus()
+
+    def _on_calibration_degree_changed(self, _degree):
+        if self._calibrating:
+            self._update_calibration_progress()
+
+    def _update_calibration_progress(self):
+        degree = self.calibration_degree_input.value()
+        required = degree + 1
+        count = len(self._calibration_pixels)
+        self.finish_calibration_btn.setEnabled(count >= required)
+        if count == 0:
+            self._set_calibration_help(
+                f"Degree {degree} needs at least {required} peaks. "
+                "Click near a peak; it snaps to the local maximum. "
+                "Press Enter, then type its known Raman shift."
+            )
+            return
+        if count >= required:
+            suffix = "You may add more peaks, or finish and save."
+        else:
+            suffix = f"Add {required - count} more calibration peak(s)."
+        self._set_calibration_help(f"Accepted {count} point(s). {suffix}")
+
+    def _draw_calibration_artists(self):
+        y = self._spectrum_for_calibration()
+        if self._calibration_pixels:
+            pixels = np.asarray(self._calibration_pixels, dtype=int)
+            self.ax.scatter(
+                pixels,
+                y[pixels],
+                marker="o",
+                s=55,
+                facecolors="none",
+                edgecolors="tab:green",
+                linewidths=1.5,
+                zorder=5,
+            )
+            for pixel, shift in zip(
+                self._calibration_pixels, self._known_shifts
+            ):
+                self.ax.annotate(
+                    f"{shift:g} cm⁻¹",
+                    (pixel, y[pixel]),
+                    xytext=(4, 5),
+                    textcoords="offset points",
+                    fontsize=8,
+                    color="tab:green",
+                )
+        if self._pending_pixel is not None:
+            pixel = int(self._pending_pixel)
+            self.ax.scatter(
+                [pixel], [y[pixel]], marker="x", s=70,
+                color="tab:red", linewidths=1.8, zorder=6,
+            )
+
+    def _set_calibration_help(self, text):
+        self.calibration_help.setText(text)
+
+    def _finish_calibration(self):
+        degree = self.calibration_degree_input.value()
+        required = degree + 1
+        if len(self._calibration_pixels) < required:
+            QMessageBox.warning(
+                self,
+                "More calibration points required",
+                f"A degree-{degree} calibration requires at least "
+                f"{required} peaks.",
+            )
+            return
+        try:
+            calibration = PixelToWavenumberCalibration(
+                self._calibration_pixels,
+                self._known_shifts,
+                degree=degree,
+            )
+        except ValueError as error:
+            QMessageBox.warning(self, "Invalid calibration", str(error))
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save pixel-to-wavenumber calibration",
+            "pixel_to_wavenumber_calibration.json",
+            "JSON files (*.json);;All files (*)",
+        )
+        if not path:
+            return
+        try:
+            saved_path = save_pixel_to_wavenumber_calibration(
+                path, calibration
+            )
+        except (OSError, ValueError) as error:
+            QMessageBox.critical(
+                self, "Could not save calibration", str(error)
+            )
+            return
+        self.spectral_calibration = calibration
+        if self._calibration_changed is not None:
+            self._calibration_changed(calibration, saved_path)
+        self._stop_calibration(show_wavenumber=True)
+        QMessageBox.information(
+            self,
+            "Calibration saved",
+            f"Saved pixel-to-wavenumber calibration to:\n{saved_path}",
+        )
+
+    def _cancel_calibration(self):
+        self._stop_calibration(show_wavenumber=False)
+
+    def _stop_calibration(self, show_wavenumber):
+        self._calibrating = False
+        self._pending_pixel = None
+        self.calibration_controls.hide()
+        self.toggle_btn.setEnabled(True)
+        self.calibration_btn.setEnabled(True)
+        self.pixel_axis_check.setEnabled(
+            self.spectral_calibration is not None
+        )
+        if show_wavenumber and self.spectral_calibration is not None:
+            self.pixel_axis_check.setChecked(False)
+        elif self.spectral_calibration is not None:
+            self.pixel_axis_check.setChecked(
+                self._show_pixels_before_calibration
+            )
+        self._redraw()
 
 
 class ReferenceSpectraWindow(QMainWindow):
     """Pop-up showing reference spectra colored by z, with a colorbar."""
 
-    def __init__(self, all_raman, zs, title="Reference spectra"):
+    def __init__(
+        self, all_raman, zs, title="Reference spectra",
+        spectral_calibration=None,
+    ):
         super().__init__()
         self.setWindowTitle(title)
         self.resize(800, 600)
@@ -110,6 +428,11 @@ class ReferenceSpectraWindow(QMainWindow):
         from matplotlib.colors import Normalize
         central = QWidget()
         layout = QVBoxLayout(central)
+        self.spectral_calibration = spectral_calibration
+        self.pixel_axis_check = _make_pixel_axis_checkbox(
+            spectral_calibration, self._update_spectral_axis
+        )
+        layout.addWidget(self.pixel_axis_check)
         self.fig = Figure(figsize=(8, 5.5))
         self.canvas = FigureCanvasQTAgg(self.fig)
         self.toolbar = NavigationToolbar2QT(self.canvas, self)
@@ -118,10 +441,16 @@ class ReferenceSpectraWindow(QMainWindow):
         n = len(zs)
         norm = Normalize(vmin=float(zs.min()), vmax=float(zs.max()))
         cmap = cm.viridis
+        self._spectral_lines = []
         for i in range(n):
             color = cmap(norm(zs[i]))
-            ax.plot(filter_mean(all_raman[i]), color=color, linewidth=0.9)
-        ax.set_xlabel("Pixels")
+            self._spectral_lines.extend(
+                ax.plot(
+                    filter_mean(all_raman[i]), color=color, linewidth=0.9
+                )
+            )
+        self.ax = ax
+        self._update_spectral_axis()
         ax.set_ylabel("Intensity (a.u.)")
         ax.set_title(title)
         sm = cm.ScalarMappable(norm=norm, cmap=cmap)
@@ -132,6 +461,17 @@ class ReferenceSpectraWindow(QMainWindow):
         layout.addWidget(self.toolbar)
         layout.addWidget(self.canvas)
         self.setCentralWidget(central)
+
+    def _update_spectral_axis(self, _checked=None):
+        _set_spectral_line_axis(
+            self.ax,
+            self._spectral_lines,
+            self.spectral_calibration,
+            self.pixel_axis_check.isChecked(),
+        )
+        if hasattr(self, "canvas"):
+            self.fig.tight_layout()
+            self.canvas.draw_idle()
 
 
 class GridScanPlotWindow(QMainWindow):
@@ -148,7 +488,9 @@ class GridScanPlotWindow(QMainWindow):
 
     FIXED = ["BF", "end_BF"]
 
-    def __init__(self, ds, title="Grid scan result"):
+    def __init__(
+        self, ds, title="Grid scan result", spectral_calibration=None
+    ):
         super().__init__()
         self.setWindowTitle(title)
         self.ds = ds
@@ -156,6 +498,7 @@ class GridScanPlotWindow(QMainWindow):
         self._sel = 0
         self._scat = None
         self._hl = None
+        self.spectral_calibration = spectral_calibration
         import matplotlib
         matplotlib.use("QtAgg")
         from matplotlib.figure import Figure
@@ -183,6 +526,21 @@ class GridScanPlotWindow(QMainWindow):
         btn.clicked.connect(self._toggle_mode)
         self._mode_btn = btn
         return btn
+
+    def _make_spectral_controls(self):
+        controls = QHBoxLayout()
+        controls.addWidget(self._make_mode_button())
+        self.pixel_axis_check = _make_pixel_axis_checkbox(
+            self.spectral_calibration, self._on_spectral_axis_changed
+        )
+        controls.addWidget(self.pixel_axis_check)
+        controls.addStretch(1)
+        return controls
+
+    def _on_spectral_axis_changed(self, _checked=None):
+        self._draw_spec()
+        if hasattr(self, "canvas"):
+            self.canvas.draw_idle()
 
     def _add_grid_scatter(self, ax):
         """Overlay the grid points on ax as a pickable, low-alpha scatter,
@@ -250,10 +608,12 @@ class GridScanPlotWindow(QMainWindow):
             z_val = self._z_vals[self._z_slider.value()]
             title += f"  z={z_val:+.2f} um"
         self._spec_line.set_ydata(y)
-        if len(y) != len(self._spec_line.get_xdata()):
-            self._spec_line.set_xdata(np.arange(len(y)))
-        self._ax_spec.relim()
-        self._ax_spec.autoscale_view()
+        _set_spectral_line_axis(
+            self._ax_spec,
+            [self._spec_line],
+            self.spectral_calibration,
+            self.pixel_axis_check.isChecked(),
+        )
         self._ax_spec.set_title(title)
 
     # ------------------------------------------------------------------ #
@@ -291,10 +651,10 @@ class GridScanPlotWindow(QMainWindow):
         (self._spec_line,) = self._ax_spec.plot(self._specs.mean(axis=0))
         self._ax_spec.set_xlabel("Pixels")
         self._ax_spec.set_ylabel("Intensity (a.u.)")
-        self._draw_spec()
         central = QWidget()
         layout = QVBoxLayout(central)
-        layout.addWidget(self._make_mode_button())
+        layout.addLayout(self._make_spectral_controls())
+        self._draw_spec()
         layout.addWidget(self.toolbar)
         layout.addWidget(self.canvas)
         self.setCentralWidget(central)
@@ -319,7 +679,7 @@ class GridScanPlotWindow(QMainWindow):
         central = QWidget()
         main_layout = QVBoxLayout(central)
         # --- top controls: mode button + z slider ---
-        main_layout.addWidget(self._make_mode_button())
+        main_layout.addLayout(self._make_spectral_controls())
         slider_row = QHBoxLayout()
         self._z_label = QLabel(
             f"z = {self._z_vals[0]:+.2f} um  (1/{self._n_z})"
@@ -388,12 +748,15 @@ class DatasetViewerWindow(QMainWindow):
     """Interactive viewer: BF image with laser scatter + spectrum,
     Qt sliders for t/p/z."""
 
-    def __init__(self, df, da, title="Dataset viewer"):
+    def __init__(
+        self, df, da, title="Dataset viewer", spectral_calibration=None
+    ):
         super().__init__()
         self.setWindowTitle(title)
         self.resize(1200, 650)
         self.df = df
         self.da = da
+        self.spectral_calibration = spectral_calibration
         self.bf = da.sel(c=0).values  # (t, p, z, y, x)
         self._pt_selected = 0
         import matplotlib
@@ -427,6 +790,10 @@ class DatasetViewerWindow(QMainWindow):
         ]:
             slider_layout.addWidget(label)
             slider_layout.addWidget(slider, 1)
+        self.pixel_axis_check = _make_pixel_axis_checkbox(
+            spectral_calibration, self._update_spectral_axis
+        )
+        slider_layout.addWidget(self.pixel_axis_check)
         main_layout.addLayout(slider_layout)
         # --- Figure ---
         self.fig = Figure(figsize=(12, 5))
@@ -471,7 +838,7 @@ class DatasetViewerWindow(QMainWindow):
         (self.spec_line,) = self.ax_spec.plot(
             spec0, color=colors[0] if n else "C0"
         )
-        self.ax_spec.set_xlabel("pixel")
+        self._update_spectral_axis()
         self.ax_spec.set_ylabel("intensity (a.u.)")
         self.ax_spec.set_title(f"pt={self._pt_selected}")
         self.fig.tight_layout()
@@ -545,9 +912,18 @@ class DatasetViewerWindow(QMainWindow):
         except KeyError:
             return
         self.spec_line.set_ydata(y)
-        if len(y) != len(self.spec_line.get_xdata()):
-            self.spec_line.set_xdata(np.arange(len(y)))
+        self._update_spectral_axis()
         self.spec_line.set_color(self._pt_colors(n)[min(pt, n - 1)])
-        self.ax_spec.relim()
-        self.ax_spec.autoscale_view()
         self.ax_spec.set_title(f"pt={pt}")
+
+    def _update_spectral_axis(self, _checked=None):
+        if not hasattr(self, "spec_line"):
+            return
+        _set_spectral_line_axis(
+            self.ax_spec,
+            [self.spec_line],
+            self.spectral_calibration,
+            self.pixel_axis_check.isChecked(),
+        )
+        if hasattr(self, "canvas"):
+            self.canvas.draw_idle()

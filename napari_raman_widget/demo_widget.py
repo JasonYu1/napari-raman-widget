@@ -58,6 +58,12 @@ from .selection import (
     manual_point_selections,
     refine_cell_source_points,
 )
+from .spectral_calibration_ui import (
+    add_spectral_calibration_loader,
+    browse_spectral_calibration,
+    load_spectral_calibration,
+    spectral_calibration_created,
+)
 from .ui_helpers import make_collapsible
 from .workflows import set_up_new_seq
 
@@ -144,6 +150,8 @@ class DemoWidget(QWidget):
         self.cfg_path = QLineEdit()
         self.tf_path = QLineEdit()
         self.sel_vdm_path = QLineEdit()
+
+        add_spectral_calibration_loader(self, loading_layout)
 
         loading_layout.addWidget(
             QLabel("Output folder (optional, applied on connect):")
@@ -1294,6 +1302,17 @@ class DemoWidget(QWidget):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(pdf_path)))
 
     # -------- file pickers --------
+    def browse_spectral_calibration(self):
+        browse_spectral_calibration(self)
+
+    def load_spectral_calibration(
+        self, _checked=False, *, show_success=True
+    ):
+        return load_spectral_calibration(self, show_success=show_success)
+
+    def _spectral_calibration_created(self, calibration, path):
+        spectral_calibration_created(self, calibration, path)
+
     def browse_cfg(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Select Micro-Manager config", "",
@@ -1750,7 +1769,10 @@ class DemoWidget(QWidget):
             log.append(f"\n--- dataset ready: {len(df)} spectra ---\n")
 
             win = DatasetViewerWindow(
-                df, da, title=f"Dataset: {run_name}"
+                df,
+                da,
+                title=f"Dataset: {run_name}",
+                spectral_calibration=self.spectral_calibration,
             )
             win.show()
             self._plot_windows.append(win)
@@ -2201,6 +2223,8 @@ class DemoWidget(QWidget):
                     f"Raman point {point_index} | RM | {wavelength:.1f} nm | "
                     f"grating {grating} | {exposure:.0f} ms"
                 ),
+                spectral_calibration=self.spectral_calibration,
+                calibration_changed=self._spectral_calibration_created,
             )
             win.show()
             self._plot_windows.append(win)
@@ -2365,7 +2389,10 @@ class DemoWidget(QWidget):
             zs = np.linspace(-search_range, search_range, search_pts)
 
             win = ReferenceSpectraWindow(
-                all_raman, zs, title=f"Reference spectra: {name}"
+                all_raman,
+                zs,
+                title=f"Reference spectra: {name}",
+                spectral_calibration=self.spectral_calibration,
             )
             win.show()
             self._plot_windows.append(win)
@@ -2599,7 +2626,11 @@ class DemoWidget(QWidget):
 
             self.scan_ds = ds
 
-            win = GridScanPlotWindow(ds, title=f"Grid scan: {file_name}")
+            win = GridScanPlotWindow(
+                ds,
+                title=f"Grid scan: {file_name}",
+                spectral_calibration=self.spectral_calibration,
+            )
             win.show()
             self._plot_windows.append(win)
 

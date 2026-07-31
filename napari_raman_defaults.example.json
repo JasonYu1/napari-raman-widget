@@ -2,6 +2,7 @@
   "micro_manager_config": "example_configs/microscope/example_micromanager.cfg",
   "transformer_model": "example_configs/models/example_coordinate_transform_model.json",
   "vandermonde_model": "example_configs/models/example_vandermonde_model.json",
+  "pixel_to_wavenumber_calibration": "example_configs/models/example_pixel_to_wavenumber_model.json",
   "tracking_config": "example_configs/tracking/particle_config.json",
   "mda_output_directory": "data/run",
   "center_wavelength_nm": 785.0,

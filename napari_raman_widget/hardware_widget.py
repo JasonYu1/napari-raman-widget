@@ -61,6 +61,12 @@ from .selection import (
     manual_point_selections,
     refine_cell_source_points,
 )
+from .spectral_calibration_ui import (
+    add_spectral_calibration_loader,
+    browse_spectral_calibration,
+    load_spectral_calibration,
+    spectral_calibration_created,
+)
 from .ui_helpers import make_collapsible
 from .workflows import set_up_new_seq
 
@@ -155,6 +161,8 @@ class HardwareWidget(QWidget):
         vdm_row.addWidget(vdm_browse)
         hardware_config_layout.addLayout(vdm_row)
         loading_layout.addWidget(self.hardware_config_controls)
+
+        add_spectral_calibration_loader(self, loading_layout)
 
         loading_layout.addWidget(
             QLabel("Output folder (optional, applied on connect):")
@@ -1142,6 +1150,9 @@ class HardwareWidget(QWidget):
             "micro_manager_config": self.cfg_path,
             "transformer_model": self.tf_path,
             "vandermonde_model": self.sel_vdm_path,
+            "pixel_to_wavenumber_calibration": (
+                self.spectral_calibration_path
+            ),
             "tracking_config": self.mda_track_cfg_input,
         }
         text_fields = {
@@ -1198,8 +1209,21 @@ class HardwareWidget(QWidget):
         if unknown:
             print(f"[hardware defaults] ignored unknown keys: {unknown}")
         print(f"[hardware defaults] loaded {defaults_path}")
+        if self.spectral_calibration_path.text().strip():
+            self.load_spectral_calibration(show_success=False)
 
     # -------- file pickers --------
+    def browse_spectral_calibration(self):
+        browse_spectral_calibration(self)
+
+    def load_spectral_calibration(
+        self, _checked=False, *, show_success=True
+    ):
+        return load_spectral_calibration(self, show_success=show_success)
+
+    def _spectral_calibration_created(self, calibration, path):
+        spectral_calibration_created(self, calibration, path)
+
     def browse_cfg(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Select Micro-Manager config", "",
@@ -1641,7 +1665,10 @@ class HardwareWidget(QWidget):
             log.append(f"\n--- dataset ready: {len(df)} spectra ---\n")
 
             win = DatasetViewerWindow(
-                df, da, title=f"Dataset: {run_name}"
+                df,
+                da,
+                title=f"Dataset: {run_name}",
+                spectral_calibration=self.spectral_calibration,
             )
             win.show()
             self._plot_windows.append(win)
@@ -2047,6 +2074,8 @@ class HardwareWidget(QWidget):
                     f"Raman point {point_index} | RM | {wavelength:.1f} nm | "
                     f"grating {grating} | {exposure:.0f} ms"
                 ),
+                spectral_calibration=self.spectral_calibration,
+                calibration_changed=self._spectral_calibration_created,
             )
             win.show()
             self._plot_windows.append(win)
@@ -2201,7 +2230,10 @@ class HardwareWidget(QWidget):
             zs = np.linspace(-search_range, search_range, search_pts)
 
             win = ReferenceSpectraWindow(
-                all_raman, zs, title=f"Reference spectra: {name}"
+                all_raman,
+                zs,
+                title=f"Reference spectra: {name}",
+                spectral_calibration=self.spectral_calibration,
             )
             win.show()
             self._plot_windows.append(win)
@@ -2433,7 +2465,11 @@ class HardwareWidget(QWidget):
 
             self.scan_ds = ds
 
-            win = GridScanPlotWindow(ds, title=f"Grid scan: {file_name}")
+            win = GridScanPlotWindow(
+                ds,
+                title=f"Grid scan: {file_name}",
+                spectral_calibration=self.spectral_calibration,
+            )
             win.show()
             self._plot_windows.append(win)
 
