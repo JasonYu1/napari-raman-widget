@@ -35,6 +35,11 @@ dependencies = [
     "zarr",
 ]
 
+[project.optional-dependencies]
+test = [
+    "PyQt5>=5.15",
+]
+
 [project.urls]
 Repository = "https://github.com/JasonYu1/napari-raman-widget"
 Issues = "https://github.com/JasonYu1/napari-raman-widget/issues"
