@@ -64,9 +64,23 @@ HELP = {
         "Number of identical copies of the transformed galvo coordinate "
         "acquired. Minimum of 2 is enforced (DAQ needs >= 2 samples)."
     ),
+    "collect_read_mode_combo": (
+        "FVB returns the current full-vertical-binned spectrum; single-track "
+        "returns one spectrum from the configured detector rows; image "
+        "returns a full 2-D detector frame."
+    ),
+    "collect_track_center_input": (
+        "Center detector row used only for single-track readout. It must be "
+        "within the connected detector's vertical pixel range."
+    ),
+    "collect_track_height_input": (
+        "Number of adjacent detector rows summed in single-track mode "
+        "(minimum 2)."
+    ),
     "collect_save_input": (
-        "Optional filename; the .npy suffix is added if missing. Relative "
-        "names save under the working directory. Blank = display only."
+        "Optional base filename. Saves detector data, settings, and measured "
+        "timing together in one xarray .zarr dataset under the working "
+        "directory. Blank = display only."
     ),
     "collect_btn": (
         "Restart the galvo, transform the last layer's first point, collect "

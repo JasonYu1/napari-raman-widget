@@ -77,6 +77,52 @@ class CalibrationPlotWindow(QMainWindow):
         self.setCentralWidget(central)
 
 
+class DetectorImageWindow(QMainWindow):
+    """Pop-up showing a 2-D detector image averaged across repeats."""
+
+    def __init__(self, frames, title="Detector image"):
+        super().__init__()
+        self.setWindowTitle(title)
+        self.resize(800, 550)
+        frames = np.asarray(frames)
+        if frames.ndim == 3:
+            self.image = np.mean(frames, axis=0)
+        elif frames.ndim == 2:
+            self.image = frames
+        else:
+            raise ValueError(
+                "detector image must have shape (y, x) or (repeats, y, x)"
+            )
+
+        import matplotlib
+        matplotlib.use("QtAgg")
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_qtagg import (
+            FigureCanvasQTAgg, NavigationToolbar2QT,
+        )
+
+        central = QWidget()
+        layout = QVBoxLayout(central)
+        self.fig = Figure(figsize=(8, 5))
+        self.canvas = FigureCanvasQTAgg(self.fig)
+        self.toolbar = NavigationToolbar2QT(self.canvas, self)
+        self.ax = self.fig.add_subplot(111)
+        image_artist = self.ax.imshow(
+            self.image,
+            cmap="gray",
+            aspect="auto",
+            origin="lower",
+        )
+        self.ax.set_xlabel("Detector X pixel")
+        self.ax.set_ylabel("Detector Y pixel")
+        self.ax.set_title(title)
+        self.fig.colorbar(image_artist, ax=self.ax, label="Intensity (a.u.)")
+        self.fig.tight_layout()
+        layout.addWidget(self.toolbar)
+        layout.addWidget(self.canvas)
+        self.setCentralWidget(central)
+
+
 class SpectrumWindow(QMainWindow):
     """Pop-up plot window with a toggle between mean and all-traces views."""
 

@@ -34,6 +34,32 @@ class WidgetSeparationTests(unittest.TestCase):
         self.assertIn("self.grid_fovx_input.setValue(256)", demo)
         self.assertIn("self.grid_fovy_input.setValue(256)", demo)
 
+    def test_detector_read_mode_controls_exist_in_both_widgets(self) -> None:
+        for filename in ("hardware_widget.py", "demo_widget.py"):
+            with self.subTest(filename=filename):
+                source = (PACKAGE / filename).read_text(encoding="utf-8")
+                self.assertIn("self.collect_read_mode_combo", source)
+                self.assertIn("self.collect_track_center_input", source)
+                self.assertIn("self.collect_track_height_input", source)
+                self.assertIn(
+                    "self.collect_read_mode_combo.setCurrentIndex(0)", source
+                )
+                self.assertIn(
+                    "self.collect_single_track_controls.hide()", source
+                )
+                self.assertIn(
+                    "self.collect_track_center_input.setValue(185)", source
+                )
+                self.assertIn(
+                    "self.collect_track_height_input.setValue(140)", source
+                )
+                self.assertIn(
+                    "self.raman_box.isChecked() and mode == \"single_track\"",
+                    source,
+                )
+                self.assertIn('if read_mode == "image":', source)
+                self.assertIn("DetectorImageWindow(spec, title=title)", source)
+
     def test_hardware_module_has_no_demo_mode_branches(self) -> None:
         source = (PACKAGE / "hardware_widget.py").read_text(encoding="utf-8")
         self.assertNotIn("demo_backend", source)

@@ -2,9 +2,49 @@
 
 from __future__ import annotations
 
-import numpy as np
+from pathlib import Path
 
-__all__ = ["filter_mean"]
+import numpy as np
+import xarray as xr
+
+__all__ = ["filter_mean", "save_collection_record"]
+
+
+def save_collection_record(
+    filename: str | Path,
+    data: np.ndarray,
+    metadata: dict,
+) -> Path:
+    """Save acquired detector data and metadata in one xarray/Zarr store."""
+    requested_path = Path(filename)
+    if requested_path.suffix.lower() in {".npy", ".npz", ".json", ".zarr"}:
+        base_path = requested_path.with_suffix("")
+    else:
+        base_path = requested_path
+    store_path = Path(f"{base_path}.zarr")
+
+    array = np.asarray(data)
+    if array.ndim == 2:
+        dimensions = ("repeat", "detector_x")
+    elif array.ndim == 3:
+        dimensions = ("repeat", "detector_y", "detector_x")
+    else:
+        dimensions = tuple(f"dimension_{index}" for index in range(array.ndim))
+
+    saved_metadata = {
+        key: value for key, value in metadata.items() if value is not None
+    }
+    saved_metadata.update(
+        data_variable="signal",
+        data_shape=list(array.shape),
+        data_dtype=str(array.dtype),
+    )
+    dataset = xr.Dataset(
+        data_vars={"signal": (dimensions, array)},
+        attrs=saved_metadata,
+    )
+    dataset.to_zarr(store_path, mode="w", consolidated=True)
+    return store_path
 
 
 def filter_mean(

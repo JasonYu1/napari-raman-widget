@@ -3,6 +3,7 @@
 import os
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 import napari
@@ -44,6 +45,7 @@ from .log_window import LogWindow, _StdoutRedirector
 from .plot_windows import (
     CalibrationPlotWindow,
     DatasetViewerWindow,
+    DetectorImageWindow,
     GridScanPlotWindow,
     ReferenceSpectraWindow,
     SpectrumWindow,
@@ -64,6 +66,7 @@ from .spectral_calibration_ui import (
     load_spectral_calibration,
     spectral_calibration_created,
 )
+from .spectra import save_collection_record
 from .ui_helpers import make_collapsible
 from .workflows import set_up_new_seq
 
@@ -302,6 +305,7 @@ class DemoWidget(QWidget):
         raman_box = make_collapsible(
             "Collect spectra using points layer", expanded=False
         )
+        self.raman_box = raman_box
         raman_layout = QVBoxLayout()
 
         exp_row = QHBoxLayout()
@@ -320,10 +324,49 @@ class DemoWidget(QWidget):
         self.n_input.setValue(2)
         n_row.addWidget(self.n_input)
         raman_layout.addLayout(n_row)
+
+        read_mode_row = QHBoxLayout()
+        read_mode_row.addWidget(QLabel("Read mode:"))
+        self.collect_read_mode_combo = QComboBox()
+        self.collect_read_mode_combo.addItem(
+            "Full vertical binning (FVB)", "fvb"
+        )
+        self.collect_read_mode_combo.addItem("Single-track", "single_track")
+        self.collect_read_mode_combo.addItem("Image", "image")
+        self.collect_read_mode_combo.setCurrentIndex(0)
+        read_mode_row.addWidget(self.collect_read_mode_combo)
+        raman_layout.addLayout(read_mode_row)
+
+        self.collect_single_track_controls = QWidget()
+        single_track_layout = QVBoxLayout(self.collect_single_track_controls)
+        single_track_layout.setContentsMargins(0, 0, 0, 0)
+        track_center_row = QHBoxLayout()
+        track_center_row.addWidget(QLabel("Track center (row):"))
+        self.collect_track_center_input = QSpinBox()
+        self.collect_track_center_input.setRange(0, 65_535)
+        self.collect_track_center_input.setValue(185)
+        track_center_row.addWidget(self.collect_track_center_input)
+        single_track_layout.addLayout(track_center_row)
+        track_height_row = QHBoxLayout()
+        track_height_row.addWidget(QLabel("Track height (rows):"))
+        self.collect_track_height_input = QSpinBox()
+        self.collect_track_height_input.setRange(2, 65_535)
+        self.collect_track_height_input.setValue(140)
+        track_height_row.addWidget(self.collect_track_height_input)
+        single_track_layout.addLayout(track_height_row)
+        raman_layout.addWidget(self.collect_single_track_controls)
+        self.collect_single_track_controls.hide()
+        self.collect_read_mode_combo.currentIndexChanged.connect(
+            self._update_collect_read_mode_fields
+        )
+        raman_box.toggled.connect(self._update_collect_read_mode_fields)
+
         save_row = QHBoxLayout()
         save_row.addWidget(QLabel("Save as (blank = don't save):"))
         self.collect_save_input = QLineEdit()
-        self.collect_save_input.setPlaceholderText("filename (no extension)")
+        self.collect_save_input.setPlaceholderText(
+            "base filename (one .zarr dataset)"
+        )
         save_row.addWidget(self.collect_save_input)
         raman_layout.addLayout(save_row)
 
@@ -2001,6 +2044,7 @@ class DemoWidget(QWidget):
         self.core = backend.core
         self.daq = backend.daq
         self.collector = backend.collector
+        self._configure_collect_detector_rows()
         self.transformer = getattr(
             backend, "transformer", _DemoCoordinateTransformer()
         )
@@ -2184,6 +2228,21 @@ class DemoWidget(QWidget):
         """No shutter operation is required by the simulated collector."""
         return
 
+    def _update_collect_read_mode_fields(self, _index=None):
+        """Show detector-track options only for single-track readout."""
+        mode = self.collect_read_mode_combo.currentData()
+        self.collect_single_track_controls.setVisible(
+            self.raman_box.isChecked() and mode == "single_track"
+        )
+
+    def _configure_collect_detector_rows(self):
+        """Constrain single-track fields to the simulated detector."""
+        detector_rows = int(getattr(self.collector, "detector_rows", 256))
+        self.collect_track_center_input.setRange(0, detector_rows - 1)
+        self.collect_track_center_input.setValue(min(185, detector_rows - 1))
+        self.collect_track_height_input.setRange(2, detector_rows)
+        self.collect_track_height_input.setValue(min(140, detector_rows))
+
     def collect_raman(self):
         if self.collector is None or self.daq is None:
             self.status.setText("Status: not connected")
@@ -2193,16 +2252,31 @@ class DemoWidget(QWidget):
             return
         exposure = float(self.exposure_input.value())
         N = int(self.n_input.value())
+        read_mode = self.collect_read_mode_combo.currentData()
 
         try:
+            collection_started_at = datetime.now().astimezone()
+            collection_started = time.perf_counter()
             pt, point_index = self._raman_point_from_active_layer()
 
             self.daq.galvo.stop()
             self.daq.galvo.start()
 
+            read_mode_options = {}
+            if read_mode != "fvb":
+                read_mode_options["read_mode"] = read_mode
+            if read_mode == "single_track":
+                read_mode_options.update(
+                    track_center=int(self.collect_track_center_input.value()),
+                    track_height=int(self.collect_track_height_input.value()),
+                )
             spec = self.collector.collect_spectra_image_points(
-                np.tile(pt, (N, 1)), exposure
+                np.tile(pt, (N, 1)),
+                exposure,
+                **read_mode_options,
             )
+            collection_elapsed = time.perf_counter() - collection_started
+            collection_finished_at = datetime.now().astimezone()
 
             wavelength = float(self.collector.get_wavelength())
             grating = int(self.collector.get_grating())
@@ -2211,28 +2285,62 @@ class DemoWidget(QWidget):
             save_name = self.collect_save_input.text().strip()
             saved_msg = ""
             if save_name:
-                if not save_name.lower().endswith(".npy"):
-                    save_name += ".npy"
-                np.save(save_name, spec)
-                saved_msg = f" -> {save_name}"
-                print(f"Saved spectrum to {save_name}")
+                track_center = (
+                    int(self.collect_track_center_input.value())
+                    if read_mode == "single_track"
+                    else None
+                )
+                track_height = (
+                    int(self.collect_track_height_input.value())
+                    if read_mode == "single_track"
+                    else None
+                )
+                store_path = save_collection_record(
+                    save_name,
+                    spec,
+                    {
+                        "record_type": "point_layer_raman_collection",
+                        "format_version": 1,
+                        "collection_started_at": collection_started_at.isoformat(),
+                        "collection_finished_at": collection_finished_at.isoformat(),
+                        "collection_elapsed_seconds": collection_elapsed,
+                        "point_index": point_index,
+                        "point_yx": pt.tolist(),
+                        "read_mode": read_mode,
+                        "track_center": track_center,
+                        "track_height": track_height,
+                        "exposure_ms": exposure,
+                        "repeats": N,
+                        "center_wavelength_nm": wavelength,
+                        "grating": grating,
+                        "peak_intensity": peak,
+                    },
+                )
+                saved_msg = f" -> {store_path}"
+                print(f"Saved collection dataset to {store_path}")
 
-            win = SpectrumWindow(
-                spec,
-                title=(
-                    f"Raman point {point_index} | RM | {wavelength:.1f} nm | "
-                    f"grating {grating} | {exposure:.0f} ms"
-                ),
-                spectral_calibration=self.spectral_calibration,
-                calibration_changed=self._spectral_calibration_created,
+            title = (
+                f"Raman point {point_index} | RM | {read_mode} | "
+                f"{wavelength:.1f} nm | grating {grating} | "
+                f"{exposure:.0f} ms"
             )
+            if read_mode == "image":
+                win = DetectorImageWindow(spec, title=title)
+            else:
+                win = SpectrumWindow(
+                    spec,
+                    title=title,
+                    spectral_calibration=self.spectral_calibration,
+                    calibration_changed=self._spectral_calibration_created,
+                )
             win.show()
             self._plot_windows.append(win)
 
             self.status.setText(
                 f"Status: collected point {point_index} on RM, "
                 f"{N}x{exposure:.0f} ms, {wavelength:.1f} nm, "
-                f"grating {grating}, peak {peak:.1f}{saved_msg}"
+                f"grating {grating}, {read_mode}, {collection_elapsed:.3f} s, "
+                f"peak {peak:.1f}{saved_msg}"
             )
         except Exception as e:
             self.status.setText(f"Status: collection failed -- {e}")

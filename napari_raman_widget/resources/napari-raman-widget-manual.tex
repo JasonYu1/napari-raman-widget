@@ -139,8 +139,12 @@ one point in this layer makes the intended target clear.
 Exposure (ms) & 1000; 1--1,000,000 & Integration time used by the spectrum collector.\\
 N (repeats, at least 2) & 2; 2--1000 & Number of identical copies of the transformed
 galvo coordinate used for acquisition. The minimum of two is enforced.\\
-Save as & blank = display only & Optional filename. If the \code{.npy} suffix is
-provided, the widget adds it. A relative name is saved under the active working directory.\\
+Read mode & FVB & FVB preserves the standard spectrum acquisition. Single-track
+uses configurable center and height detector rows (defaults 185 and 140). Image
+returns the full two-dimensional detector frame.\\
+Save as & blank = display only & Optional base filename. Detector data,
+acquisition settings, and timing are saved together in one xarray
+\code{.zarr} dataset under the active working directory.\\
 \endfieldtable
 
 \ui{Collect spectra at last point} restarts the galvo, transforms the point,
@@ -148,15 +152,18 @@ collects N spectra, optionally saves the NumPy array, and opens a spectrum plot.
 
 \section*{Saved output}
 When \ui{Save as} contains a name, spectra are saved as
-\code{<output folder>/<name>.npy}. With a blank name, the spectra are displayed
-without creating a data file.
+\code{<output folder>/<name>.zarr}. Its dataset attributes include collection
+start and end timestamps and the measured elapsed time in seconds, along with
+the detector mode and acquisition settings. With a blank name, the data are
+displayed without creating files.
 
 \section*{Options at a glance}
 \begin{longtable}{@{}p{0.31\textwidth}p{0.63\textwidth}@{}}
 \toprule\textbf{Option} & \textbf{Brief definition}\\\midrule
 Exposure & Integration time for each Raman acquisition.\\
 N (repeats) & Spectra acquired at the same transformed point.\\
-Save as & Optional NumPy filename; blank disables saving.\\
+Read mode & FVB spectrum, single-track spectrum, or 2-D detector image.\\
+Save as & Optional base name for one xarray/Zarr dataset; blank disables saving.\\
 Collect spectra & Transforms the point, acquires spectra, and displays them.\\
 \bottomrule\end{longtable}
 
@@ -521,7 +528,7 @@ Fit \& save model & Fits, reports residuals, saves, and activates the model.\\
 
 \begin{longtable}{@{}p{0.32\textwidth}p{0.62\textwidth}@{}}
 \toprule\textbf{Workflow} & \textbf{Output}\\\midrule
-Point spectrum & Optional \code{<name>.npy}; plot window.\\
+Point spectrum & Optional \code{<name>.zarr} dataset with timing metadata; plot window.\\
 Calibration & In-memory dataset and plot; recalibration saves \code{<model>.json}.\\
 Axial background scan & \code{reference/<name>\_<uuid>.zarr}.\\
 Spatial mapping & \code{grid\_scan\_data\_*.zarr} or \code{grid\_scan\_z\_*.zarr}.\\

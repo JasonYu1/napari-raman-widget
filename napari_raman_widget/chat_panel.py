@@ -54,6 +54,11 @@ MAX_STAGE_STEP_UM = 500.0
 _AF_OBJECTS = ["None", "laser", "software", "quartz", "glass", "cell"]
 _BATCH = ["False", "True"]
 _AIMING_PATTERNS = ["Square", "Circle"]
+_DETECTOR_READ_MODES = [
+    "Full vertical binning (FVB)",
+    "Single-track",
+    "Image",
+]
 _CHANNELS_SCHEMA = {
     "type": "array",
     "items": {
@@ -118,6 +123,14 @@ WIDGET_PARAMS = [
     # Collect spectra
     _wp("spectrum_exposure_ms", "exposure_input", "float"),
     _wp("spectrum_repeats", "n_input", "int"),
+    _wp(
+        "spectrum_read_mode",
+        "collect_read_mode_combo",
+        "combo",
+        enum=_DETECTOR_READ_MODES,
+    ),
+    _wp("single_track_center", "collect_track_center_input", "int"),
+    _wp("single_track_height", "collect_track_height_input", "int"),
     _wp("spectrum_save_as", "collect_save_input", "text"),
     # Calibration and reference
     _wp("calibration_repeats", "cal_n_input", "int"),
@@ -951,8 +964,27 @@ ACTIONS = [
         "params": [
             _p("exposure_ms", "exposure_input", "float", "Exposure in ms."),
             _p("repeats", "n_input", "int", "Repeat spectra (>=2)."),
+            _p(
+                "read_mode",
+                "collect_read_mode_combo",
+                "combo",
+                "Detector read mode.",
+                enum=_DETECTOR_READ_MODES,
+            ),
+            _p(
+                "track_center",
+                "collect_track_center_input",
+                "int",
+                "Center detector row for single-track readout.",
+            ),
+            _p(
+                "track_height",
+                "collect_track_height_input",
+                "int",
+                "Detector rows summed for single-track readout (>=2).",
+            ),
             _p("save_as", "collect_save_input", "text",
-               "Filename without extension; blank = don't save."),
+               "Base filename for one xarray .zarr dataset; blank = don't save."),
         ],
         "description": (
             "Aim at the last point in the top layer and collect spectra."

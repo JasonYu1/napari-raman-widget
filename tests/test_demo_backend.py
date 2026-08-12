@@ -175,6 +175,33 @@ class DemoBackendTests(unittest.TestCase):
         self.assertEqual(spectra.shape, (3, self.backend.world.spectrum_pixels))
         np.testing.assert_allclose(spectra, repeated_run)
 
+    def test_collector_supports_detector_read_modes(self) -> None:
+        volts = np.array([[0.0, 0.0], [0.2, -0.1]])
+        single_track = self.backend.collector.collect_spectra_pts(
+            volts,
+            exposure=1000,
+            read_mode="single_track",
+            track_center=128,
+            track_height=4,
+        )
+        image = self.backend.collector.collect_spectra_pts(
+            volts,
+            exposure=1000,
+            read_mode="image",
+        )
+        self.assertEqual(
+            single_track.shape,
+            (2, self.backend.world.spectrum_pixels),
+        )
+        self.assertEqual(
+            image.shape,
+            (
+                2,
+                self.backend.collector.detector_rows,
+                self.backend.world.spectrum_pixels,
+            ),
+        )
+
     def test_raman_signal_is_stronger_near_focus(self) -> None:
         self.backend.world.cell_positions_um[0] = (0.0, 0.0)
         volts = np.zeros((1, 2))
