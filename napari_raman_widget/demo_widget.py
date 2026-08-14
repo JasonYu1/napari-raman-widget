@@ -9,7 +9,7 @@ from pathlib import Path
 import napari
 import numpy as np
 import xarray as xr
-from qtpy.QtCore import Qt, QTimer, QUrl
+from qtpy.QtCore import Qt, QThread, QTimer, QUrl
 from qtpy.QtGui import QDesktopServices
 from qtpy.QtWidgets import (
     QCheckBox,
@@ -42,6 +42,7 @@ from .calibration import (
 from .demo import DemoWorld, configure_demo_channels, create_demo_backend
 from .field_help import apply_tooltips
 from .log_window import LogWindow, _StdoutRedirector
+from .live_spectra import LiveSpectrumWorker
 from .plot_windows import (
     CalibrationPlotWindow,
     DatasetViewerWindow,
@@ -127,6 +128,11 @@ class DemoWidget(QWidget):
         self.mda_writer = None
         self.px2stage_picker = None
         self.px2stage_xy = None
+        self._live_raman_thread = None
+        self._live_raman_worker = None
+        self._live_raman_window = None
+        self._live_raman_context = None
+        self._live_control_states = []
 
         outer = QVBoxLayout()
 
@@ -324,6 +330,14 @@ class DemoWidget(QWidget):
         self.n_input.setValue(2)
         n_row.addWidget(self.n_input)
         raman_layout.addLayout(n_row)
+
+        self.live_collect_check = QCheckBox(
+            "Live: acquire and refresh until stopped"
+        )
+        self.live_collect_check.toggled.connect(
+            self._update_collect_live_fields
+        )
+        raman_layout.addWidget(self.live_collect_check)
 
         read_mode_row = QHBoxLayout()
         read_mode_row.addWidget(QLabel("Read mode:"))
@@ -2165,6 +2179,9 @@ class DemoWidget(QWidget):
             self.status.setText(f"Status: grating update failed -- {e}")
 
     def disconnect(self):
+        if self._live_raman_worker is not None:
+            self._stop_live_raman()
+            return
         self._toggle_demo_live(False)
         try:
             if self.core is not None:
@@ -2235,6 +2252,25 @@ class DemoWidget(QWidget):
             self.raman_box.isChecked() and mode == "single_track"
         )
 
+    def _update_collect_live_fields(self, checked=None):
+        """Switch between finite repeats and one-at-a-time live collection."""
+        if checked is None:
+            checked = self.live_collect_check.isChecked()
+        if self._live_raman_worker is None:
+            self.n_input.setEnabled(not checked)
+            self.collect_save_input.setEnabled(not checked)
+            self.collect_btn.setText(
+                "Start live spectra at selected point"
+                if checked
+                else "Collect spectra at selected point"
+            )
+        self.collect_save_input.setToolTip(
+            "Live display is not saved. Turn off Live to save a finite "
+            "repeated collection."
+            if checked
+            else "Optional base filename for one xarray .zarr dataset."
+        )
+
     def _configure_collect_detector_rows(self):
         """Constrain single-track fields to the simulated detector."""
         detector_rows = int(getattr(self.collector, "detector_rows", 256))
@@ -2244,6 +2280,9 @@ class DemoWidget(QWidget):
         self.collect_track_height_input.setValue(min(140, detector_rows))
 
     def collect_raman(self):
+        if self._live_raman_worker is not None:
+            self._stop_live_raman()
+            return
         if self.collector is None or self.daq is None:
             self.status.setText("Status: not connected")
             return
@@ -2253,6 +2292,10 @@ class DemoWidget(QWidget):
         exposure = float(self.exposure_input.value())
         N = int(self.n_input.value())
         read_mode = self.collect_read_mode_combo.currentData()
+
+        if self.live_collect_check.isChecked():
+            self._start_live_raman(exposure, read_mode)
+            return
 
         try:
             collection_started_at = datetime.now().astimezone()
@@ -2325,7 +2368,11 @@ class DemoWidget(QWidget):
                 f"{exposure:.0f} ms"
             )
             if read_mode == "image":
-                win = DetectorImageWindow(spec, title=title)
+                win = DetectorImageWindow(
+                    spec,
+                    title=title,
+                    spectral_calibration=self.spectral_calibration,
+                )
             else:
                 win = SpectrumWindow(
                     spec,
@@ -2344,6 +2391,168 @@ class DemoWidget(QWidget):
             )
         except Exception as e:
             self.status.setText(f"Status: collection failed -- {e}")
+
+    def _start_live_raman(self, exposure, read_mode):
+        """Start simulated one-frame acquisition cycles off the UI thread."""
+        try:
+            pt, point_index = self._raman_point_from_active_layer()
+            self.daq.galvo.stop()
+            self.daq.galvo.start()
+
+            read_mode_options = {}
+            if read_mode != "fvb":
+                read_mode_options["read_mode"] = read_mode
+            if read_mode == "single_track":
+                read_mode_options.update(
+                    track_center=int(self.collect_track_center_input.value()),
+                    track_height=int(self.collect_track_height_input.value()),
+                )
+
+            wavelength = float(self.collector.get_wavelength())
+            grating = int(self.collector.get_grating())
+            title = (
+                f"Raman point {point_index} | RM | {read_mode} | "
+                f"{wavelength:.1f} nm | grating {grating} | "
+                f"{exposure:.0f} ms"
+            )
+            collector = self.collector
+            point = np.asarray(pt, dtype=float).reshape(1, 2)
+
+            def acquire_one():
+                return collector.collect_spectra_image_points(
+                    point, exposure, **read_mode_options
+                )
+
+            thread = QThread(self)
+            worker = LiveSpectrumWorker(
+                acquire_one,
+                minimum_cycle_seconds=exposure / 1000.0,
+            )
+            worker.moveToThread(thread)
+            thread.started.connect(worker.run)
+            worker.spectrum_ready.connect(self._on_live_raman_spectrum)
+            worker.failed.connect(self._on_live_raman_failed)
+            worker.finished.connect(thread.quit)
+            worker.finished.connect(worker.deleteLater)
+            thread.finished.connect(self._on_live_raman_finished)
+
+            self._live_raman_thread = thread
+            self._live_raman_worker = worker
+            self._live_raman_window = None
+            self._live_raman_context = {
+                "point_index": point_index,
+                "read_mode": read_mode,
+                "exposure": exposure,
+                "wavelength": wavelength,
+                "grating": grating,
+                "title": title,
+                "count": 0,
+                "failed": None,
+            }
+            self._set_live_raman_controls(True)
+            self.collect_btn.setText("Stop live spectra")
+            self.status.setText(
+                f"Status: live collection started at point {point_index}; "
+                "waiting for spectrum 1..."
+            )
+            thread.start()
+        except Exception as error:
+            self.status.setText(f"Status: live collection failed -- {error}")
+
+    def _on_live_raman_spectrum(self, spec, count, elapsed):
+        context = self._live_raman_context
+        if context is None:
+            return
+        context["count"] = count
+        title = f"{context['title']} | live #{count}"
+        if self._live_raman_window is None:
+            if context["read_mode"] == "image":
+                window = DetectorImageWindow(
+                    spec,
+                    title=title,
+                    spectral_calibration=self.spectral_calibration,
+                )
+            else:
+                window = SpectrumWindow(
+                    spec,
+                    title=title,
+                    spectral_calibration=self.spectral_calibration,
+                    calibration_changed=self._spectral_calibration_created,
+                )
+            window.show()
+            self._plot_windows.append(window)
+            self._live_raman_window = window
+        elif context["read_mode"] == "image":
+            self._live_raman_window.update_frames(spec, title=title)
+        else:
+            self._live_raman_window.update_spectrum(spec, title=title)
+
+        peak = float(np.max(spec))
+        self.status.setText(
+            f"Status: live point {context['point_index']}, spectrum {count}, "
+            f"{context['exposure']:.0f} ms, {elapsed:.3f} s elapsed, "
+            f"peak {peak:.1f}"
+        )
+
+    def _stop_live_raman(self):
+        worker = self._live_raman_worker
+        if worker is None:
+            return
+        worker.request_stop()
+        self.collect_btn.setEnabled(False)
+        self.collect_btn.setText("Stopping after current exposure...")
+        self.status.setText(
+            "Status: live stop requested; waiting for the current exposure"
+        )
+
+    def _on_live_raman_failed(self, message):
+        if self._live_raman_context is not None:
+            self._live_raman_context["failed"] = message
+        self.status.setText(f"Status: live collection failed -- {message}")
+
+    def _on_live_raman_finished(self):
+        context = self._live_raman_context or {}
+        failed = context.get("failed")
+        count = context.get("count", 0)
+        thread = self._live_raman_thread
+        self._live_raman_worker = None
+        self._live_raman_thread = None
+        self._live_raman_context = None
+        self._live_raman_window = None
+        self._set_live_raman_controls(False)
+        self.collect_btn.setEnabled(True)
+        self._update_collect_live_fields()
+        if not failed:
+            self.status.setText(
+                f"Status: live collection stopped after {count} spectrum"
+                f"{'s' if count != 1 else ''}"
+            )
+        if thread is not None:
+            thread.deleteLater()
+
+    def _set_live_raman_controls(self, running):
+        controls = (
+            self.loading_box,
+            self.calib_box,
+            self.grid_box,
+            self.sel_box,
+            self.exposure_input,
+            self.n_input,
+            self.live_collect_check,
+            self.collect_read_mode_combo,
+            self.collect_single_track_controls,
+            self.collect_save_input,
+        )
+        if running:
+            self._live_control_states = [
+                (control, control.isEnabled()) for control in controls
+            ]
+            for control, _enabled in self._live_control_states:
+                control.setEnabled(False)
+        else:
+            for control, enabled in self._live_control_states:
+                control.setEnabled(enabled)
+            self._live_control_states = []
 
     # -------- laser aiming calibration --------
     def run_calibration(self):

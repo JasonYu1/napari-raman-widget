@@ -28,12 +28,8 @@ def add_spectral_calibration_loader(owner, loading_layout) -> None:
     browse = QPushButton("...")
     browse.setFixedWidth(30)
     browse.clicked.connect(owner.browse_spectral_calibration)
-    load = QPushButton("Load")
-    load.setFixedWidth(52)
-    load.clicked.connect(owner.load_spectral_calibration)
     row.addWidget(owner.spectral_calibration_path)
     row.addWidget(browse)
-    row.addWidget(load)
     loading_layout.addLayout(row)
 
 

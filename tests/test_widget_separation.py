@@ -11,6 +11,13 @@ PACKAGE = Path(__file__).resolve().parents[1] / "napari_raman_widget"
 
 
 class WidgetSeparationTests(unittest.TestCase):
+    def test_spectral_calibration_has_no_redundant_load_button(self) -> None:
+        source = (PACKAGE / "spectral_calibration_ui.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn('QPushButton("Load")', source)
+        self.assertIn("owner.load_spectral_calibration()", source)
+
     def test_refine_cell_points_button_exists_in_both_widgets(self) -> None:
         expected = 'QPushButton(\n            "Refine cell points to centers"'
         for filename in ("hardware_widget.py", "demo_widget.py"):
@@ -58,7 +65,18 @@ class WidgetSeparationTests(unittest.TestCase):
                     source,
                 )
                 self.assertIn('if read_mode == "image":', source)
-                self.assertIn("DetectorImageWindow(spec, title=title)", source)
+                self.assertIn("DetectorImageWindow(", source)
+                self.assertIn("spectral_calibration=self.spectral_calibration", source)
+
+    def test_live_spectrum_controls_exist_in_both_widgets(self) -> None:
+        for filename in ("hardware_widget.py", "demo_widget.py"):
+            with self.subTest(filename=filename):
+                source = (PACKAGE / filename).read_text(encoding="utf-8")
+                self.assertIn("self.live_collect_check", source)
+                self.assertIn("def _start_live_raman", source)
+                self.assertIn("def _stop_live_raman", source)
+                self.assertIn("update_spectrum(spec, title=title)", source)
+                self.assertIn("update_frames(spec, title=title)", source)
 
     def test_hardware_module_has_no_demo_mode_branches(self) -> None:
         source = (PACKAGE / "hardware_widget.py").read_text(encoding="utf-8")

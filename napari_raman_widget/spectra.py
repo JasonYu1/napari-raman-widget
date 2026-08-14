@@ -7,7 +7,40 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
-__all__ = ["filter_mean", "save_collection_record"]
+__all__ = ["filter_mean", "save_collection_record", "sum_detector_rows"]
+
+
+def sum_detector_rows(
+    image: np.ndarray,
+    start_row: int,
+    end_row: int,
+) -> np.ndarray:
+    """Sum an inclusive detector-row range into one spectrum."""
+    image = np.asarray(image)
+    if image.ndim != 2:
+        raise ValueError("detector image must have shape (rows, spectral_pixels)")
+
+    if isinstance(start_row, (bool, np.bool_)) or not isinstance(
+        start_row, (int, np.integer)
+    ):
+        raise TypeError("start_row must be an integer")
+    if isinstance(end_row, (bool, np.bool_)) or not isinstance(
+        end_row, (int, np.integer)
+    ):
+        raise TypeError("end_row must be an integer")
+
+    start_row = int(start_row)
+    end_row = int(end_row)
+    row_count = image.shape[0]
+    if not 0 <= start_row < row_count:
+        raise ValueError(f"start_row must be between 0 and {row_count - 1}")
+    if not start_row <= end_row < row_count:
+        raise ValueError(
+            f"end_row must be between start_row ({start_row}) and "
+            f"{row_count - 1}"
+        )
+
+    return np.sum(image[start_row : end_row + 1], axis=0, dtype=float)
 
 
 def save_collection_record(

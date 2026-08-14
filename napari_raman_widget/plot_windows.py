@@ -1,6 +1,6 @@
 """Pop-up matplotlib windows used to display calibration, spectra, and scans."""
 import numpy as np
-from napari_raman_widget.spectra import filter_mean
+from napari_raman_widget.spectra import filter_mean, sum_detector_rows
 from napari_raman_widget.spectral_calibration import (
     PixelToWavenumberCalibration,
     save_pixel_to_wavenumber_calibration,
@@ -78,21 +78,21 @@ class CalibrationPlotWindow(QMainWindow):
 
 
 class DetectorImageWindow(QMainWindow):
-    """Pop-up showing a 2-D detector image averaged across repeats."""
+    """Detector image with a switchable, row-summed spectrum view."""
 
-    def __init__(self, frames, title="Detector image"):
+    def __init__(
+        self,
+        frames,
+        title="Detector image",
+        spectral_calibration=None,
+    ):
         super().__init__()
         self.setWindowTitle(title)
         self.resize(800, 550)
-        frames = np.asarray(frames)
-        if frames.ndim == 3:
-            self.image = np.mean(frames, axis=0)
-        elif frames.ndim == 2:
-            self.image = frames
-        else:
-            raise ValueError(
-                "detector image must have shape (y, x) or (repeats, y, x)"
-            )
+        self.image = self._mean_detector_image(frames)
+        self.spectral_calibration = spectral_calibration
+        self._show_spectrum = False
+        self._fixed_y_limits = None
 
         import matplotlib
         matplotlib.use("QtAgg")
@@ -103,24 +103,150 @@ class DetectorImageWindow(QMainWindow):
 
         central = QWidget()
         layout = QVBoxLayout(central)
+        controls = QHBoxLayout()
+        self.toggle_btn = QPushButton("Show row-sum spectrum")
+        self.toggle_btn.clicked.connect(self._toggle_view)
+        controls.addWidget(self.toggle_btn)
+        controls.addWidget(QLabel("Rows:"))
+        self.start_row_input = QSpinBox()
+        self.start_row_input.setRange(0, self.image.shape[0] - 1)
+        self.start_row_input.setValue(0)
+        self.start_row_input.valueChanged.connect(self._on_start_row_changed)
+        controls.addWidget(self.start_row_input)
+        controls.addWidget(QLabel("to"))
+        self.end_row_input = QSpinBox()
+        self.end_row_input.setRange(0, self.image.shape[0] - 1)
+        self.end_row_input.setValue(self.image.shape[0] - 1)
+        self.end_row_input.valueChanged.connect(self._on_end_row_changed)
+        controls.addWidget(self.end_row_input)
+        self.pixel_axis_check = _make_pixel_axis_checkbox(
+            spectral_calibration, self._redraw
+        )
+        self.pixel_axis_check.hide()
+        controls.addWidget(self.pixel_axis_check)
+        self.fix_y_scale_check = QCheckBox("Fix Y scale")
+        self.fix_y_scale_check.setToolTip(
+            "Keep the spectrum Y limits from the frame shown when checked"
+        )
+        self.fix_y_scale_check.toggled.connect(
+            self._on_fix_y_scale_toggled
+        )
+        self.fix_y_scale_check.hide()
+        controls.addWidget(self.fix_y_scale_check)
+        controls.addStretch(1)
+        layout.addLayout(controls)
+
         self.fig = Figure(figsize=(8, 5))
         self.canvas = FigureCanvasQTAgg(self.fig)
         self.toolbar = NavigationToolbar2QT(self.canvas, self)
         self.ax = self.fig.add_subplot(111)
-        image_artist = self.ax.imshow(
-            self.image,
-            cmap="gray",
-            aspect="auto",
-            origin="lower",
-        )
-        self.ax.set_xlabel("Detector X pixel")
-        self.ax.set_ylabel("Detector Y pixel")
-        self.ax.set_title(title)
-        self.fig.colorbar(image_artist, ax=self.ax, label="Intensity (a.u.)")
-        self.fig.tight_layout()
+        self._colorbar = None
         layout.addWidget(self.toolbar)
         layout.addWidget(self.canvas)
         self.setCentralWidget(central)
+        self._redraw()
+
+    @staticmethod
+    def _mean_detector_image(frames):
+        frames = np.asarray(frames)
+        if frames.ndim == 3:
+            return np.mean(frames, axis=0)
+        if frames.ndim == 2:
+            return frames
+        raise ValueError(
+            "detector image must have shape (y, x) or (repeats, y, x)"
+        )
+
+    def _toggle_view(self):
+        self._show_spectrum = not self._show_spectrum
+        self.toggle_btn.setText(
+            "Show detector image" if self._show_spectrum
+            else "Show row-sum spectrum"
+        )
+        self.pixel_axis_check.setVisible(self._show_spectrum)
+        self.fix_y_scale_check.setVisible(self._show_spectrum)
+        self._redraw()
+
+    def _on_fix_y_scale_toggled(self, checked):
+        if checked:
+            self._fixed_y_limits = self.ax.get_ylim()
+        else:
+            self._fixed_y_limits = None
+            self._redraw()
+
+    def _on_start_row_changed(self, start_row):
+        if start_row > self.end_row_input.value():
+            self.end_row_input.setValue(start_row)
+        if self._show_spectrum:
+            self._redraw()
+
+    def _on_end_row_changed(self, end_row):
+        if end_row < self.start_row_input.value():
+            self.start_row_input.setValue(end_row)
+        if self._show_spectrum:
+            self._redraw()
+
+    def update_frames(self, frames, *, title=None):
+        """Replace the live detector data while preserving the chosen view."""
+        old_last_row = self.image.shape[0] - 1
+        was_full_range = (
+            self.start_row_input.value() == 0
+            and self.end_row_input.value() == old_last_row
+        )
+        self.image = self._mean_detector_image(frames)
+        last_row = self.image.shape[0] - 1
+        self.start_row_input.setMaximum(last_row)
+        self.end_row_input.setMaximum(last_row)
+        if was_full_range:
+            self.start_row_input.setValue(0)
+            self.end_row_input.setValue(last_row)
+        if title is not None:
+            self.setWindowTitle(title)
+        self._redraw()
+
+    def _redraw(self, _checked=None):
+        self.ax.clear()
+        if self._show_spectrum:
+            spectrum = sum_detector_rows(
+                self.image,
+                self.start_row_input.value(),
+                self.end_row_input.value(),
+            )
+            lines = self.ax.plot(spectrum)
+            _set_spectral_line_axis(
+                self.ax,
+                lines,
+                self.spectral_calibration,
+                self.pixel_axis_check.isChecked(),
+            )
+            self.ax.set_ylabel("Summed intensity (a.u.)")
+            self.ax.set_title(
+                f"{self.windowTitle()} | rows "
+                f"{self.start_row_input.value()}-{self.end_row_input.value()}"
+            )
+            if self._fixed_y_limits is not None:
+                self.ax.set_ylim(self._fixed_y_limits)
+            if self._colorbar is not None:
+                self._colorbar.ax.set_visible(False)
+        else:
+            image_artist = self.ax.imshow(
+                self.image,
+                cmap="gray",
+                aspect="auto",
+                origin="lower",
+            )
+            self.ax.set_xlabel("Detector X pixel")
+            self.ax.set_ylabel("Detector Y pixel")
+            self.ax.set_title(self.windowTitle())
+            if self._colorbar is None:
+                self._colorbar = self.fig.colorbar(
+                    image_artist, ax=self.ax, label="Intensity (a.u.)"
+                )
+            else:
+                self._colorbar.update_normal(image_artist)
+                self._colorbar.ax.set_visible(True)
+        self.fig.tight_layout()
+        self.canvas.draw_idle()
 
 
 class SpectrumWindow(QMainWindow):
@@ -136,8 +262,9 @@ class SpectrumWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(title)
         self.resize(700, 550)
-        self.spec = np.asarray(spec)
+        self.spec = self._normalize_spectra(spec)
         self._show_mean = True
+        self._fixed_y_limits = None
         self.spectral_calibration = spectral_calibration
         self._calibration_changed = calibration_changed
         self._calibrating = False
@@ -161,6 +288,14 @@ class SpectrumWindow(QMainWindow):
             spectral_calibration, self._redraw
         )
         controls.addWidget(self.pixel_axis_check)
+        self.fix_y_scale_check = QCheckBox("Fix Y scale")
+        self.fix_y_scale_check.setToolTip(
+            "Keep the Y limits from the frame shown when checked"
+        )
+        self.fix_y_scale_check.toggled.connect(
+            self._on_fix_y_scale_toggled
+        )
+        controls.addWidget(self.fix_y_scale_check)
         self.calibration_btn = QPushButton("Pixel-to-wavenumber calibration")
         self.calibration_btn.clicked.connect(self._start_calibration)
         controls.addWidget(self.calibration_btn)
@@ -209,6 +344,31 @@ class SpectrumWindow(QMainWindow):
         self.canvas.mpl_connect("key_press_event", self._on_calibration_key)
         self._redraw()
 
+    @staticmethod
+    def _normalize_spectra(spec):
+        spec = np.asarray(spec)
+        if spec.ndim == 1:
+            spec = spec.reshape(1, -1)
+        if spec.ndim != 2:
+            raise ValueError(
+                "spectrum must have shape (pixels,) or (repeats, pixels)"
+            )
+        return spec
+
+    def update_spectrum(self, spec, *, title=None):
+        """Replace plotted data, for example after each live exposure."""
+        self.spec = self._normalize_spectra(spec)
+        if title is not None:
+            self.setWindowTitle(title)
+        self._redraw()
+
+    def _on_fix_y_scale_toggled(self, checked):
+        if checked:
+            self._fixed_y_limits = self.ax.get_ylim()
+        else:
+            self._fixed_y_limits = None
+            self._redraw()
+
     def _toggle(self):
         self._show_mean = not self._show_mean
         self.toggle_btn.setText(
@@ -239,6 +399,8 @@ class SpectrumWindow(QMainWindow):
         )
         self.ax.set_ylabel("Intensity (a.u.)")
         self.ax.set_title(self.windowTitle())
+        if self._fixed_y_limits is not None:
+            self.ax.set_ylim(self._fixed_y_limits)
         if self._calibrating:
             self._draw_calibration_artists()
         self.fig.tight_layout()

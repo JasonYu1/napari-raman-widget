@@ -123,6 +123,7 @@ WIDGET_PARAMS = [
     # Collect spectra
     _wp("spectrum_exposure_ms", "exposure_input", "float"),
     _wp("spectrum_repeats", "n_input", "int"),
+    _wp("live_spectra", "live_collect_check", "check"),
     _wp(
         "spectrum_read_mode",
         "collect_read_mode_combo",
@@ -965,6 +966,12 @@ ACTIONS = [
             _p("exposure_ms", "exposure_input", "float", "Exposure in ms."),
             _p("repeats", "n_input", "int", "Repeat spectra (>=2)."),
             _p(
+                "live",
+                "live_collect_check",
+                "check",
+                "Repeat one exposure at a time until stopped.",
+            ),
+            _p(
                 "read_mode",
                 "collect_read_mode_combo",
                 "combo",
@@ -987,7 +994,7 @@ ACTIONS = [
                "Base filename for one xarray .zarr dataset; blank = don't save."),
         ],
         "description": (
-            "Aim at the last point in the top layer and collect spectra."
+            "Aim at the selected or newest point and collect once or live."
         ),
     },
 

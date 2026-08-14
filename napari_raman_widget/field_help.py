@@ -64,6 +64,10 @@ HELP = {
         "Number of identical copies of the transformed galvo coordinate "
         "acquired. Minimum of 2 is enforced (DAQ needs >= 2 samples)."
     ),
+    "live_collect_check": (
+        "Acquire one detector frame per exposure, refresh the same plot, and "
+        "continue until Stop is clicked. Live display is not saved."
+    ),
     "collect_read_mode_combo": (
         "FVB returns the current full-vertical-binned spectrum; single-track "
         "returns one spectrum from the configured detector rows; image "
@@ -83,8 +87,8 @@ HELP = {
         "directory. Blank = display only."
     ),
     "collect_btn": (
-        "Restart the galvo, transform the last layer's first point, collect "
-        "N spectra, optionally save, and plot."
+        "Restart the galvo, transform the selected (or newest) point, then "
+        "collect once or start/stop live acquisition."
     ),
 
     # ============ LASER AIMING CALIBRATION ============

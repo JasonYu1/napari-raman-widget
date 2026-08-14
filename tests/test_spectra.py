@@ -5,7 +5,10 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
-from napari_raman_widget.spectra import save_collection_record
+from napari_raman_widget.spectra import (
+    save_collection_record,
+    sum_detector_rows,
+)
 
 
 class CollectionRecordTests(unittest.TestCase):
@@ -41,6 +44,28 @@ class CollectionRecordTests(unittest.TestCase):
                 )
             finally:
                 saved.close()
+
+
+class DetectorRowSumTests(unittest.TestCase):
+    def test_sums_an_inclusive_row_range(self) -> None:
+        image = np.arange(20).reshape(4, 5)
+
+        result = sum_detector_rows(image, 1, 2)
+
+        np.testing.assert_array_equal(result, image[1] + image[2])
+        self.assertEqual(result.dtype, np.dtype(float))
+
+    def test_rejects_reversed_or_out_of_bounds_ranges(self) -> None:
+        image = np.zeros((4, 5))
+
+        with self.assertRaisesRegex(ValueError, "end_row"):
+            sum_detector_rows(image, 3, 2)
+        with self.assertRaisesRegex(ValueError, "start_row"):
+            sum_detector_rows(image, -1, 2)
+
+    def test_requires_a_detector_image(self) -> None:
+        with self.assertRaisesRegex(ValueError, "detector image"):
+            sum_detector_rows(np.zeros((2, 3, 4)), 0, 1)
 
 
 if __name__ == "__main__":
