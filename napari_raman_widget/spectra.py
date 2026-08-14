@@ -6,10 +6,12 @@ from pathlib import Path
 
 import numpy as np
 import xarray as xr
+from scipy.signal import savgol_filter
 
 __all__ = [
     "filter_mean",
     "save_collection_record",
+    "smooth_spectra",
     "spectral_bias_from_dark_noise",
     "subtract_spectral_bias",
     "sum_detector_rows",
@@ -209,3 +211,32 @@ def subtract_spectral_bias(
         )
 
     return spectra - spectral_bias
+
+
+def smooth_spectra(
+    spectra: np.ndarray,
+    window_length: int,
+) -> np.ndarray:
+    """Savitzky-Golay smooth along spectral pixels with polynomial order 3."""
+    spectra = np.asarray(spectra, dtype=float)
+    if spectra.ndim not in (1, 2):
+        raise ValueError("spectra must be a one- or two-dimensional array")
+    if isinstance(window_length, bool) or not isinstance(
+        window_length, (int, np.integer)
+    ):
+        raise ValueError("smoothing window must be an integer")
+    window_length = int(window_length)
+    if window_length <= 3 or window_length % 2 == 0:
+        raise ValueError(
+            "smoothing window must be an odd integer greater than 3"
+        )
+    if window_length > spectra.shape[-1]:
+        raise ValueError(
+            "smoothing window cannot exceed the spectral pixel count"
+        )
+    return savgol_filter(
+        spectra,
+        window_length=window_length,
+        polyorder=3,
+        axis=-1,
+    )

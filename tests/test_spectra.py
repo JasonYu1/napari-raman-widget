@@ -7,6 +7,7 @@ import xarray as xr
 
 from napari_raman_widget.spectra import (
     save_collection_record,
+    smooth_spectra,
     spectral_bias_from_dark_noise,
     subtract_spectral_bias,
     sum_detector_rows,
@@ -97,6 +98,27 @@ class SpectralBiasTests(unittest.TestCase):
     def test_dark_noise_must_contain_repeated_spectra(self) -> None:
         with self.assertRaisesRegex(ValueError, "dark noise"):
             spectral_bias_from_dark_noise(np.zeros(4))
+
+
+class SpectralSmoothingTests(unittest.TestCase):
+    def test_order_three_smoothing_preserves_a_cubic(self) -> None:
+        x = np.arange(21, dtype=float)
+        cubic = 2 * x**3 - 4 * x**2 + 3 * x - 7
+
+        smoothed = smooth_spectra(cubic, 7)
+
+        np.testing.assert_allclose(smoothed, cubic, atol=1e-9)
+
+    def test_smoothing_supports_multiple_spectra(self) -> None:
+        spectra = np.vstack([np.arange(9), np.arange(9) ** 2])
+        smoothed = smooth_spectra(spectra, 5)
+        self.assertEqual(smoothed.shape, spectra.shape)
+
+    def test_smoothing_requires_a_valid_odd_window(self) -> None:
+        for invalid_window in (3, 4, 10):
+            with self.subTest(window=invalid_window):
+                with self.assertRaisesRegex(ValueError, "smoothing window"):
+                    smooth_spectra(np.zeros(9), invalid_window)
 
 
 if __name__ == "__main__":
