@@ -263,7 +263,6 @@ class SpectrumWindow(QMainWindow):
         spectral_calibration=None,
         calibration_changed=None,
         spectral_bias=None,
-        remove_spectral_bias=False,
     ):
         super().__init__()
         self.setWindowTitle(title)
@@ -307,9 +306,6 @@ class SpectrumWindow(QMainWindow):
         self.remove_spectral_bias_check.setToolTip(
             "Subtract filter_mean(dark noise) in this plot only. The raw "
             "spectra remain unchanged."
-        )
-        self.remove_spectral_bias_check.setChecked(
-            bool(remove_spectral_bias and self.spectral_bias is not None)
         )
         self.remove_spectral_bias_check.toggled.connect(self._redraw)
         self.remove_spectral_bias_check.setVisible(

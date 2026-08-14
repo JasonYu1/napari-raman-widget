@@ -78,7 +78,7 @@ class WidgetSeparationTests(unittest.TestCase):
                 self.assertIn("update_spectrum(spec, title=title)", source)
                 self.assertIn("update_frames(spec, title=title)", source)
 
-    def test_center_point_and_spectral_bias_controls_exist_in_both_widgets(
+    def test_center_point_and_dark_noise_loader_exist_in_both_widgets(
         self,
     ) -> None:
         for filename in ("hardware_widget.py", "demo_widget.py"):
@@ -87,8 +87,9 @@ class WidgetSeparationTests(unittest.TestCase):
                 self.assertIn("def _ensure_raman_points_layer", source)
                 self.assertIn('name="Raman points"', source)
                 self.assertIn("height / 2.0, width / 2.0", source)
-                self.assertIn("self.remove_spectral_bias_check", source)
-                self.assertIn("self.dark_noise_controls", source)
+                self.assertNotIn("self.remove_spectral_bias_check", source)
+                self.assertIn("self.dark_noise_path = QLineEdit()", source)
+                self.assertIn('"None (raw spectra only)"', source)
                 self.assertIn("self.collect_dark_noise_btn", source)
                 self.assertIn("def collect_dark_noise", source)
                 self.assertIn("spectral_bias_from_dark_noise", source)
@@ -104,15 +105,14 @@ class WidgetSeparationTests(unittest.TestCase):
                 dark_button = source.index(
                     'self.collect_dark_noise_btn = QPushButton('
                 )
-                supply_checkbox = source.index(
-                    'self.remove_spectral_bias_check = QCheckBox('
-                )
                 dark_loader = source.index(
-                    'self.dark_noise_controls = QWidget()'
+                    'self.dark_noise_path = QLineEdit()'
                 )
+                loading_section = source.index("LOADING SECTION")
+                collect_section = source.index("COLLECT SPECTRUM SECTION")
+                self.assertLess(loading_section, dark_loader)
+                self.assertLess(dark_loader, collect_section)
                 self.assertLess(collect_button, dark_button)
-                self.assertLess(dark_button, supply_checkbox)
-                self.assertLess(supply_checkbox, dark_loader)
 
     def test_hardware_module_has_no_demo_mode_branches(self) -> None:
         source = (PACKAGE / "hardware_widget.py").read_text(encoding="utf-8")

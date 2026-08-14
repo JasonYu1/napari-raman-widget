@@ -81,14 +81,10 @@ HELP = {
         "Number of adjacent detector rows summed in single-track mode "
         "(minimum 2)."
     ),
-    "remove_spectral_bias_check": (
-        "Load filter_mean(dark noise) into each new FVB or single-track "
-        "plot. Raw spectra remain unchanged; correction is controlled by "
-        "the checkbox inside each plot window."
-    ),
     "dark_noise_path": (
-        "NumPy .npy array containing repeated dark spectra acquired with "
-        "matching exposure and detector readout settings."
+        "Optional NumPy .npy array containing repeated dark spectra acquired "
+        "with matching exposure and detector readout settings. Leave blank "
+        "for raw plots only."
     ),
     "collect_dark_noise_btn": (
         "Stop camera or Raman live acquisition, close the Raman shutter, "

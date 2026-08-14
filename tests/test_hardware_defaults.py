@@ -76,14 +76,12 @@ class HardwareDefaultsTests(unittest.TestCase):
                 path,
                 {
                     "dark_noise_file": "dark_noise_123.npy",
-                    "remove_spectral_bias": True,
                 },
             )
             _, values = load_hardware_defaults(updated_path)
 
         self.assertEqual(values["raman_exposure_ms"], 1000)
         self.assertEqual(values["dark_noise_file"], "dark_noise_123.npy")
-        self.assertTrue(values["remove_spectral_bias"])
 
 
 if __name__ == "__main__":

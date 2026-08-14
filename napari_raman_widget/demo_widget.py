@@ -166,6 +166,19 @@ class DemoWidget(QWidget):
 
         add_spectral_calibration_loader(self, loading_layout)
 
+        loading_layout.addWidget(QLabel("Dark noise (optional .npy):"))
+        dark_noise_layout = QHBoxLayout()
+        self.dark_noise_path = QLineEdit()
+        self.dark_noise_path.setPlaceholderText(
+            "None (raw spectra only)"
+        )
+        dark_noise_browse = QPushButton("...")
+        dark_noise_browse.setFixedWidth(30)
+        dark_noise_browse.clicked.connect(self.browse_dark_noise)
+        dark_noise_layout.addWidget(self.dark_noise_path)
+        dark_noise_layout.addWidget(dark_noise_browse)
+        loading_layout.addLayout(dark_noise_layout)
+
         loading_layout.addWidget(
             QLabel("Output folder (optional, applied on connect):")
         )
@@ -395,31 +408,6 @@ class DemoWidget(QWidget):
         self.collect_dark_noise_btn = QPushButton("Collect dark noise")
         self.collect_dark_noise_btn.clicked.connect(self.collect_dark_noise)
         raman_layout.addWidget(self.collect_dark_noise_btn)
-
-        self.remove_spectral_bias_check = QCheckBox(
-            "Supply dark noise to spectrum plots"
-        )
-        self.remove_spectral_bias_check.toggled.connect(
-            self._update_spectral_bias_fields
-        )
-        raman_layout.addWidget(self.remove_spectral_bias_check)
-
-        self.dark_noise_controls = QWidget()
-        dark_noise_layout = QHBoxLayout(self.dark_noise_controls)
-        dark_noise_layout.setContentsMargins(0, 0, 0, 0)
-        dark_noise_layout.addWidget(QLabel("Dark noise (.npy):"))
-        self.dark_noise_path = QLineEdit()
-        self.dark_noise_path.setPlaceholderText(
-            "repeated dark spectra saved as a NumPy array"
-        )
-        dark_noise_browse = QPushButton("...")
-        dark_noise_browse.setFixedWidth(30)
-        dark_noise_browse.clicked.connect(self.browse_dark_noise)
-        dark_noise_layout.addWidget(self.dark_noise_path)
-        dark_noise_layout.addWidget(dark_noise_browse)
-        self.dark_noise_controls.hide()
-        raman_layout.addWidget(self.dark_noise_controls)
-        raman_box.toggled.connect(self._update_spectral_bias_fields)
 
         raman_box.setLayout(raman_layout)
         outer.addWidget(raman_box)
@@ -2344,13 +2332,6 @@ class DemoWidget(QWidget):
             self.raman_box.isChecked() and mode == "single_track"
         )
 
-    def _update_spectral_bias_fields(self, _checked=None):
-        """Show the dark-noise loader only while bias removal is enabled."""
-        self.dark_noise_controls.setVisible(
-            self.raman_box.isChecked()
-            and self.remove_spectral_bias_check.isChecked()
-        )
-
     def _collect_read_mode_options(self, read_mode):
         options = {}
         if read_mode != "fvb":
@@ -2365,7 +2346,7 @@ class DemoWidget(QWidget):
     def _load_spectral_bias(self):
         path_text = self.dark_noise_path.text().strip()
         if not path_text:
-            raise ValueError("select or collect a dark-noise .npy file")
+            return None
         path = Path(path_text).expanduser()
         if not path.is_file():
             raise FileNotFoundError(f"dark-noise file not found: {path}")
@@ -2427,7 +2408,6 @@ class DemoWidget(QWidget):
             )
             np.save(path, dark_noise, allow_pickle=False)
             self.dark_noise_path.setText(str(path.resolve()))
-            self.remove_spectral_bias_check.setChecked(True)
 
             window = SpectrumWindow(
                 dark_noise,
@@ -2501,13 +2481,12 @@ class DemoWidget(QWidget):
             collection_started_at = datetime.now().astimezone()
             collection_started = time.perf_counter()
             pt, point_index = self._raman_point_from_active_layer()
-            remove_bias = self.remove_spectral_bias_check.isChecked()
-            if remove_bias and read_mode == "image":
-                raise ValueError(
-                    "spectral-bias removal supports FVB or single-track "
-                    "readout"
-                )
-            spectral_bias = self._load_spectral_bias() if remove_bias else None
+            spectral_bias = (
+                self._load_spectral_bias()
+                if read_mode != "image"
+                else None
+            )
+            bias_available = spectral_bias is not None
 
             self.daq.galvo.stop()
             self.daq.galvo.start()
@@ -2557,10 +2536,10 @@ class DemoWidget(QWidget):
                         "center_wavelength_nm": wavelength,
                         "grating": grating,
                         "peak_intensity": peak,
-                        "spectral_bias_available": remove_bias,
+                        "spectral_bias_available": bias_available,
                         "dark_noise_file": (
                             self.dark_noise_path.text().strip()
-                            if remove_bias
+                            if bias_available
                             else None
                         ),
                     },
@@ -2603,13 +2582,11 @@ class DemoWidget(QWidget):
         """Start simulated one-frame acquisition cycles off the UI thread."""
         try:
             pt, point_index = self._raman_point_from_active_layer()
-            remove_bias = self.remove_spectral_bias_check.isChecked()
-            if remove_bias and read_mode == "image":
-                raise ValueError(
-                    "spectral-bias removal supports FVB or single-track "
-                    "readout"
-                )
-            spectral_bias = self._load_spectral_bias() if remove_bias else None
+            spectral_bias = (
+                self._load_spectral_bias()
+                if read_mode != "image"
+                else None
+            )
             self.daq.galvo.stop()
             self.daq.galvo.start()
 
@@ -2757,8 +2734,6 @@ class DemoWidget(QWidget):
             self.collect_read_mode_combo,
             self.collect_single_track_controls,
             self.collect_save_input,
-            self.remove_spectral_bias_check,
-            self.dark_noise_controls,
         )
         if running:
             self._live_control_states = [
