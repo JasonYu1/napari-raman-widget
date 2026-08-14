@@ -13,6 +13,7 @@ from napari_raman_widget.hardware_defaults import (
     DEFAULTS_ENV_VAR,
     load_hardware_defaults,
     resolve_defaults_path,
+    update_hardware_defaults,
 )
 
 
@@ -62,6 +63,27 @@ class HardwareDefaultsTests(unittest.TestCase):
             path.write_text("[]", encoding="utf-8")
             with self.assertRaises(ValueError):
                 load_hardware_defaults(path)
+
+    def test_updates_defaults_without_discarding_existing_values(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "defaults.json"
+            path.write_text(
+                json.dumps({"raman_exposure_ms": 1000}),
+                encoding="utf-8",
+            )
+
+            updated_path = update_hardware_defaults(
+                path,
+                {
+                    "dark_noise_file": "dark_noise_123.npy",
+                    "remove_spectral_bias": True,
+                },
+            )
+            _, values = load_hardware_defaults(updated_path)
+
+        self.assertEqual(values["raman_exposure_ms"], 1000)
+        self.assertEqual(values["dark_noise_file"], "dark_noise_123.npy")
+        self.assertTrue(values["remove_spectral_bias"])
 
 
 if __name__ == "__main__":

@@ -124,6 +124,8 @@ WIDGET_PARAMS = [
     _wp("spectrum_exposure_ms", "exposure_input", "float"),
     _wp("spectrum_repeats", "n_input", "int"),
     _wp("live_spectra", "live_collect_check", "check"),
+    _wp("remove_spectral_bias", "remove_spectral_bias_check", "check"),
+    _wp("dark_noise_file", "dark_noise_path", "text"),
     _wp(
         "spectrum_read_mode",
         "collect_read_mode_combo",

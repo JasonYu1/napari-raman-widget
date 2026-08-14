@@ -31,6 +31,29 @@ class FixedYScaleTests(unittest.TestCase):
         finally:
             window.close()
 
+    def test_spectral_bias_is_a_per_window_display_toggle(self) -> None:
+        raw = np.array([[10.0, 20.0, 30.0]])
+        bias = np.array([1.0, 2.0, 3.0])
+        window = SpectrumWindow(raw, spectral_bias=bias)
+        try:
+            np.testing.assert_array_equal(window.spec, raw)
+            self.assertFalse(window.remove_spectral_bias_check.isHidden())
+            self.assertFalse(window.remove_spectral_bias_check.isChecked())
+            np.testing.assert_allclose(
+                window.ax.lines[0].get_ydata(),
+                raw[0],
+            )
+
+            window.remove_spectral_bias_check.setChecked(True)
+
+            np.testing.assert_array_equal(window.spec, raw)
+            np.testing.assert_allclose(
+                window.ax.lines[0].get_ydata(),
+                raw[0] - bias,
+            )
+        finally:
+            window.close()
+
     def test_row_sum_scale_can_be_fixed_and_released(self) -> None:
         window = DetectorImageWindow(np.ones((1, 4, 6)))
         try:

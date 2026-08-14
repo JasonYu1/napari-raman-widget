@@ -8,6 +8,8 @@
   "center_wavelength_nm": 785.0,
   "raman_exposure_ms": 1000.0,
   "raman_repeats": 2,
+  "dark_noise_file": null,
+  "remove_spectral_bias": false,
   "selection_center_x": 740,
   "selection_center_y": 540,
   "selection_radius": 100,

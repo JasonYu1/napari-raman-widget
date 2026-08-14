@@ -1,6 +1,10 @@
 """Pop-up matplotlib windows used to display calibration, spectra, and scans."""
 import numpy as np
-from napari_raman_widget.spectra import filter_mean, sum_detector_rows
+from napari_raman_widget.spectra import (
+    filter_mean,
+    subtract_spectral_bias,
+    sum_detector_rows,
+)
 from napari_raman_widget.spectral_calibration import (
     PixelToWavenumberCalibration,
     save_pixel_to_wavenumber_calibration,
@@ -258,11 +262,14 @@ class SpectrumWindow(QMainWindow):
         title="Spectrum",
         spectral_calibration=None,
         calibration_changed=None,
+        spectral_bias=None,
+        remove_spectral_bias=False,
     ):
         super().__init__()
         self.setWindowTitle(title)
         self.resize(700, 550)
         self.spec = self._normalize_spectra(spec)
+        self.spectral_bias = self._normalize_spectral_bias(spectral_bias)
         self._show_mean = True
         self._fixed_y_limits = None
         self.spectral_calibration = spectral_calibration
@@ -296,6 +303,19 @@ class SpectrumWindow(QMainWindow):
             self._on_fix_y_scale_toggled
         )
         controls.addWidget(self.fix_y_scale_check)
+        self.remove_spectral_bias_check = QCheckBox("Remove spectral bias")
+        self.remove_spectral_bias_check.setToolTip(
+            "Subtract filter_mean(dark noise) in this plot only. The raw "
+            "spectra remain unchanged."
+        )
+        self.remove_spectral_bias_check.setChecked(
+            bool(remove_spectral_bias and self.spectral_bias is not None)
+        )
+        self.remove_spectral_bias_check.toggled.connect(self._redraw)
+        self.remove_spectral_bias_check.setVisible(
+            self.spectral_bias is not None
+        )
+        controls.addWidget(self.remove_spectral_bias_check)
         self.calibration_btn = QPushButton("Pixel-to-wavenumber calibration")
         self.calibration_btn.clicked.connect(self._start_calibration)
         controls.addWidget(self.calibration_btn)
@@ -355,6 +375,22 @@ class SpectrumWindow(QMainWindow):
             )
         return spec
 
+    def _normalize_spectral_bias(self, spectral_bias):
+        if spectral_bias is None:
+            return None
+        spectral_bias = np.asarray(spectral_bias, dtype=float)
+        subtract_spectral_bias(self.spec, spectral_bias)
+        return spectral_bias
+
+    def _display_spectra(self):
+        """Return raw or bias-corrected data for this window's plot only."""
+        if (
+            self.spectral_bias is not None
+            and self.remove_spectral_bias_check.isChecked()
+        ):
+            return subtract_spectral_bias(self.spec, self.spectral_bias)
+        return self.spec
+
     def update_spectrum(self, spec, *, title=None):
         """Replace plotted data, for example after each live exposure."""
         self.spec = self._normalize_spectra(spec)
@@ -379,16 +415,19 @@ class SpectrumWindow(QMainWindow):
     def _redraw(self):
         import matplotlib.cm as cm
         self.ax.clear()
+        display_spectra = self._display_spectra()
         lines = []
         if self._show_mean:
-            lines.extend(self.ax.plot(filter_mean(self.spec)))
+            lines.extend(self.ax.plot(filter_mean(display_spectra)))
         else:
-            n = self.spec.shape[0]
+            n = display_spectra.shape[0]
             colors = cm.viridis(np.linspace(0, 1, n))
             for i in range(n):
                 lines.extend(
                     self.ax.plot(
-                        self.spec[i], color=colors[i], linewidth=0.8
+                        display_spectra[i],
+                        color=colors[i],
+                        linewidth=0.8,
                     )
                 )
         _set_spectral_line_axis(
@@ -398,7 +437,10 @@ class SpectrumWindow(QMainWindow):
             self.pixel_axis_check.isChecked(),
         )
         self.ax.set_ylabel("Intensity (a.u.)")
-        self.ax.set_title(self.windowTitle())
+        title = self.windowTitle()
+        if self.remove_spectral_bias_check.isChecked():
+            title = f"{title} | bias corrected"
+        self.ax.set_title(title)
         if self._fixed_y_limits is not None:
             self.ax.set_ylim(self._fixed_y_limits)
         if self._calibrating:
@@ -428,7 +470,7 @@ class SpectrumWindow(QMainWindow):
         self.canvas.setFocus()
 
     def _spectrum_for_calibration(self):
-        return np.asarray(filter_mean(self.spec), dtype=float)
+        return np.asarray(filter_mean(self._display_spectra()), dtype=float)
 
     def _nearest_peak_pixel(self, x):
         y = self._spectrum_for_calibration()

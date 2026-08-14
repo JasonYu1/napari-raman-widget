@@ -9,7 +9,7 @@ from pathlib import Path
 import napari
 import numpy as np
 import xarray as xr
-from qtpy.QtCore import Qt, QThread, QUrl, Signal
+from qtpy.QtCore import Qt, QThread, QTimer, QUrl, Signal
 from qtpy.QtGui import QDesktopServices
 from qtpy.QtWidgets import (
     QCheckBox,
@@ -42,7 +42,12 @@ from .calibration import (
 )
 from .core_guard import install_core_guard
 from .field_help import apply_tooltips
-from .hardware_defaults import load_hardware_defaults, resolve_defaults_path
+from .hardware_defaults import (
+    DEFAULTS_FILENAME,
+    load_hardware_defaults,
+    resolve_defaults_path,
+    update_hardware_defaults,
+)
 from .hardware_shutdown import shutdown_core_hardware
 from .log_window import LogWindow, _StdoutRedirector
 from .live_spectra import LiveSpectrumWorker
@@ -68,7 +73,10 @@ from .slack_notifications import (
     notify_exception,
     run_mda_with_notifications,
 )
-from .spectra import save_collection_record
+from .spectra import (
+    save_collection_record,
+    spectral_bias_from_dark_noise,
+)
 from .spectral_calibration_ui import (
     add_spectral_calibration_loader,
     browse_spectral_calibration,
@@ -119,6 +127,8 @@ class HardwareWidget(QWidget):
         self._live_raman_window = None
         self._live_raman_context = None
         self._live_control_states = []
+        self._collect_dark_after_live_stop = False
+        self._startup_directory = Path.cwd()
 
         outer = QVBoxLayout()
 
@@ -322,6 +332,35 @@ class HardwareWidget(QWidget):
         self.collect_btn = QPushButton("Collect spectra at selected point")
         self.collect_btn.clicked.connect(self.collect_raman)
         raman_layout.addWidget(self.collect_btn)
+
+        self.collect_dark_noise_btn = QPushButton("Collect dark noise")
+        self.collect_dark_noise_btn.clicked.connect(self.collect_dark_noise)
+        raman_layout.addWidget(self.collect_dark_noise_btn)
+
+        self.remove_spectral_bias_check = QCheckBox(
+            "Supply dark noise to spectrum plots"
+        )
+        self.remove_spectral_bias_check.toggled.connect(
+            self._update_spectral_bias_fields
+        )
+        raman_layout.addWidget(self.remove_spectral_bias_check)
+
+        self.dark_noise_controls = QWidget()
+        dark_noise_layout = QHBoxLayout(self.dark_noise_controls)
+        dark_noise_layout.setContentsMargins(0, 0, 0, 0)
+        dark_noise_layout.addWidget(QLabel("Dark noise (.npy):"))
+        self.dark_noise_path = QLineEdit()
+        self.dark_noise_path.setPlaceholderText(
+            "repeated dark spectra saved as a NumPy array"
+        )
+        dark_noise_browse = QPushButton("...")
+        dark_noise_browse.setFixedWidth(30)
+        dark_noise_browse.clicked.connect(self.browse_dark_noise)
+        dark_noise_layout.addWidget(self.dark_noise_path)
+        dark_noise_layout.addWidget(dark_noise_browse)
+        self.dark_noise_controls.hide()
+        raman_layout.addWidget(self.dark_noise_controls)
+        raman_box.toggled.connect(self._update_spectral_bias_fields)
 
         raman_box.setLayout(raman_layout)
         outer.addWidget(raman_box)
@@ -1218,6 +1257,7 @@ class HardwareWidget(QWidget):
                 self.spectral_calibration_path
             ),
             "tracking_config": self.mda_track_cfg_input,
+            "dark_noise_file": self.dark_noise_path,
         }
         text_fields = {
             "mda_output_directory": self.mda_dir_input,
@@ -1233,6 +1273,9 @@ class HardwareWidget(QWidget):
         combo_fields = {
             "selection_cellpose_model": self.sel_cellpose_combo,
             "mda_cellpose_model": self.mda_seg_model_combo,
+        }
+        checkbox_fields = {
+            "remove_spectral_bias": self.remove_spectral_bias_check,
         }
 
         for key, widget in path_fields.items():
@@ -1266,9 +1309,13 @@ class HardwareWidget(QWidget):
                     f"[hardware defaults] ignored unavailable {key}: "
                     f"{choice!r}"
                 )
+        for key, widget in checkbox_fields.items():
+            if key in values and values[key] is not None:
+                widget.setChecked(bool(values[key]))
 
         supported = set(path_fields) | set(text_fields) | set(number_fields)
         supported |= set(combo_fields)
+        supported |= set(checkbox_fields)
         unknown = sorted(set(values) - supported)
         if unknown:
             print(f"[hardware defaults] ignored unknown keys: {unknown}")
@@ -1318,6 +1365,16 @@ class HardwareWidget(QWidget):
         )
         if path:
             self.sel_vdm_path.setText(path)
+
+    def browse_dark_noise(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select dark-noise spectra",
+            "",
+            "NumPy arrays (*.npy);;All files (*)",
+        )
+        if path:
+            self.dark_noise_path.setText(path)
 
     def browse_tracking_cfg(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -2076,11 +2133,60 @@ class HardwareWidget(QWidget):
         self.calib_box.setToolTip("")
 
     # -------- raman collection --------
+    def _raman_image_center_yx(self):
+        """Return the center of the active/newest image in napari coordinates."""
+        active = self.viewer.layers.selection.active
+        if isinstance(active, napari.layers.Image):
+            height, width = np.asarray(active.data).shape[-2:]
+            return np.array([height / 2.0, width / 2.0], dtype=float)
+
+        for layer in reversed(list(self.viewer.layers)):
+            if isinstance(layer, napari.layers.Image):
+                height, width = np.asarray(layer.data).shape[-2:]
+                return np.array([height / 2.0, width / 2.0], dtype=float)
+
+        width, height = self._get_image_xy()
+        return np.array([height / 2.0, width / 2.0], dtype=float)
+
+    def _ensure_raman_points_layer(self):
+        """Select a Points layer, creating a centered point when needed."""
+        active = self.viewer.layers.selection.active
+        if isinstance(active, napari.layers.Points):
+            layer = active
+        else:
+            point_layers = [
+                layer
+                for layer in self.viewer.layers
+                if isinstance(layer, napari.layers.Points)
+            ]
+            layer = point_layers[-1] if point_layers else None
+
+        if layer is None:
+            center = self._raman_image_center_yx()
+            layer = self.viewer.add_points(
+                center.reshape(1, 2),
+                name="Raman points",
+            )
+            self.viewer.layers.selection.active = layer
+            layer.selected_data = {0}
+            self.status.setText(
+                "Status: created Raman points layer at the image center"
+            )
+            return layer
+
+        data = np.asarray(layer.data)
+        if data.ndim != 2 or len(data) == 0:
+            center = self._raman_image_center_yx()
+            layer.add(center.reshape(1, 2))
+            data = np.asarray(layer.data)
+            layer.selected_data = {len(data) - 1}
+
+        self.viewer.layers.selection.active = layer
+        return layer
+
     def _raman_point_from_active_layer(self):
         """Return the selected (or newest) point from the active Points layer."""
-        layer = self.viewer.layers.selection.active
-        if layer is None or not isinstance(layer, napari.layers.Points):
-            raise ValueError("select a Points layer before collecting Raman")
+        layer = self._ensure_raman_points_layer()
 
         data = np.asarray(layer.data)
         if data.ndim != 2 or len(data) == 0 or data.shape[1] < 2:
@@ -2108,6 +2214,135 @@ class HardwareWidget(QWidget):
         self.collect_single_track_controls.setVisible(
             self.raman_box.isChecked() and mode == "single_track"
         )
+
+    def _update_spectral_bias_fields(self, _checked=None):
+        """Show the dark-noise loader only while bias removal is enabled."""
+        self.dark_noise_controls.setVisible(
+            self.raman_box.isChecked()
+            and self.remove_spectral_bias_check.isChecked()
+        )
+
+    def _collect_read_mode_options(self, read_mode):
+        options = {}
+        if read_mode != "fvb":
+            options["read_mode"] = read_mode
+        if read_mode == "single_track":
+            options.update(
+                track_center=int(self.collect_track_center_input.value()),
+                track_height=int(self.collect_track_height_input.value()),
+            )
+        return options
+
+    def _load_spectral_bias(self):
+        path_text = self.dark_noise_path.text().strip()
+        if not path_text:
+            raise ValueError("select or collect a dark-noise .npy file")
+        path = Path(path_text).expanduser()
+        if not path.is_file():
+            raise FileNotFoundError(f"dark-noise file not found: {path}")
+        dark_noise = np.load(path, allow_pickle=False)
+        return spectral_bias_from_dark_noise(dark_noise)
+
+    def _save_dark_noise_as_default(self, path):
+        defaults_path = self.defaults_path
+        if defaults_path is None:
+            defaults_path = self._startup_directory / DEFAULTS_FILENAME
+        self.defaults_path = update_hardware_defaults(
+            defaults_path,
+            {
+                "dark_noise_file": str(Path(path).resolve()),
+                "remove_spectral_bias": True,
+            },
+        )
+
+    def collect_dark_noise(self):
+        """Stop live acquisition, collect repeated dark spectra, and save."""
+        if self.live_collect_check.isChecked():
+            self.live_collect_check.setChecked(False)
+        if self._live_raman_worker is not None:
+            self._collect_dark_after_live_stop = True
+            self.collect_dark_noise_btn.setEnabled(False)
+            self.collect_dark_noise_btn.setText(
+                "Waiting for live exposure to stop..."
+            )
+            self._stop_live_raman()
+            return
+        self._collect_dark_after_live_stop = False
+
+        if self.collector is None or self.daq is None:
+            self.status.setText("Status: not connected")
+            return
+
+        read_mode = self.collect_read_mode_combo.currentData()
+        if read_mode == "image":
+            self.status.setText(
+                "Status: dark-noise bias removal supports FVB or "
+                "single-track readout"
+            )
+            return
+
+        exposure = float(self.exposure_input.value())
+        repeats = int(self.n_input.value())
+        try:
+            if self.core is not None:
+                try:
+                    self.core.stopSequenceAcquisition()
+                except Exception as error:
+                    print(f"[dark noise live stop] {error}")
+                self._set_scan_raman_mode(False)
+
+            self.status.setText(
+                f"Status: collecting {repeats} dark spectra..."
+            )
+            self.repaint()
+            self.daq.galvo.stop()
+            self.daq.galvo.start()
+            dark_noise = self.collector.collect_spectra_pts(
+                np.zeros((repeats, 2), dtype=float),
+                exposure,
+                **self._collect_read_mode_options(read_mode),
+            )
+            dark_noise = np.asarray(dark_noise)
+            spectral_bias = spectral_bias_from_dark_noise(dark_noise)
+
+            path = (
+                Path.cwd()
+                / f"dark_noise_{exposure:g}ms_{uuid.uuid4()}.npy"
+            )
+            np.save(path, dark_noise, allow_pickle=False)
+            self.dark_noise_path.setText(str(path.resolve()))
+            self.remove_spectral_bias_check.setChecked(True)
+
+            defaults_warning = ""
+            try:
+                self._save_dark_noise_as_default(path)
+            except Exception as error:
+                defaults_warning = f"; couldn't update defaults: {error}"
+                print(f"[dark noise defaults] {error}")
+
+            title = (
+                f"Dark noise | {read_mode} | {repeats}x{exposure:.0f} ms"
+            )
+            window = SpectrumWindow(
+                dark_noise,
+                title=title,
+                spectral_calibration=self.spectral_calibration,
+                calibration_changed=self._spectral_calibration_created,
+                spectral_bias=spectral_bias,
+            )
+            window.show()
+            self._plot_windows.append(window)
+            self.status.setText(
+                f"Status: dark noise saved and selected as default -> "
+                f"{path}{defaults_warning}"
+            )
+        except Exception as error:
+            self.status.setText(
+                f"Status: dark-noise collection failed -- {error}"
+            )
+        finally:
+            self.collect_dark_noise_btn.setEnabled(True)
+            self.collect_dark_noise_btn.setText("Collect dark noise")
 
     def _update_collect_live_fields(self, checked=None):
         """Switch between finite repeats and one-at-a-time live collection."""
@@ -2166,19 +2401,19 @@ class HardwareWidget(QWidget):
             collection_started_at = datetime.now().astimezone()
             collection_started = time.perf_counter()
             pt, point_index = self._raman_point_from_active_layer()
+            remove_bias = self.remove_spectral_bias_check.isChecked()
+            if remove_bias and read_mode == "image":
+                raise ValueError(
+                    "spectral-bias removal supports FVB or single-track "
+                    "readout"
+                )
+            spectral_bias = self._load_spectral_bias() if remove_bias else None
 
             self.daq.galvo.stop()
             self.daq.galvo.start()
 
             volts = self._pt_to_volts(pt)
-            read_mode_options = {}
-            if read_mode != "fvb":
-                read_mode_options["read_mode"] = read_mode
-            if read_mode == "single_track":
-                read_mode_options.update(
-                    track_center=int(self.collect_track_center_input.value()),
-                    track_height=int(self.collect_track_height_input.value()),
-                )
+            read_mode_options = self._collect_read_mode_options(read_mode)
             spec = self.collector.collect_spectra_pts(
                 np.tile(volts[0], (N, 1)),
                 exposure,
@@ -2224,6 +2459,12 @@ class HardwareWidget(QWidget):
                         "center_wavelength_nm": wavelength,
                         "grating": grating,
                         "peak_intensity": peak,
+                        "spectral_bias_available": remove_bias,
+                        "dark_noise_file": (
+                            self.dark_noise_path.text().strip()
+                            if remove_bias
+                            else None
+                        ),
                     },
                 )
                 saved_msg = f" -> {store_path}"
@@ -2246,6 +2487,7 @@ class HardwareWidget(QWidget):
                     title=title,
                     spectral_calibration=self.spectral_calibration,
                     calibration_changed=self._spectral_calibration_created,
+                    spectral_bias=spectral_bias,
                 )
             win.show()
             self._plot_windows.append(win)
@@ -2263,18 +2505,18 @@ class HardwareWidget(QWidget):
         """Start one-detector-frame acquisition cycles off the UI thread."""
         try:
             pt, point_index = self._raman_point_from_active_layer()
+            remove_bias = self.remove_spectral_bias_check.isChecked()
+            if remove_bias and read_mode == "image":
+                raise ValueError(
+                    "spectral-bias removal supports FVB or single-track "
+                    "readout"
+                )
+            spectral_bias = self._load_spectral_bias() if remove_bias else None
             self.daq.galvo.stop()
             self.daq.galvo.start()
             volts = np.asarray(self._pt_to_volts(pt)[0], dtype=float)
 
-            read_mode_options = {}
-            if read_mode != "fvb":
-                read_mode_options["read_mode"] = read_mode
-            if read_mode == "single_track":
-                read_mode_options.update(
-                    track_center=int(self.collect_track_center_input.value()),
-                    track_height=int(self.collect_track_height_input.value()),
-                )
+            read_mode_options = self._collect_read_mode_options(read_mode)
 
             wavelength = float(self.collector.get_wavelength())
             grating = int(self.collector.get_grating())
@@ -2291,13 +2533,15 @@ class HardwareWidget(QWidget):
             def acquire_one():
                 repeated_volts = np.tile(volts, (2, 1))
                 if callable(batch_collector):
-                    return batch_collector(
+                    spectrum = batch_collector(
                         repeated_volts, exposure, **read_mode_options
                     )
-                spectra = collector.collect_spectra_pts(
-                    repeated_volts, exposure, **read_mode_options
-                )
-                return np.asarray(spectra)[-1:]
+                else:
+                    spectra = collector.collect_spectra_pts(
+                        repeated_volts, exposure, **read_mode_options
+                    )
+                    spectrum = np.asarray(spectra)[-1:]
+                return spectrum
 
             thread = QThread(self)
             worker = LiveSpectrumWorker(acquire_one)
@@ -2321,6 +2565,7 @@ class HardwareWidget(QWidget):
                 "title": title,
                 "count": 0,
                 "failed": None,
+                "spectral_bias": spectral_bias,
             }
             self._set_live_raman_controls(True)
             self.collect_btn.setText("Stop live spectra")
@@ -2351,6 +2596,7 @@ class HardwareWidget(QWidget):
                     title=title,
                     spectral_calibration=self.spectral_calibration,
                     calibration_changed=self._spectral_calibration_created,
+                    spectral_bias=context.get("spectral_bias"),
                 )
             window.show()
             self._plot_windows.append(window)
@@ -2395,13 +2641,19 @@ class HardwareWidget(QWidget):
         self._set_live_raman_controls(False)
         self.collect_btn.setEnabled(True)
         self._update_collect_live_fields()
-        if not failed:
+        collect_dark = self._collect_dark_after_live_stop
+        self._collect_dark_after_live_stop = False
+        if not failed and not collect_dark:
             self.status.setText(
                 f"Status: live collection stopped after {count} spectrum"
                 f"{'s' if count != 1 else ''}"
             )
         if thread is not None:
             thread.deleteLater()
+        if collect_dark:
+            self.collect_dark_noise_btn.setEnabled(True)
+            self.collect_dark_noise_btn.setText("Collect dark noise")
+            QTimer.singleShot(0, self.collect_dark_noise)
 
     def _set_live_raman_controls(self, running):
         controls = (
@@ -2415,6 +2667,8 @@ class HardwareWidget(QWidget):
             self.collect_read_mode_combo,
             self.collect_single_track_controls,
             self.collect_save_input,
+            self.remove_spectral_bias_check,
+            self.dark_noise_controls,
         )
         if running:
             self._live_control_states = [

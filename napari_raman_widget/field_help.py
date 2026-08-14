@@ -81,14 +81,30 @@ HELP = {
         "Number of adjacent detector rows summed in single-track mode "
         "(minimum 2)."
     ),
+    "remove_spectral_bias_check": (
+        "Load filter_mean(dark noise) into each new FVB or single-track "
+        "plot. Raw spectra remain unchanged; correction is controlled by "
+        "the checkbox inside each plot window."
+    ),
+    "dark_noise_path": (
+        "NumPy .npy array containing repeated dark spectra acquired with "
+        "matching exposure and detector readout settings."
+    ),
+    "collect_dark_noise_btn": (
+        "Stop camera or Raman live acquisition, close the Raman shutter, "
+        "collect repeated dark spectra, save "
+        "dark_noise_<exposure>ms_<uuid>.npy, and "
+        "select it as the persistent default."
+    ),
     "collect_save_input": (
         "Optional base filename. Saves detector data, settings, and measured "
         "timing together in one xarray .zarr dataset under the working "
         "directory. Blank = display only."
     ),
     "collect_btn": (
-        "Restart the galvo, transform the selected (or newest) point, then "
-        "collect once or start/stop live acquisition."
+        "Create a centered Raman Points layer when none exists, restart the "
+        "galvo, transform the selected (or newest) point, then collect once "
+        "or start/stop live acquisition."
     ),
 
     # ============ LASER AIMING CALIBRATION ============

@@ -7,6 +7,8 @@ import xarray as xr
 
 from napari_raman_widget.spectra import (
     save_collection_record,
+    spectral_bias_from_dark_noise,
+    subtract_spectral_bias,
     sum_detector_rows,
 )
 
@@ -66,6 +68,35 @@ class DetectorRowSumTests(unittest.TestCase):
     def test_requires_a_detector_image(self) -> None:
         with self.assertRaisesRegex(ValueError, "detector image"):
             sum_detector_rows(np.zeros((2, 3, 4)), 0, 1)
+
+
+class SpectralBiasTests(unittest.TestCase):
+    def test_subtracts_filtered_dark_noise_and_keeps_negative_values(self) -> None:
+        dark_noise = np.array(
+            [
+                [10.0, 20.0, 30.0],
+                [12.0, 22.0, 32.0],
+                [11.0, 21.0, 31.0],
+            ]
+        )
+        spectra = np.array([[9.0, 25.0, 40.0]])
+
+        bias = spectral_bias_from_dark_noise(dark_noise)
+        corrected = subtract_spectral_bias(spectra, bias)
+
+        np.testing.assert_allclose(bias, [11.0, 21.0, 31.0])
+        np.testing.assert_allclose(corrected, [[-2.0, 4.0, 9.0]])
+
+    def test_rejects_mismatched_spectral_lengths(self) -> None:
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            subtract_spectral_bias(
+                np.zeros((2, 4)),
+                np.zeros(3),
+            )
+
+    def test_dark_noise_must_contain_repeated_spectra(self) -> None:
+        with self.assertRaisesRegex(ValueError, "dark noise"):
+            spectral_bias_from_dark_noise(np.zeros(4))
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ __all__ = [
     "DEFAULTS_FILENAME",
     "load_hardware_defaults",
     "resolve_defaults_path",
+    "update_hardware_defaults",
 ]
 
 
@@ -87,3 +88,32 @@ def resolve_defaults_path(value: Any, defaults_file: Path) -> str:
     if not path.is_absolute():
         path = defaults_file.parent / path
     return str(path.resolve())
+
+
+def update_hardware_defaults(
+    path: str | Path,
+    updates: dict[str, Any],
+) -> Path:
+    """Merge values into a defaults JSON file and replace it atomically."""
+    defaults_path = Path(path).expanduser().resolve()
+    values: dict[str, Any] = {}
+    if defaults_path.is_file():
+        with defaults_path.open("r", encoding="utf-8") as stream:
+            loaded = json.load(stream)
+        if not isinstance(loaded, dict):
+            raise ValueError(
+                f"Hardware defaults must be a JSON object: {defaults_path}"
+            )
+        values.update(loaded)
+
+    values.update(updates)
+    defaults_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = defaults_path.with_suffix(
+        f"{defaults_path.suffix}.tmp"
+    )
+    temporary_path.write_text(
+        json.dumps(values, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary_path, defaults_path)
+    return defaults_path

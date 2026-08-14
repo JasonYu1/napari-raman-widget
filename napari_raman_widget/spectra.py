@@ -7,7 +7,13 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
-__all__ = ["filter_mean", "save_collection_record", "sum_detector_rows"]
+__all__ = [
+    "filter_mean",
+    "save_collection_record",
+    "spectral_bias_from_dark_noise",
+    "subtract_spectral_bias",
+    "sum_detector_rows",
+]
 
 
 def sum_detector_rows(
@@ -168,3 +174,38 @@ def filter_mean(
     )
 
     return filtered_mean
+
+
+def spectral_bias_from_dark_noise(dark_noise: np.ndarray) -> np.ndarray:
+    """Return the filtered mean spectrum represented by dark measurements."""
+    dark_noise = np.asarray(dark_noise)
+    if dark_noise.ndim != 2:
+        raise ValueError(
+            "dark noise must have shape "
+            "(number_of_measurements, number_of_spectral_pixels)"
+        )
+    return filter_mean(dark_noise)
+
+
+def subtract_spectral_bias(
+    spectra: np.ndarray,
+    spectral_bias: np.ndarray,
+) -> np.ndarray:
+    """Subtract one spectral bias vector while preserving negative values."""
+    spectra = np.asarray(spectra, dtype=float)
+    spectral_bias = np.asarray(spectral_bias, dtype=float)
+
+    if spectra.ndim != 2:
+        raise ValueError(
+            "spectra must have shape "
+            "(number_of_measurements, number_of_spectral_pixels)"
+        )
+    if spectral_bias.ndim != 1:
+        raise ValueError("spectral bias must be a one-dimensional array")
+    if spectra.shape[-1] != spectral_bias.shape[0]:
+        raise ValueError(
+            "dark-noise spectral length does not match acquired spectra: "
+            f"{spectral_bias.shape[0]} != {spectra.shape[-1]}"
+        )
+
+    return spectra - spectral_bias
