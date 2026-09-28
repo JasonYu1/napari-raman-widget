@@ -372,6 +372,8 @@ Integrated batch collection & False & In batch mode positions/click counts and R
 point handling differ; it must agree with dataset generation.\\
 Cellpose model & installed models; defaults to cyto2 if available & Segmentation model
 used to identify candidate cells.\\
+Exclude rectangular trap pillars & off & Removes segmented labels matching the
+calibrated trap-pillar geometry before creating cell targets.\\
 \endfieldtable
 
 \ui{Run automated selection} prepares the external MDA widget, performs Cellpose-based
@@ -379,7 +381,9 @@ selection, creates source layers and a new sequence, and stores them for Raman M
 
 \ui{Manual selection} creates empty point-source layers. In batch mode, click exactly
 \ui{N per FOV} cells per FOV; in non-batch mode, click freely. The button immediately
-stores references to those layers, so finish clicking before starting the Raman MDA.
+stores references to those layers. In non-batch mode the cell layer remains live, so
+cell points may also be added while the Raman MDA is running; additions made during a
+tracking refresh are preserved and take part in the next Raman collection.
 For non-batch manual results, \ui{Center clicked cells} uses the Vandermonde model to
 turn each clicked cell into a centered stage position, replacing the selection results.
 
@@ -402,6 +406,7 @@ Aiming pattern / size / N\_x & Shape, extent, and sampling of Raman subpoints.\\
 Background distance & Distance threshold for automated selection.\\
 Integrated batch collection & Selects batch or individual point handling.\\
 Cellpose model & Segmentation model used to detect cells.\\
+Exclude rectangular trap pillars & Rejects pillar-shaped segmentation labels.\\
 Run automated selection & Segments cells and prepares MDA selection results.\\
 Manual selection & Creates layers for hand-clicked cell selection.\\
 Center clicked cells & Converts non-batch clicks into centered positions.\\
@@ -429,6 +434,11 @@ Autofocus search pts & 8; 2--500 & Coarse autofocus sample count.\\
 Laser fine search range (+/- um) & 1.5; 0.1--1000 & Fine range shown only for laser autofocus.\\
 Laser fine search pts & 8; 2--500 & Fine laser-autofocus sample count.\\
 Segment and track & off & Re-segments images and updates aiming during a time series.\\
+Automatically add new cells & off & After the first tracked time point, adds one
+interior target for each newly appearing tracked cell mask. Available only in
+non-batch mode. A manually added target on that mask prevents a duplicate.\\
+Exclude rectangular trap pillars & off & Removes pillar-shaped labels before tracking
+and automatic target creation.\\
 Segment channel & BF initially & Micro-Manager channel used for segmentation.\\
 Image rescale factor & 2.0; 0.1--100 & Image scale used during segmentation.\\
 Cellpose model & installed models; cyto2 preferred & Model for time-series re-segmentation.\\
@@ -452,6 +462,8 @@ The acquisition uses axis order \code{t,p,c,z}, assigns the selection's aiming-s
 layers, replaces the time and Z plans, adds unique fluorescence channels, and writes
 Raman metadata containing the requested Z indices. \ui{Stop} requests MDA cancellation
 and stops sequence acquisition; the current hardware event may finish before exit.
+When \ui{Automatically add new cells} is enabled, discovery occurs whenever the
+configured refocus/segmentation cadence produces a new tracked mask.
 
 \section{Generate dataset}
 \ui{Generate dataset} asks for a completed MDA run directory. It loads the experiment,
@@ -493,6 +505,8 @@ Raman glass offset & Axial offset between glass focus and Raman measurement.\\
 Autofocus range / points & Extent and sampling count of the coarse focus search.\\
 Laser fine range / points & Extent and sampling count of laser fine focus.\\
 Segment and track & Re-detects cells and updates aiming during the time series.\\
+Automatically add new cells & Adds one live cell-layer target for each new tracked mask.\\
+Exclude rectangular trap pillars & Rejects pillar-shaped labels before aiming updates.\\
 Segment channel & Image channel used for segmentation.\\
 Image rescale factor & Resampling factor supplied to segmentation.\\
 Cellpose model & Model used for repeated cell segmentation.\\

@@ -5,7 +5,12 @@ from __future__ import annotations
 from typing import Any, Sequence
 
 import numpy as np
-from scipy.ndimage import center_of_mass, distance_transform_edt
+from scipy.ndimage import (
+    binary_dilation,
+    center_of_mass,
+    distance_transform_edt,
+    label as connected_components,
+)
 from skimage.draw import disk
 
 __all__ = [
@@ -194,6 +199,8 @@ def add_mask_with_hole(
 def find_clear_center_point(
     mask: np.ndarray,
     threshold: float = 20,
+    center: tuple[float, float] | None = None,
+    exclusion_mask: np.ndarray | None = None,
 ) -> np.ndarray:
     """Find a central background point away from labeled objects.
 
@@ -204,6 +211,12 @@ def find_clear_center_point(
         background.
     threshold
         Minimum required distance from a labeled object, in pixels.
+    center
+        Preferred point in ``(y, x)`` order. The image center is used when
+        omitted.
+    exclusion_mask
+        Optional boolean mask of pixels that must never be selected. These
+        pixels are treated like labeled foreground when measuring clearance.
 
     Returns
     -------
@@ -222,12 +235,16 @@ def find_clear_center_point(
             "threshold cannot be negative."
         )
 
-    background = mask == 0
+    excluded = _prepare_exclusion_mask(
+        exclusion_mask,
+        mask.shape,
+    )
+    background = (mask == 0) & ~excluded
     distance_map = distance_transform_edt(
         background
     )
     valid_points = np.argwhere(
-        distance_map >= threshold
+        background & (distance_map >= threshold)
     )
 
     if len(valid_points) == 0:
@@ -235,10 +252,17 @@ def find_clear_center_point(
             "No background point meets the requested clearance."
         )
 
-    image_center = (
-        np.asarray(mask.shape, dtype=float)
-        / 2
-    )
+    if center is None:
+        image_center = (
+            np.asarray(mask.shape, dtype=float)
+            / 2
+        )
+    else:
+        image_center = np.asarray(center, dtype=float)
+        if image_center.shape != (2,):
+            raise ValueError(
+                "center must contain one (y, x) coordinate."
+            )
     distances_to_center = np.linalg.norm(
         valid_points - image_center,
         axis=1,
@@ -250,6 +274,92 @@ def find_clear_center_point(
     return valid_points[best_index].astype(float)
 
 
+def _prepare_exclusion_mask(
+    exclusion_mask: np.ndarray | None,
+    shape: tuple[int, int],
+    margin: int = 0,
+) -> np.ndarray:
+    """Validate and optionally expand a hard no-target mask."""
+    if margin < 0:
+        raise ValueError(
+            "exclusion_margin cannot be negative."
+        )
+
+    if exclusion_mask is None:
+        return np.zeros(shape, dtype=bool)
+
+    excluded = np.asarray(exclusion_mask, dtype=bool)
+    if excluded.ndim != 2 or excluded.shape != shape:
+        raise ValueError(
+            "exclusion_mask must be two-dimensional and match label_mask."
+        )
+    if margin:
+        excluded = binary_dilation(
+            excluded,
+            iterations=int(margin),
+        )
+    return excluded
+
+
+def _safe_label_target(
+    label_mask: np.ndarray,
+    label_value: int,
+    excluded: np.ndarray,
+    minimum_safe_area: int = 16,
+    minimum_safe_radius: float = 2.0,
+) -> np.ndarray | None:
+    """Return a deep pixel in a viable cell body outside exclusion."""
+    object_pixels = label_mask == label_value
+    safe_pixels = object_pixels & ~excluded
+    if not np.any(safe_pixels):
+        return None
+
+    object_center = np.asarray(
+        center_of_mass(object_pixels),
+        dtype=float,
+    )
+    components, component_count = connected_components(
+        safe_pixels,
+        structure=np.ones((3, 3), dtype=bool),
+    )
+    viable_targets = []
+    for component_value in range(1, component_count + 1):
+        component = components == component_value
+        area = int(np.count_nonzero(component))
+        if area < int(minimum_safe_area):
+            continue
+        interior_distance = distance_transform_edt(
+            np.pad(component, 1, mode="constant", constant_values=False)
+        )[1:-1, 1:-1]
+        maximum_distance = float(interior_distance.max())
+        if maximum_distance < float(minimum_safe_radius):
+            continue
+        candidates = np.argwhere(interior_distance == maximum_distance)
+        if np.isfinite(object_center).all():
+            closest_index = int(
+                np.argmin(
+                    np.linalg.norm(
+                        candidates - object_center,
+                        axis=1,
+                    )
+                )
+            )
+            target = candidates[closest_index]
+        else:
+            target = candidates[0]
+        viable_targets.append(
+            (maximum_distance, area, target.astype(float))
+        )
+
+    if not viable_targets:
+        return None
+    viable_targets.sort(
+        key=lambda item: (item[0], item[1]),
+        reverse=True,
+    )
+    return viable_targets[0][2]
+
+
 def get_n_most_centered_coms(
     label_mask: np.ndarray,
     N: int = 10,
@@ -257,6 +367,10 @@ def get_n_most_centered_coms(
     radius: float = 250,
     autofocus_object: str | None = "glass",
     bkd_threshold: float = 50,
+    exclusion_mask: np.ndarray | None = None,
+    exclusion_margin: int = 0,
+    maximum_exclusion_overlap: float = 0.25,
+    maximum_axis_ratio_near_exclusion: float = 1.6,
 ) -> np.ndarray:
     """Return labeled-object centers closest to an image center.
 
@@ -281,6 +395,15 @@ def get_n_most_centered_coms(
         ``"None"`` to return only labeled-object centers.
     bkd_threshold
         Minimum background clearance used for the autofocus point.
+    exclusion_mask
+        Optional hard no-target mask, such as the registered pillar mask.
+    exclusion_margin
+        Number of pixels by which to expand ``exclusion_mask`` before cell
+        targets are chosen.
+    maximum_exclusion_overlap
+        Retained for compatibility with the previous whole-label filter.
+    maximum_axis_ratio_near_exclusion
+        Retained for compatibility with the previous whole-label filter.
 
     Returns
     -------
@@ -305,6 +428,14 @@ def get_n_most_centered_coms(
         raise ValueError(
             "radius cannot be negative."
         )
+    if not 0 <= maximum_exclusion_overlap <= 1:
+        raise ValueError(
+            "maximum_exclusion_overlap must be between zero and one."
+        )
+    if maximum_axis_ratio_near_exclusion < 1:
+        raise ValueError(
+            "maximum_axis_ratio_near_exclusion must be at least one."
+        )
 
     if center is None:
         reference_center = (
@@ -327,24 +458,47 @@ def get_n_most_centered_coms(
 
     labels = np.unique(label_mask)
     labels = labels[labels != 0]
+    has_exclusion = exclusion_mask is not None
+    excluded = _prepare_exclusion_mask(
+        exclusion_mask,
+        label_mask.shape,
+        margin=int(exclusion_margin),
+    )
+    _ = maximum_exclusion_overlap, maximum_axis_ratio_near_exclusion
 
     centers_with_distances = []
 
     for label_value in labels:
-        object_center = np.asarray(
-            center_of_mass(
-                np.ones_like(
-                    label_mask,
-                    dtype=float,
-                ),
-                labels=label_mask,
-                index=label_value,
-            ),
-            dtype=float,
-        )
-
-        if not np.isfinite(object_center).all():
-            continue
+        object_pixels = label_mask == label_value
+        if has_exclusion and np.any(object_pixels & excluded):
+            object_center = _safe_label_target(
+                label_mask,
+                label_value,
+                excluded,
+            )
+            if object_center is None:
+                continue
+        else:
+            object_center = np.asarray(
+                center_of_mass(object_pixels),
+                dtype=float,
+            )
+            if not np.isfinite(object_center).all():
+                continue
+            if has_exclusion:
+                center_pixel = np.clip(
+                    np.rint(object_center).astype(int),
+                    (0, 0),
+                    np.asarray(label_mask.shape) - 1,
+                )
+                if excluded[tuple(center_pixel)]:
+                    object_center = _safe_label_target(
+                        label_mask,
+                        label_value,
+                        excluded,
+                    )
+                    if object_center is None:
+                        continue
 
         distance = float(
             np.linalg.norm(
@@ -378,6 +532,8 @@ def get_n_most_centered_coms(
         autofocus_point = find_clear_center_point(
             label_mask,
             threshold=bkd_threshold,
+            center=(tuple(reference_center) if has_exclusion else None),
+            exclusion_mask=(excluded if has_exclusion else None),
         )
         selected_points.insert(
             0,

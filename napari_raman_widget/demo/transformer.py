@@ -4,19 +4,14 @@ from __future__ import annotations
 
 import numpy as np
 
+from ..aiming_patterns import (
+    CenteredPointTransformer,
+    make_point_transformer,
+)
 
-class DemoCenterPointTransformer:
-    """Identity aiming pattern used for one exact demo target."""
 
-    @property
-    def multiplier(self) -> int:
-        return 1
-
-    def transform(self, coordinates: np.ndarray) -> np.ndarray:
-        points = np.asarray(coordinates, dtype=float)
-        if points.ndim != 2 or points.shape[1] != 2:
-            raise ValueError("coordinates must have shape (N, 2).")
-        return points.copy()
+# Backwards-compatible name for callers that imported the demo-only class.
+DemoCenterPointTransformer = CenteredPointTransformer
 
 
 def make_demo_point_transformer(
@@ -32,16 +27,12 @@ def make_demo_point_transformer(
     preserve the clicked pixel exactly so the fake laser and saved dataset
     marker remain on the selected sphere.
     """
-    number_of_points = max(1, int(number_of_points))
-    if number_of_points == 1:
-        return DemoCenterPointTransformer()
-
-    from raman_mda_engine.aiming.transformers import Circle, Square
-
-    length = float(size_px) / float(image_width)
-    if str(shape).strip().lower() == "circle":
-        return Circle(length, number_of_points)
-    return Square(length, number_of_points)
+    return make_point_transformer(
+        shape,
+        size_px,
+        number_of_points,
+        image_width,
+    )
 
 
 class DemoCoordinateTransformer:

@@ -33,6 +33,87 @@ class WidgetSeparationTests(unittest.TestCase):
                 source = (PACKAGE / filename).read_text(encoding="utf-8")
                 self.assertIn(expected, source)
 
+    def test_pillar_suppression_option_is_wired_in_both_widgets(self) -> None:
+        for filename in ("hardware_widget.py", "demo_widget.py"):
+            with self.subTest(filename=filename):
+                source = (PACKAGE / filename).read_text(encoding="utf-8")
+                self.assertIn(
+                    "self.mda_suppress_pillars_check = QCheckBox(",
+                    source,
+                )
+                self.assertIn(
+                    "self.mda_suppress_pillars_check.setChecked(False)",
+                    source,
+                )
+                self.assertIn(
+                    "self.mda_suppress_pillars_check.setVisible(checked)",
+                    source,
+                )
+                self.assertIn(
+                    "and self.mda_suppress_pillars_check.isChecked()",
+                    source,
+                )
+                self.assertIn("**pillar_suppression_kwargs(", source)
+                self.assertIn(
+                    "BaseRamanEngine,\n                        suppress_pillars,",
+                    source,
+                )
+
+    def test_automatic_new_cell_option_is_wired_in_both_widgets(self) -> None:
+        for filename in ("hardware_widget.py", "demo_widget.py"):
+            with self.subTest(filename=filename):
+                source = (PACKAGE / filename).read_text(encoding="utf-8")
+                self.assertIn(
+                    "self.mda_auto_add_cells_check = QCheckBox(",
+                    source,
+                )
+                self.assertIn(
+                    "self.mda_auto_add_cells_check.setChecked(False)",
+                    source,
+                )
+                self.assertIn(
+                    "self.mda_auto_add_cells_check.setVisible(checked)",
+                    source,
+                )
+                self.assertIn(
+                    "and self.mda_auto_add_cells_check.isChecked()",
+                    source,
+                )
+                self.assertIn(
+                    "if auto_add_new_cells and batch:",
+                    source,
+                )
+                self.assertIn(
+                    "auto_add_new_cells=auto_add_new_cells",
+                    source,
+                )
+                self.assertIn(
+                    "make_live_cell_engine_type(BaseRamanEngine)",
+                    source,
+                )
+
+    def test_selection_pillar_suppression_is_wired_in_both_widgets(self) -> None:
+        for filename in ("hardware_widget.py", "demo_widget.py"):
+            with self.subTest(filename=filename):
+                source = (PACKAGE / filename).read_text(encoding="utf-8")
+                self.assertIn(
+                    "self.sel_suppress_pillars_check = QCheckBox(",
+                    source,
+                )
+                self.assertIn(
+                    "self.sel_suppress_pillars_check.setChecked(False)",
+                    source,
+                )
+                self.assertIn(
+                    "suppress_pillars = "
+                    "self.sel_suppress_pillars_check.isChecked()",
+                    source,
+                )
+                self.assertIn(
+                    "suppress_pillars=suppress_pillars,",
+                    source,
+                )
+
     def test_grid_fov_defaults_are_separate(self) -> None:
         hardware = (PACKAGE / "hardware_widget.py").read_text(encoding="utf-8")
         demo = (PACKAGE / "demo_widget.py").read_text(encoding="utf-8")
@@ -128,6 +209,8 @@ class WidgetSeparationTests(unittest.TestCase):
             end = starts[index + 1] if index + 1 < len(starts) else len(source)
             class_source = source[starts[index]:end]
             with self.subTest(class_name=class_name):
+                self.assertIn("_add_baseline_controls(", class_source)
+                self.assertIn("_subtract_baseline_for_plot(", class_source)
                 self.assertIn("_add_smoothing_controls(", class_source)
                 self.assertIn("_smooth_for_plot(", class_source)
 

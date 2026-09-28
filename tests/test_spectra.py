@@ -6,6 +6,7 @@ import numpy as np
 import xarray as xr
 
 from napari_raman_widget.spectra import (
+    asls_baseline,
     save_collection_record,
     smooth_spectra,
     spectral_bias_from_dark_noise,
@@ -119,6 +120,58 @@ class SpectralSmoothingTests(unittest.TestCase):
             with self.subTest(window=invalid_window):
                 with self.assertRaisesRegex(ValueError, "smoothing window"):
                     smooth_spectra(np.zeros(9), invalid_window)
+
+
+class AsymmetricLeastSquaresBaselineTests(unittest.TestCase):
+    def test_estimates_a_smooth_baseline_without_removing_a_peak(self) -> None:
+        x = np.linspace(0, 1, 200)
+        expected_baseline = 10 + 3 * x + 2 * x**2
+        peak = 30 * np.exp(-((x - 0.5) / 0.03) ** 2)
+        spectrum = expected_baseline + peak
+
+        baseline = asls_baseline(spectrum, lam=1e5)
+        corrected = spectrum - baseline
+
+        self.assertLess(
+            np.mean(np.abs(baseline - expected_baseline)),
+            0.25,
+        )
+        self.assertGreater(corrected.max(), 25)
+
+    def test_fits_rows_independently_without_mutating_input(self) -> None:
+        x = np.arange(21, dtype=float)
+        spectra = np.vstack([2 * x + 5, -0.5 * x + 20])
+        original = spectra.copy()
+
+        baselines = asls_baseline(spectra)
+
+        self.assertEqual(baselines.shape, spectra.shape)
+        np.testing.assert_allclose(baselines, spectra, atol=1e-7)
+        np.testing.assert_array_equal(spectra, original)
+
+    def test_preserves_sparse_finite_samples_when_a_fit_is_impossible(self) -> None:
+        spectrum = np.array([np.nan, 4.0, np.inf, 7.0, np.nan])
+
+        baseline = asls_baseline(spectrum)
+
+        np.testing.assert_array_equal(
+            np.isnan(baseline),
+            [1, 0, 1, 0, 1],
+        )
+        np.testing.assert_allclose(
+            spectrum[[1, 3]] - baseline[[1, 3]],
+            [4.0, 7.0],
+        )
+
+    def test_rejects_invalid_inputs(self) -> None:
+        with self.assertRaisesRegex(ValueError, "one- or two-dimensional"):
+            asls_baseline(np.zeros((2, 3, 4)))
+        with self.assertRaisesRegex(ValueError, "at least 3 pixels"):
+            asls_baseline(np.zeros(2))
+        for invalid_lambda in (0, -1, np.inf, True):
+            with self.subTest(lam=invalid_lambda):
+                with self.assertRaisesRegex(ValueError, "lambda"):
+                    asls_baseline(np.zeros(5), lam=invalid_lambda)
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@ from napari_raman_widget.calibration.models import (
     apply_vandermonde_model,
     load_vandermonde_model,
 )
+from napari_raman_widget.engine_compat import make_pillar_shape_filter
 
 from .layers import create_point_sources
 from .masks import get_n_most_centered_coms
@@ -81,6 +82,7 @@ def automated_point_selections(
     show_masks: bool = False,
     cellpose_upsample: int = 1,
     cell_point_refiner: Callable[[np.ndarray], np.ndarray] | None = None,
+    suppress_pillars: bool = False,
 ):
     """Segment images and add automatically selected Raman targets.
 
@@ -124,6 +126,9 @@ def automated_point_selections(
     cell_point_refiner
         Optional demo-only correction applied to Cellpose cell centers. The
         autofocus/background point, when present, is left unchanged.
+    suppress_pillars
+        When true, remove Cellpose labels whose rotated shape fits at least 75%
+        of the measured 78 x 56 pixel pillar rectangle.
 
     Returns
     -------
@@ -167,6 +172,7 @@ def automated_point_selections(
     masks: list[np.ndarray] = []
     selected_by_position: list[np.ndarray] = []
     corrected_positions = []
+    pillar_shape_filter = make_pillar_shape_filter(suppress_pillars)
 
     for position_index in tqdm(
         range(len(sequence.stage_positions)),
@@ -196,6 +202,7 @@ def automated_point_selections(
             time.sleep(image_settle_time)
 
         images.append(image)
+        segmentation_image = image
 
         if int(cellpose_upsample) > 1:
             from napari_raman_widget.demo.cellpose import (
@@ -203,11 +210,13 @@ def automated_point_selections(
             )
 
             mask = segment_upsampled_demo_region(
-                image,
+                segmentation_image,
                 center_yx=(
                     center
                     if center is not None
-                    else tuple(np.asarray(image.shape, dtype=float) / 2)
+                    else tuple(
+                        np.asarray(segmentation_image.shape, dtype=float) / 2
+                    )
                 ),
                 radius=radius,
                 upsample=int(cellpose_upsample),
@@ -216,13 +225,39 @@ def automated_point_selections(
             )
         else:
             mask = segment_single_img(
-                image,
+                segmentation_image,
                 scale=1,
                 cellpose_model=cellpose_model,
                 circle_center=center,
                 circle_radius=radius,
             )
-        mask = np.asarray(mask)
+        raw_mask = np.asarray(mask)
+        cellpose_label_count = int(np.count_nonzero(np.unique(raw_mask)))
+        pillar_removed_mask = None
+        if pillar_shape_filter is not None:
+            shape_result = pillar_shape_filter.filter(
+                raw_mask,
+                image_shape=image.shape,
+            )
+            mask = shape_result.filtered_labels
+            pillar_removed_mask = shape_result.removed_mask
+            removed = [
+                measurement
+                for measurement in shape_result.measurements
+                if measurement.removed
+            ]
+            print(
+                "Pillar shape filter for automated selection at "
+                f"position {position_index}: removed={len(removed)}/"
+                f"{len(shape_result.measurements)}, "
+                f"rule={pillar_shape_filter.config.pillar_length:g}x"
+                f"{pillar_shape_filter.config.pillar_width:g}px@"
+                f"{pillar_shape_filter.config.minimum_rectangle_fit:.0%}, "
+                "cellpose_input=raw, labels="
+                f"{[(item.label, round(item.rectangle_fit_score, 3)) for item in removed]}"
+            )
+        else:
+            mask = raw_mask
         masks.append(mask)
         if show_masks:
             viewer.add_labels(
@@ -245,6 +280,8 @@ def automated_point_selections(
                     radius=np.inf,
                     autofocus_object=autofocus_object,
                     bkd_threshold=bkd_thres,
+                    exclusion_mask=pillar_removed_mask,
+                    exclusion_margin=0,
                 )
             )
         else:
@@ -256,6 +293,8 @@ def automated_point_selections(
                     radius=radius,
                     autofocus_object=autofocus_object,
                     bkd_threshold=bkd_thres,
+                    exclusion_mask=pillar_removed_mask,
+                    exclusion_margin=0,
                 )
             )
 
@@ -273,6 +312,17 @@ def automated_point_selections(
                     )
                 refined_points[cell_start:] = refined_cells
             selected_points = refined_points
+
+        selected_cell_count = max(
+            0,
+            len(selected_points) - (0 if no_autofocus else 1),
+        )
+        print(
+            f"Automated selection at position {position_index}: "
+            f"cellpose_labels={cellpose_label_count}, "
+            f"remaining_labels={int(np.count_nonzero(np.unique(mask)))}, "
+            f"selected_cells={selected_cell_count}"
+        )
 
         selected_by_position.append(
             selected_points

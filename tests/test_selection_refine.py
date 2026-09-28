@@ -173,6 +173,50 @@ class SelectionRefineTests(unittest.TestCase):
         self.assertEqual(core.channel_history, ["BF", "RM"])
         self.assertEqual(core.xy_history[-1], (1.0, 2.0))
 
+    def test_refinement_removes_pillar_shaped_cellpose_label(self) -> None:
+        source = _FakeSource(
+            np.array([[0, 0, 0, 0, 6, 6]], dtype=float)
+        )
+        sequence = SimpleNamespace(
+            stage_positions=[SimpleNamespace(x=10.0, y=20.0)]
+        )
+        core = _FakeCore()
+        class ShapeFilter:
+            def filter(self, labels, *, image_shape):
+                self.image_shape = image_shape
+                filtered = labels.copy()
+                removed = filtered == 1
+                filtered[removed] = 0
+                return SimpleNamespace(
+                    filtered_labels=filtered,
+                    removed_mask=removed,
+                    removed_labels=(1,),
+                    measurements=(),
+                )
+
+        def segmenter(image, **kwargs):
+            mask = np.zeros(image.shape, dtype=np.int32)
+            mask[4:9, 4:9] = 1
+            return mask
+
+        result = refine_cell_source_points(
+            core,
+            source,
+            sequence,
+            center_yx=(6.0, 6.0),
+            radius=6.0,
+            stage_settle_time=0,
+            segmentation_scale=1,
+            segmenter=segmenter,
+            show_progress=False,
+            suppress_pillars=True,
+            pillar_shape_filter=ShapeFilter(),
+        )
+
+        np.testing.assert_allclose(source._points.data[0, -2:], [6, 6])
+        self.assertEqual(result["matched"], 0)
+        self.assertEqual(result["moved"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

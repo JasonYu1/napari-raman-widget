@@ -6,9 +6,12 @@ from pathlib import Path
 
 import numpy as np
 import xarray as xr
+from scipy.linalg import solveh_banded
 from scipy.signal import savgol_filter
+from scipy.sparse import diags
 
 __all__ = [
+    "asls_baseline",
     "filter_mean",
     "save_collection_record",
     "smooth_spectra",
@@ -16,6 +19,92 @@ __all__ = [
     "subtract_spectral_bias",
     "sum_detector_rows",
 ]
+
+
+def asls_baseline(
+    spectra: np.ndarray,
+    lam: float = 1e6,
+    asymmetry: float = 0.01,
+    iterations: int = 10,
+) -> np.ndarray:
+    """Estimate spectral baselines with asymmetric least squares.
+
+    The Whittaker penalty suppresses baseline curvature, while asymmetric
+    weights keep positive spectral peaks from pulling the estimate upward.
+    One- and two-dimensional inputs are supported; rows in a two-dimensional
+    input are fitted independently. Non-finite samples are ignored by the fit
+    and returned as ``nan``. If a row has fewer than three finite samples, its
+    finite values receive a zero baseline so they remain visible.
+    """
+    spectra = np.asarray(spectra, dtype=float)
+    if spectra.ndim not in (1, 2):
+        raise ValueError("spectra must be a one- or two-dimensional array")
+    if spectra.shape[-1] < 3:
+        raise ValueError("AsLS baseline fitting requires at least 3 pixels")
+    if isinstance(lam, (bool, np.bool_)) or not np.isfinite(lam) or lam <= 0:
+        raise ValueError("baseline lambda must be a finite positive number")
+    if not np.isfinite(asymmetry) or not 0 < asymmetry < 1:
+        raise ValueError("baseline asymmetry must be between 0 and 1")
+    if isinstance(iterations, (bool, np.bool_)) or not isinstance(
+        iterations, (int, np.integer)
+    ) or iterations < 1:
+        raise ValueError("baseline iterations must be a positive integer")
+
+    rows = spectra[np.newaxis, :] if spectra.ndim == 1 else spectra
+    pixel_count = rows.shape[-1]
+    difference = diags(
+        (
+            np.ones(pixel_count - 2),
+            -2 * np.ones(pixel_count - 2),
+            np.ones(pixel_count - 2),
+        ),
+        (0, 1, 2),
+        shape=(pixel_count - 2, pixel_count),
+        format="csc",
+    )
+    penalty = float(lam) * (difference.T @ difference)
+    penalty_bands = np.zeros((3, pixel_count))
+    penalty_bands[0] = penalty.diagonal()
+    penalty_bands[1, :-1] = penalty.diagonal(-1)
+    penalty_bands[2, :-2] = penalty.diagonal(-2)
+    baselines = np.empty_like(rows, dtype=float)
+    pixel_indices = np.arange(pixel_count)
+
+    for index, spectrum in enumerate(rows):
+        finite = np.isfinite(spectrum)
+        if np.count_nonzero(finite) < 3:
+            baseline = np.zeros(pixel_count)
+            baseline[~finite] = np.nan
+            baselines[index] = baseline
+            continue
+        fitted_spectrum = np.interp(
+            pixel_indices,
+            pixel_indices[finite],
+            spectrum[finite],
+        )
+        weights = np.ones(pixel_count)
+        baseline = fitted_spectrum.copy()
+        for _ in range(int(iterations)):
+            system_bands = penalty_bands.copy()
+            system_bands[0] += weights
+            baseline = solveh_banded(
+                system_bands,
+                weights * fitted_spectrum,
+                lower=True,
+                check_finite=False,
+            )
+            updated_weights = np.where(
+                fitted_spectrum > baseline,
+                asymmetry,
+                1 - asymmetry,
+            )
+            if np.array_equal(updated_weights, weights):
+                break
+            weights = updated_weights
+        baseline[~finite] = np.nan
+        baselines[index] = baseline
+
+    return baselines[0] if spectra.ndim == 1 else baselines
 
 
 def sum_detector_rows(

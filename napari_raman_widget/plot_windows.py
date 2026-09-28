@@ -1,6 +1,7 @@
 """Pop-up matplotlib windows used to display calibration, spectra, and scans."""
 import numpy as np
 from napari_raman_widget.spectra import (
+    asls_baseline,
     filter_mean,
     smooth_spectra,
     subtract_spectral_bias,
@@ -72,19 +73,24 @@ def _configure_smoothing_length(owner, spectral_length):
     slider.setMaximum(max(0, (largest_odd - 5) // 2))
     slider.setValue(min(slider.value(), slider.maximum()))
     slider.blockSignals(False)
-    owner.smoothing_check.setEnabled(available)
+    checkbox = owner.smoothing_check
+    checkbox.setEnabled(available)
     if not available:
-        owner.smoothing_check.setChecked(False)
+        checkbox.blockSignals(True)
+        checkbox.setChecked(False)
+        checkbox.blockSignals(False)
+        owner.smoothing_window_controls.hide()
     _update_smoothing_label(owner)
 
 
 def _add_smoothing_controls(owner, layout, redraw, spectral_length):
     """Add a checkbox whose enabled state reveals an odd-window slider."""
+    row = QHBoxLayout()
     owner.smoothing_check = QCheckBox("Smooth")
     owner.smoothing_check.setToolTip(
         "Apply display-only Savitzky-Golay smoothing with polynomial order 3"
     )
-    layout.addWidget(owner.smoothing_check)
+    row.addWidget(owner.smoothing_check)
 
     owner.smoothing_window_controls = QWidget()
     smoothing_layout = QHBoxLayout(owner.smoothing_window_controls)
@@ -100,7 +106,8 @@ def _add_smoothing_controls(owner, layout, redraw, spectral_length):
     smoothing_layout.addWidget(owner.smoothing_window_label)
     smoothing_layout.addWidget(owner.smoothing_window_slider, 1)
     owner.smoothing_window_controls.hide()
-    layout.addWidget(owner.smoothing_window_controls)
+    row.addWidget(owner.smoothing_window_controls, 1)
+    layout.addLayout(row)
     _configure_smoothing_length(owner, spectral_length)
 
     def on_toggled(checked):
@@ -121,6 +128,108 @@ def _smooth_for_plot(owner, spectra):
     if not owner.smoothing_check.isChecked():
         return spectra
     return smooth_spectra(spectra, _smoothing_window(owner))
+
+
+_BASELINE_LAMBDA_STEPS_PER_DECADE = 4
+
+
+def _baseline_lambda(owner):
+    """Return lambda from a quarter-decade logarithmic slider."""
+    exponent = (
+        owner.baseline_lambda_slider.value()
+        / _BASELINE_LAMBDA_STEPS_PER_DECADE
+    )
+    return 10.0 ** exponent
+
+
+def _update_baseline_lambda_label(owner):
+    lam = _baseline_lambda(owner)
+    exponent = int(np.floor(np.log10(lam)))
+    coefficient = lam / (10.0 ** exponent)
+    if np.isclose(coefficient, 1.0):
+        value = f"1e{exponent}"
+    else:
+        value = f"{coefficient:.1f}e{exponent}"
+    owner.baseline_lambda_label.setText(f"λ: {value}")
+
+
+def _configure_baseline_length(owner, spectral_length):
+    """Disable AsLS for spectra too short for a second-difference penalty."""
+    available = int(spectral_length) >= 3
+    checkbox = owner.baseline_subtraction_check
+    checkbox.setEnabled(available)
+    if not available:
+        checkbox.blockSignals(True)
+        checkbox.setChecked(False)
+        checkbox.blockSignals(False)
+        owner.baseline_lambda_controls.hide()
+
+
+def _add_baseline_controls(owner, layout, redraw, spectral_length):
+    """Add display-only AsLS subtraction with a logarithmic lambda slider."""
+    row = QHBoxLayout()
+    owner.baseline_subtraction_check = QCheckBox("Baseline subtraction")
+    owner.baseline_subtraction_check.setToolTip(
+        "Subtract an AsLS Whittaker baseline in this plot only "
+        "(asymmetry p = 0.01)"
+    )
+    row.addWidget(owner.baseline_subtraction_check)
+
+    owner.baseline_lambda_controls = QWidget()
+    baseline_layout = QHBoxLayout(owner.baseline_lambda_controls)
+    baseline_layout.setContentsMargins(0, 0, 0, 0)
+    owner.baseline_lambda_label = QLabel()
+    owner.baseline_lambda_slider = QSlider(Qt.Horizontal)
+    owner.baseline_lambda_slider.setRange(
+        2 * _BASELINE_LAMBDA_STEPS_PER_DECADE,
+        10 * _BASELINE_LAMBDA_STEPS_PER_DECADE,
+    )
+    owner.baseline_lambda_slider.setValue(
+        6 * _BASELINE_LAMBDA_STEPS_PER_DECADE
+    )
+    owner.baseline_lambda_slider.setSingleStep(1)
+    owner.baseline_lambda_slider.setPageStep(
+        _BASELINE_LAMBDA_STEPS_PER_DECADE
+    )
+    owner.baseline_lambda_slider.setTracking(False)
+    owner.baseline_lambda_slider.setToolTip(
+        "AsLS smoothness lambda on a logarithmic scale; larger values "
+        "produce a smoother baseline"
+    )
+    baseline_layout.addWidget(owner.baseline_lambda_label)
+    baseline_layout.addWidget(owner.baseline_lambda_slider, 1)
+    owner.baseline_lambda_controls.hide()
+    row.addWidget(owner.baseline_lambda_controls, 1)
+    layout.addLayout(row)
+    _update_baseline_lambda_label(owner)
+    _configure_baseline_length(owner, spectral_length)
+
+    def on_toggled(checked):
+        owner.baseline_lambda_controls.setVisible(bool(checked))
+        redraw()
+
+    def on_lambda_changed(_index):
+        _update_baseline_lambda_label(owner)
+        redraw()
+
+    owner.baseline_subtraction_check.toggled.connect(on_toggled)
+    owner.baseline_lambda_slider.valueChanged.connect(on_lambda_changed)
+
+
+def _subtract_baseline_for_plot(owner, spectra):
+    """Return display data after optional AsLS baseline subtraction."""
+    spectra = np.asarray(spectra, dtype=float)
+    if not owner.baseline_subtraction_check.isChecked():
+        return spectra
+    baseline = asls_baseline(spectra, lam=_baseline_lambda(owner))
+    corrected = spectra.copy()
+    np.subtract(
+        spectra,
+        baseline,
+        out=corrected,
+        where=np.isfinite(spectra),
+    )
+    return corrected
 
 
 class CalibrationPlotWindow(QMainWindow):
@@ -182,6 +291,7 @@ class DetectorImageWindow(QMainWindow):
         central = QWidget()
         layout = QVBoxLayout(central)
         controls = QHBoxLayout()
+        processing_controls = QVBoxLayout()
         self.toggle_btn = QPushButton("Show row-sum spectrum")
         self.toggle_btn.clicked.connect(self._toggle_view)
         controls.addWidget(self.toggle_btn)
@@ -211,15 +321,23 @@ class DetectorImageWindow(QMainWindow):
         )
         self.fix_y_scale_check.hide()
         controls.addWidget(self.fix_y_scale_check)
+        _add_baseline_controls(
+            self,
+            processing_controls,
+            self._redraw,
+            self.image.shape[1],
+        )
+        self.baseline_subtraction_check.hide()
         _add_smoothing_controls(
             self,
-            controls,
+            processing_controls,
             self._redraw,
             self.image.shape[1],
         )
         self.smoothing_check.hide()
         controls.addStretch(1)
         layout.addLayout(controls)
+        layout.addLayout(processing_controls)
 
         self.fig = Figure(figsize=(8, 5))
         self.canvas = FigureCanvasQTAgg(self.fig)
@@ -250,6 +368,11 @@ class DetectorImageWindow(QMainWindow):
         )
         self.pixel_axis_check.setVisible(self._show_spectrum)
         self.fix_y_scale_check.setVisible(self._show_spectrum)
+        self.baseline_subtraction_check.setVisible(self._show_spectrum)
+        self.baseline_lambda_controls.setVisible(
+            self._show_spectrum
+            and self.baseline_subtraction_check.isChecked()
+        )
         self.smoothing_check.setVisible(self._show_spectrum)
         self.smoothing_window_controls.setVisible(
             self._show_spectrum and self.smoothing_check.isChecked()
@@ -283,13 +406,20 @@ class DetectorImageWindow(QMainWindow):
             and self.end_row_input.value() == old_last_row
         )
         self.image = self._mean_detector_image(frames)
+        _configure_baseline_length(self, self.image.shape[1])
         _configure_smoothing_length(self, self.image.shape[1])
         last_row = self.image.shape[0] - 1
-        self.start_row_input.setMaximum(last_row)
-        self.end_row_input.setMaximum(last_row)
-        if was_full_range:
-            self.start_row_input.setValue(0)
-            self.end_row_input.setValue(last_row)
+        self.start_row_input.blockSignals(True)
+        self.end_row_input.blockSignals(True)
+        try:
+            self.start_row_input.setMaximum(last_row)
+            self.end_row_input.setMaximum(last_row)
+            if was_full_range:
+                self.start_row_input.setValue(0)
+                self.end_row_input.setValue(last_row)
+        finally:
+            self.start_row_input.blockSignals(False)
+            self.end_row_input.blockSignals(False)
         if title is not None:
             self.setWindowTitle(title)
         self._redraw()
@@ -302,6 +432,7 @@ class DetectorImageWindow(QMainWindow):
                 self.start_row_input.value(),
                 self.end_row_input.value(),
             )
+            spectrum = _subtract_baseline_for_plot(self, spectrum)
             spectrum = _smooth_for_plot(self, spectrum)
             lines = self.ax.plot(spectrum)
             _set_spectral_line_axis(
@@ -374,6 +505,7 @@ class SpectrumWindow(QMainWindow):
         central = QWidget()
         layout = QVBoxLayout(central)
         controls = QHBoxLayout()
+        processing_controls = QVBoxLayout()
         self.toggle_btn = QPushButton("Show all traces")
         self.toggle_btn.clicked.connect(self._toggle)
         controls.addWidget(self.toggle_btn)
@@ -399,9 +531,15 @@ class SpectrumWindow(QMainWindow):
             self.spectral_bias is not None
         )
         controls.addWidget(self.remove_spectral_bias_check)
+        _add_baseline_controls(
+            self,
+            processing_controls,
+            self._redraw,
+            self.spec.shape[-1],
+        )
         _add_smoothing_controls(
             self,
-            controls,
+            processing_controls,
             self._redraw,
             self.spec.shape[-1],
         )
@@ -409,6 +547,7 @@ class SpectrumWindow(QMainWindow):
         self.calibration_btn.clicked.connect(self._start_calibration)
         controls.addWidget(self.calibration_btn)
         layout.addLayout(controls)
+        layout.addLayout(processing_controls)
 
         self.calibration_controls = QWidget()
         calibration_layout = QHBoxLayout(self.calibration_controls)
@@ -483,6 +622,7 @@ class SpectrumWindow(QMainWindow):
     def update_spectrum(self, spec, *, title=None):
         """Replace plotted data, for example after each live exposure."""
         self.spec = self._normalize_spectra(spec)
+        _configure_baseline_length(self, self.spec.shape[-1])
         _configure_smoothing_length(self, self.spec.shape[-1])
         if title is not None:
             self.setWindowTitle(title)
@@ -509,12 +649,18 @@ class SpectrumWindow(QMainWindow):
         lines = []
         if self._show_mean:
             mean_spectrum = filter_mean(display_spectra)
+            mean_spectrum = _subtract_baseline_for_plot(
+                self, mean_spectrum
+            )
             lines.extend(
                 self.ax.plot(_smooth_for_plot(self, mean_spectrum))
             )
         else:
             n = display_spectra.shape[0]
             colors = cm.viridis(np.linspace(0, 1, n))
+            display_spectra = _subtract_baseline_for_plot(
+                self, display_spectra
+            )
             display_spectra = _smooth_for_plot(self, display_spectra)
             for i in range(n):
                 lines.extend(
@@ -534,6 +680,8 @@ class SpectrumWindow(QMainWindow):
         title = self.windowTitle()
         if self.remove_spectral_bias_check.isChecked():
             title = f"{title} | bias corrected"
+        if self.baseline_subtraction_check.isChecked():
+            title = f"{title} | baseline corrected"
         self.ax.set_title(title)
         if self._fixed_y_limits is not None:
             self.ax.set_ylim(self._fixed_y_limits)
@@ -565,6 +713,7 @@ class SpectrumWindow(QMainWindow):
 
     def _spectrum_for_calibration(self):
         spectrum = filter_mean(self._display_spectra())
+        spectrum = _subtract_baseline_for_plot(self, spectrum)
         return np.asarray(_smooth_for_plot(self, spectrum), dtype=float)
 
     def _nearest_peak_pixel(self, x):
@@ -778,18 +927,26 @@ class ReferenceSpectraWindow(QMainWindow):
             [filter_mean(repeats) for repeats in all_raman]
         )
         controls = QHBoxLayout()
+        processing_controls = QVBoxLayout()
         self.pixel_axis_check = _make_pixel_axis_checkbox(
             spectral_calibration, self._update_spectral_axis
         )
         controls.addWidget(self.pixel_axis_check)
+        _add_baseline_controls(
+            self,
+            processing_controls,
+            self._redraw_spectra,
+            self._reference_spectra.shape[-1],
+        )
         _add_smoothing_controls(
             self,
-            controls,
+            processing_controls,
             self._redraw_spectra,
             self._reference_spectra.shape[-1],
         )
         controls.addStretch(1)
         layout.addLayout(controls)
+        layout.addLayout(processing_controls)
         self.fig = Figure(figsize=(8, 5.5))
         self.canvas = FigureCanvasQTAgg(self.fig)
         self.toolbar = NavigationToolbar2QT(self.canvas, self)
@@ -822,7 +979,10 @@ class ReferenceSpectraWindow(QMainWindow):
         self.setCentralWidget(central)
 
     def _redraw_spectra(self):
-        spectra = _smooth_for_plot(self, self._reference_spectra)
+        spectra = _subtract_baseline_for_plot(
+            self, self._reference_spectra
+        )
+        spectra = _smooth_for_plot(self, spectra)
         for line, spectrum in zip(self._spectral_lines, spectra):
             line.set_ydata(spectrum)
         self._update_spectral_axis()
@@ -893,20 +1053,30 @@ class GridScanPlotWindow(QMainWindow):
         return btn
 
     def _make_spectral_controls(self):
+        rows = QVBoxLayout()
         controls = QHBoxLayout()
+        processing_controls = QVBoxLayout()
         controls.addWidget(self._make_mode_button())
         self.pixel_axis_check = _make_pixel_axis_checkbox(
             self.spectral_calibration, self._on_spectral_axis_changed
         )
         controls.addWidget(self.pixel_axis_check)
+        _add_baseline_controls(
+            self,
+            processing_controls,
+            self._on_spectral_axis_changed,
+            self._specs.shape[-1],
+        )
         _add_smoothing_controls(
             self,
-            controls,
+            processing_controls,
             self._on_spectral_axis_changed,
             self._specs.shape[-1],
         )
         controls.addStretch(1)
-        return controls
+        rows.addLayout(controls)
+        rows.addLayout(processing_controls)
+        return rows
 
     def _on_spectral_axis_changed(self, _checked=None):
         self._draw_spec()
@@ -978,6 +1148,7 @@ class GridScanPlotWindow(QMainWindow):
         if self._has_zscan:
             z_val = self._z_vals[self._z_slider.value()]
             title += f"  z={z_val:+.2f} um"
+        y = _subtract_baseline_for_plot(self, y)
         y = _smooth_for_plot(self, y)
         self._spec_line.set_ydata(y)
         _set_spectral_line_axis(
@@ -1131,6 +1302,7 @@ class DatasetViewerWindow(QMainWindow):
         self.spectral_calibration = spectral_calibration
         self.bf = da.sel(c=0).values  # (t, p, z, y, x)
         self._pt_selected = 0
+        self._fixed_y_limits = None
         import matplotlib
         matplotlib.use("QtAgg")
         import matplotlib.cm as mcm
@@ -1146,6 +1318,7 @@ class DatasetViewerWindow(QMainWindow):
         self.p_vals = da.coords["p"].values
         self.z_vals = da.coords["z"].values
         slider_layout = QHBoxLayout()
+        processing_controls = QVBoxLayout()
         self.t_slider, self.t_label = self._make_slider(
             "t", 0, len(self.t_vals) - 1
         )
@@ -1166,13 +1339,28 @@ class DatasetViewerWindow(QMainWindow):
             spectral_calibration, self._update_spectral_axis
         )
         slider_layout.addWidget(self.pixel_axis_check)
+        self.fix_y_scale_check = QCheckBox("Fix Y scale")
+        self.fix_y_scale_check.setToolTip(
+            "Keep the spectrum Y limits from the frame shown when checked"
+        )
+        self.fix_y_scale_check.toggled.connect(
+            self._on_fix_y_scale_toggled
+        )
+        slider_layout.addWidget(self.fix_y_scale_check)
+        _add_baseline_controls(
+            self,
+            processing_controls,
+            self._on_smoothing_changed,
+            max(0, int(df.shape[1]) - 3),
+        )
         _add_smoothing_controls(
             self,
-            slider_layout,
+            processing_controls,
             self._on_smoothing_changed,
             max(0, int(df.shape[1]) - 3),
         )
         main_layout.addLayout(slider_layout)
+        main_layout.addLayout(processing_controls)
         # --- Figure ---
         self.fig = Figure(figsize=(12, 5))
         self.canvas = FigureCanvasQTAgg(self.fig)
@@ -1281,6 +1469,14 @@ class DatasetViewerWindow(QMainWindow):
         self._update_spectrum()
         self.canvas.draw_idle()
 
+    def _on_fix_y_scale_toggled(self, checked):
+        if checked:
+            self._fixed_y_limits = self.ax_spec.get_ylim()
+        else:
+            self._fixed_y_limits = None
+            self.ax_spec.set_autoscaley_on(True)
+            self._update_spectral_axis()
+
     def _update_spectrum(self):
         t, p, z, _, _, _ = self._current_tpz()
         pt = self._pt_selected
@@ -1289,6 +1485,7 @@ class DatasetViewerWindow(QMainWindow):
             n = len(self.df.loc[t, p, z])
         except KeyError:
             return
+        y = _subtract_baseline_for_plot(self, y)
         y = _smooth_for_plot(self, y)
         self.spec_line.set_ydata(y)
         self._update_spectral_axis()
@@ -1310,5 +1507,7 @@ class DatasetViewerWindow(QMainWindow):
             self.spectral_calibration,
             self.pixel_axis_check.isChecked(),
         )
+        if self._fixed_y_limits is not None:
+            self.ax_spec.set_ylim(self._fixed_y_limits)
         if hasattr(self, "canvas"):
             self.canvas.draw_idle()

@@ -107,11 +107,17 @@ class ChatPanelTests(unittest.TestCase):
                 "n_x",
                 "pattern_size_px",
                 "radius",
+                "suppress_pillars",
                 "vandermonde_model",
             },
         )
         self.assertEqual(params["n_x"]["attr"], "sel_sqn_input")
         self.assertEqual(params["n_x"]["kind"], "int")
+        self.assertEqual(
+            params["suppress_pillars"]["attr"],
+            "sel_suppress_pillars_check",
+        )
+        self.assertEqual(params["suppress_pillars"]["kind"], "check")
 
     def test_settings_only_tool_configures_n_x_without_running_selection(self):
         params = {
@@ -122,6 +128,67 @@ class ChatPanelTests(unittest.TestCase):
         self.assertIs(
             CONFIGURABLE_WIDGET_PARAMS,
             ACTIONS_BY_NAME["configure_widget"]["params"],
+        )
+
+    def test_pillar_suppression_is_a_boolean_mda_setting(self):
+        widget_params = {param["name"]: param for param in WIDGET_PARAMS}
+        pillar = widget_params["suppress_pillars"]
+        self.assertEqual(pillar["attr"], "mda_suppress_pillars_check")
+        self.assertEqual(pillar["kind"], "check")
+
+        mda_params = {
+            param["name"]: param
+            for param in ACTIONS_BY_NAME["run_raman_mda"]["params"]
+        }
+        self.assertEqual(
+            mda_params["suppress_pillars"]["attr"],
+            "mda_suppress_pillars_check",
+        )
+        mda_schema = {
+            tool["name"]: tool for tool in build_tools()
+        }["run_raman_mda"]["input_schema"]
+        self.assertEqual(
+            mda_schema["properties"]["suppress_pillars"]["type"],
+            "boolean",
+        )
+
+    def test_automatic_new_cells_is_a_boolean_mda_setting(self):
+        widget_params = {param["name"]: param for param in WIDGET_PARAMS}
+        automatic = widget_params["auto_add_new_cells"]
+        self.assertEqual(
+            automatic["attr"],
+            "mda_auto_add_cells_check",
+        )
+        self.assertEqual(automatic["kind"], "check")
+
+        mda_params = {
+            param["name"]: param
+            for param in ACTIONS_BY_NAME["run_raman_mda"]["params"]
+        }
+        self.assertEqual(
+            mda_params["auto_add_new_cells"]["attr"],
+            "mda_auto_add_cells_check",
+        )
+        mda_schema = {
+            tool["name"]: tool for tool in build_tools()
+        }["run_raman_mda"]["input_schema"]
+        self.assertEqual(
+            mda_schema["properties"]["auto_add_new_cells"]["type"],
+            "boolean",
+        )
+
+    def test_pillar_suppression_is_a_boolean_selection_setting(self):
+        widget_params = {param["name"]: param for param in WIDGET_PARAMS}
+        pillar = widget_params["selection_suppress_pillars"]
+        self.assertEqual(pillar["attr"], "sel_suppress_pillars_check")
+        self.assertEqual(pillar["kind"], "check")
+
+        selection_schema = {
+            tool["name"]: tool for tool in build_tools()
+        }["run_automated_selection"]["input_schema"]
+        self.assertEqual(
+            selection_schema["properties"]["suppress_pillars"]["type"],
+            "boolean",
         )
 
     def test_tool_schemas_include_dynamic_channel_rows(self):

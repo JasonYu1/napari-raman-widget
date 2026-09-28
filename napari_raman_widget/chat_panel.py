@@ -189,6 +189,11 @@ WIDGET_PARAMS = [
     _wp("background_distance_px", "sel_bkd_input", "float"),
     _wp("batch", "sel_batch_combo", "combo", enum=_BATCH),
     _wp("selection_cellpose_model", "sel_cellpose_combo", "combo"),
+    _wp(
+        "selection_suppress_pillars",
+        "sel_suppress_pillars_check",
+        "check",
+    ),
     _wp("refinement_scale", "refine_scale_input", "int"),
     # Raman MDA
     _wp("mda_output_dir", "mda_dir_input", "text"),
@@ -200,6 +205,8 @@ WIDGET_PARAMS = [
     _wp("laser_fine_search_range_um", "mda_fine_range_input", "float"),
     _wp("laser_fine_search_points", "mda_fine_pts_input", "int"),
     _wp("segment_and_track", "mda_seg_track_check", "check"),
+    _wp("auto_add_new_cells", "mda_auto_add_cells_check", "check"),
+    _wp("suppress_pillars", "mda_suppress_pillars_check", "check"),
     _wp("segment_channel", "mda_seg_ch_combo", "combo"),
     _wp("segmentation_scale", "mda_seg_scale_input", "float"),
     _wp("tracking_cellpose_model", "mda_seg_model_combo", "combo"),
@@ -1157,6 +1164,7 @@ ACTIONS = [
             _p("batch", "sel_batch_combo", "combo",
                "Batch collection.", enum=_BATCH),
             _wp("cellpose_model", "sel_cellpose_combo", "combo"),
+            _wp("suppress_pillars", "sel_suppress_pillars_check", "check"),
             _wp("vandermonde_model", "sel_vdm_path", "text"),
         ],
         "description": (
@@ -1232,6 +1240,8 @@ ACTIONS = [
             _wp("laser_fine_search_range_um", "mda_fine_range_input", "float"),
             _wp("laser_fine_search_points", "mda_fine_pts_input", "int"),
             _wp("segment_and_track", "mda_seg_track_check", "check"),
+            _wp("auto_add_new_cells", "mda_auto_add_cells_check", "check"),
+            _wp("suppress_pillars", "mda_suppress_pillars_check", "check"),
             _wp("segment_channel", "mda_seg_ch_combo", "combo"),
             _wp("segmentation_scale", "mda_seg_scale_input", "float"),
             _wp("cellpose_model", "mda_seg_model_combo", "combo"),

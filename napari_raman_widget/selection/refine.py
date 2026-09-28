@@ -168,11 +168,11 @@ def _acquire_mask(
     segmentation_scale: int,
     cellpose_upsample: int,
     segmenter: Callable[..., np.ndarray],
+    pillar_shape_filter: Any | None = None,
 ) -> np.ndarray:
     core.snapImage()
     core.waitForSystem()
     image = np.asarray(core.getImage())
-
     def scaled_segmenter(segment_image: np.ndarray, **kwargs: Any) -> np.ndarray:
         kwargs["scale"] = int(segmentation_scale)
         scaled_mask = np.asarray(segmenter(segment_image, **kwargs))
@@ -215,6 +215,12 @@ def _acquire_mask(
     restored_crop = restored_crop[: crop.shape[0], : crop.shape[1]]
     restored = np.zeros(image.shape, dtype=restored_crop.dtype)
     restored[y0:y1, x0:x1] = restored_crop
+    if pillar_shape_filter is not None:
+        shape_result = pillar_shape_filter.filter(
+            restored,
+            image_shape=image.shape,
+        )
+        restored = shape_result.filtered_labels
     return restored
 
 
@@ -235,6 +241,8 @@ def refine_cell_source_points(
     show_progress: bool = True,
     segmenter: Callable[..., np.ndarray] | None = None,
     point_refiner: Callable[[np.ndarray], np.ndarray] | None = None,
+    suppress_pillars: bool = False,
+    pillar_shape_filter: Any | None = None,
 ) -> dict[str, int]:
     """Acquire each selected FOV and refine its cell-layer points in place.
 
@@ -247,6 +255,10 @@ def refine_cell_source_points(
 
     if segmenter is None:
         segmenter = _reusable_cellpose_segmenter(cellpose_model)
+    if pillar_shape_filter is None and suppress_pillars:
+        from napari_raman_widget.engine_compat import make_pillar_shape_filter
+
+        pillar_shape_filter = make_pillar_shape_filter(True)
 
     point_data = np.asarray(source._points.data, dtype=float)
     if point_data.size == 0:
@@ -325,6 +337,7 @@ def refine_cell_source_points(
                     segmentation_scale=int(segmentation_scale),
                     cellpose_upsample=cellpose_upsample,
                     segmenter=segmenter,
+                    pillar_shape_filter=pillar_shape_filter,
                 )
 
             rows = np.flatnonzero(position_indices == position_index)

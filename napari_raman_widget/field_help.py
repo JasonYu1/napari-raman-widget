@@ -276,6 +276,10 @@ HELP = {
         "Segmentation model used to identify candidate cells (defaults to "
         "cyto2 if available)."
     ),
+    "sel_suppress_pillars_check": (
+        "Run Cellpose normally, then remove labels whose rotated mask fits "
+        "at least 75% of the measured 78 x 56 px pillar rectangle."
+    ),
     "run_selection_btn": (
         "Prepare the MDA widget, run Cellpose-based selection, create source "
         "layers and a new sequence, and store them for Raman MDA."
@@ -292,8 +296,9 @@ HELP = {
     ),
     "run_manual_btn": (
         "Create empty point-source layers to hand-click cells. Batch = click "
-        "exactly N per FOV; non-batch = click freely. Finish clicking before "
-        "running the MDA."
+        "exactly N per FOV before starting; non-batch = click freely, including "
+        "while the MDA is running. Live additions and moves are preserved "
+        "across tracking refreshes."
     ),
     "center_manual_btn": (
         "Turn each clicked cell (non-batch) into a centered stage position via "
@@ -324,6 +329,15 @@ HELP = {
     "mda_fine_pts_input": "Fine laser-autofocus sample count.",
     "mda_seg_track_check": (
         "Re-segment images and update aiming during the time series."
+    ),
+    "mda_auto_add_cells_check": (
+        "After each tracking refresh after the first time point, add one "
+        "target for every newly appearing segmented cell. Manual points added "
+        "during acquisition are preserved. Available only in non-batch mode."
+    ),
+    "mda_suppress_pillars_check": (
+        "Run Cellpose normally, then remove labels whose rotated mask fits "
+        "at least 75% of the measured 78 x 56 px pillar rectangle."
     ),
     "mda_seg_ch_combo": "Micro-Manager channel used for segmentation.",
     "mda_seg_scale_input": (

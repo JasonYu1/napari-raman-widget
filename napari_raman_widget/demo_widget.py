@@ -40,8 +40,10 @@ from .calibration import (
     save_vandermonde_model,
 )
 from .demo import DemoWorld, configure_demo_channels, create_demo_backend
+from .engine_compat import pillar_suppression_kwargs
 from .field_help import apply_tooltips
 from .log_window import LogWindow, _StdoutRedirector
+from .live_cell_tracking import make_live_cell_engine_type
 from .live_spectra import LiveSpectrumWorker
 from .plot_windows import (
     CalibrationPlotWindow,
@@ -71,6 +73,7 @@ from .spectra import (
     save_collection_record,
     spectral_bias_from_dark_noise,
 )
+from .spatial_mapping import snapshot_scan_shape
 from .ui_helpers import make_collapsible
 from .workflows import set_up_new_seq
 
@@ -874,6 +877,12 @@ class DemoWidget(QWidget):
         sel_cp_row.addWidget(self.sel_cellpose_combo)
         sel_layout.addLayout(sel_cp_row)
 
+        self.sel_suppress_pillars_check = QCheckBox(
+            "Exclude rectangular trap pillars from cell targets"
+        )
+        self.sel_suppress_pillars_check.setChecked(False)
+        sel_layout.addWidget(self.sel_suppress_pillars_check)
+
         self.run_selection_btn = QPushButton("Run automated selection")
         self.run_selection_btn.clicked.connect(self.run_automated_selection)
         sel_layout.addWidget(self.run_selection_btn)
@@ -1006,6 +1015,16 @@ class DemoWidget(QWidget):
         self.mda_seg_track_check.setChecked(False)
         self.mda_seg_track_check.toggled.connect(self._toggle_seg_track_fields)
         mda_layout.addWidget(self.mda_seg_track_check)
+        self.mda_auto_add_cells_check = QCheckBox(
+            "Automatically add new cells"
+        )
+        self.mda_auto_add_cells_check.setChecked(False)
+        mda_layout.addWidget(self.mda_auto_add_cells_check)
+        self.mda_suppress_pillars_check = QCheckBox(
+            "Exclude rectangular trap pillars from cell targets"
+        )
+        self.mda_suppress_pillars_check.setChecked(False)
+        mda_layout.addWidget(self.mda_suppress_pillars_check)
         # Seg-track options (shown only when the box is checked)
         seg_ch_row = QHBoxLayout()
         self._seg_ch_label = QLabel("Segment channel:")
@@ -1549,6 +1568,8 @@ class DemoWidget(QWidget):
 
     def _toggle_seg_track_fields(self, checked):
         """Show/hide the segment-channel and rescale fields."""
+        self.mda_auto_add_cells_check.setVisible(checked)
+        self.mda_suppress_pillars_check.setVisible(checked)
         self._seg_ch_label.setVisible(checked)
         self.mda_seg_ch_combo.setVisible(checked)
         self._seg_scale_label.setVisible(checked)
@@ -2990,11 +3011,7 @@ class DemoWidget(QWidget):
                     raise RuntimeError(
                         "Select a Shapes layer and draw a rectangle first."
                     )
-                if len(shapes.data) == 0:
-                    raise RuntimeError("The active Shapes layer is empty.")
-                selected_shapes = sorted(int(i) for i in shapes.selected_data)
-                shape_index = selected_shapes[-1] if selected_shapes else len(shapes.data) - 1
-                shape0 = np.asarray(shapes.data[shape_index], dtype=float)
+                shape0 = snapshot_scan_shape(shapes)
 
                 x_min = float(np.min(shape0[:, 0]))
                 x_max = float(np.max(shape0[:, 0]))
@@ -3196,6 +3213,7 @@ class DemoWidget(QWidget):
         center_cell = self.sel_center_cell_check.isChecked()
         vandermonde_model_path = self.sel_vdm_path.text().strip()
         cellpose_model = self.sel_cellpose_combo.currentText() or "cyto2"
+        suppress_pillars = self.sel_suppress_pillars_check.isChecked()
 
         log = LogWindow(title="Automated selection log")
         log.show()
@@ -3250,6 +3268,7 @@ class DemoWidget(QWidget):
                     cell_point_refiner=(
                         self.demo_backend.world.snap_points_to_cell_centers
                     ),
+                    suppress_pillars=suppress_pillars,
                 )
             cell_point_count = sum(
                 len(source._points.data)
@@ -3356,6 +3375,7 @@ class DemoWidget(QWidget):
                         if self.demo_backend is not None
                         else None
                     ),
+                    suppress_pillars=self.sel_suppress_pillars_check.isChecked(),
                 )
             log.append(
                 "\n--- refinement complete: "
@@ -3649,9 +3669,23 @@ class DemoWidget(QWidget):
         autofocus_enabled = af_choice not in ("None", "none", "", None)
         autofocus_object = af_choice if autofocus_enabled else "laser"
         segment_and_track = self.mda_seg_track_check.isChecked()
+        auto_add_new_cells = (
+            segment_and_track
+            and self.mda_auto_add_cells_check.isChecked()
+        )
+        suppress_pillars = (
+            segment_and_track
+            and self.mda_suppress_pillars_check.isChecked()
+        )
         batch = self.selection_results.get(
             "batch", self.sel_batch_combo.currentText() == "True"
         )
+        if auto_add_new_cells and batch:
+            self.status.setText(
+                "Status: automatically adding new cells is not supported "
+                "in integrated batch mode"
+            )
+            return
         sq_size = float(self.sel_sqsize_input.value())
         sq_n = int(self.sel_sqn_input.value())
         if batch and self._make_point_transformer(sq_size, sq_n).multiplier < 2:
@@ -3715,13 +3749,15 @@ class DemoWidget(QWidget):
             import datetime as _dt
             from useq import ZRelativePositions
             from raman_mda_engine import (
-                RamanEngine, RamanTiffAndNumpyWriter,
+                RamanEngine as BaseRamanEngine,
+                RamanTiffAndNumpyWriter,
             )
             try:
                 img_x = int(self.core.getImageWidth())
                 img_y = int(self.core.getImageHeight())
             except Exception:
                 img_x, img_y = self._get_image_xy()
+            RamanEngine = make_live_cell_engine_type(BaseRamanEngine)
 
             with _StdoutRedirector(log):
                 engine = RamanEngine(
@@ -3733,6 +3769,7 @@ class DemoWidget(QWidget):
                     image_p=image_p,
                     autofocus_object=autofocus_object,
                     segment_and_track=segment_and_track,
+                    auto_add_new_cells=auto_add_new_cells,
                     scale=seg_scale,
                     segment_channel=segment_channel,
                     cellpose_model=cellpose_model,
@@ -3751,6 +3788,10 @@ class DemoWidget(QWidget):
                     circle_center=circle_center,
                     circle_radius=circle_radius,
                     shutter_device=None,
+                    **pillar_suppression_kwargs(
+                        BaseRamanEngine,
+                        suppress_pillars,
+                    ),
                 )
 
                 self.core.register_mda_engine(engine)
@@ -3810,6 +3851,8 @@ class DemoWidget(QWidget):
                     f"z_rel={z_relative}, raman_z={raman_z_indices}, "
                     f"autofocus={autofocus_enabled} ({af_choice}), "
                     f"segment_and_track={segment_and_track}, "
+                    f"auto_add_new_cells={auto_add_new_cells}, "
+                    f"suppress_pillars={suppress_pillars}, "
                     f"search_pts={search_pts}, fine_range={fine_search_range}, "
                     f"fine_pts={fine_search_pts}, refocus_every={refocus_every}, "
                     f"image=({img_x}x{img_y}), "
@@ -3819,7 +3862,11 @@ class DemoWidget(QWidget):
                 )
                 print(
                     f"[debug] engine._autofocus={engine._autofocus}, "
-                    f"engine._segment_and_track={engine._segment_and_track}"
+                    f"engine._segment_and_track={engine._segment_and_track}, "
+                    "engine._auto_add_new_cells="
+                    f"{getattr(engine, '_auto_add_new_cells', False)}, "
+                    "engine._suppress_pillars="
+                    f"{getattr(engine, '_suppress_pillars', False)}"
                 )
                 self.core.run_mda(final_seq)
 
