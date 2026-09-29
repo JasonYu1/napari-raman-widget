@@ -1,5 +1,6 @@
 # Python
 __pycache__/
+.numba-cache/
 *.py[cod]
 *$py.class
 *.egg-info/

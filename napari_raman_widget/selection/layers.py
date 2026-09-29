@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from napari_broadcastable_points import BroadcastablePoints
-from raman_mda_engine.aiming import PointsLayerSource
+if TYPE_CHECKING:
+    from raman_mda_engine.aiming import PointsLayerSource
+else:
+    PointsLayerSource = Any
 
 __all__ = ["create_point_sources"]
 
@@ -44,6 +46,9 @@ def create_point_sources(
     list of PointsLayerSource
         Raman MDA point sources connected to their napari layers.
     """
+    from napari_broadcastable_points import BroadcastablePoints
+    from raman_mda_engine.aiming import PointsLayerSource
+
     if names is None:
         names = (
             "cells",

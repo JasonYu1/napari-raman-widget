@@ -8,8 +8,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from raman_mda_engine.aiming.autotracking import segment_single_img
-from raman_mda_engine.utils import get_seq_from_napari
 from tqdm.auto import tqdm
 
 from napari_raman_widget.calibration.models import (
@@ -18,10 +16,25 @@ from napari_raman_widget.calibration.models import (
 )
 from napari_raman_widget.engine_compat import make_pillar_shape_filter
 
-from .layers import create_point_sources
 from .masks import get_n_most_centered_coms
 
 __all__ = ["automated_point_selections"]
+
+
+def get_seq_from_napari(*args: Any, **kwargs: Any) -> Any:
+    """Load the engine helper only when an automatic selection is run."""
+    from raman_mda_engine.utils import get_seq_from_napari as implementation
+
+    return implementation(*args, **kwargs)
+
+
+def segment_single_img(*args: Any, **kwargs: Any) -> Any:
+    """Load Cellpose and its PyTorch runtime only when segmentation is run."""
+    from raman_mda_engine.aiming.autotracking import (
+        segment_single_img as implementation,
+    )
+
+    return implementation(*args, **kwargs)
 
 
 _NO_AUTOFOCUS = {
@@ -423,6 +436,8 @@ def _create_sources(
     no_autofocus: bool,
 ):
     """Create the required cell and autofocus sources."""
+    from .layers import create_point_sources
+
     if no_autofocus:
         return create_point_sources(
             viewer,

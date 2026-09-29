@@ -5,9 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
-from raman_mda_engine.utils import get_seq_from_napari
-
-from .layers import create_point_sources
 
 __all__ = ["grid_point_selections"]
 
@@ -17,6 +14,13 @@ _NO_AUTOFOCUS = {
     "",
     "none",
 }
+
+
+def get_seq_from_napari(*args: Any, **kwargs: Any) -> Any:
+    """Load the engine helper only when grid selection is run."""
+    from raman_mda_engine.utils import get_seq_from_napari as implementation
+
+    return implementation(*args, **kwargs)
 
 
 def _is_no_autofocus(
@@ -37,6 +41,8 @@ def _create_sources(
     no_autofocus: bool,
 ):
     """Create grid cell and optional autofocus layers."""
+    from .layers import create_point_sources
+
     if no_autofocus:
         return create_point_sources(
             viewer,

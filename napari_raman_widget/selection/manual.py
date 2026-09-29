@@ -6,14 +6,11 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from raman_mda_engine.utils import get_seq_from_napari
 
 from napari_raman_widget.calibration.models import (
     apply_vandermonde_model,
     load_vandermonde_model,
 )
-
-from .layers import create_point_sources
 
 __all__ = [
     "center_manual_selections",
@@ -26,6 +23,13 @@ _NO_AUTOFOCUS = {
     "",
     "none",
 }
+
+
+def get_seq_from_napari(*args: Any, **kwargs: Any) -> Any:
+    """Load the engine helper only when manual selection is run."""
+    from raman_mda_engine.utils import get_seq_from_napari as implementation
+
+    return implementation(*args, **kwargs)
 
 
 def _is_no_autofocus(
@@ -46,6 +50,8 @@ def _create_sources(
     no_autofocus: bool,
 ):
     """Create the required manual-selection point layers."""
+    from .layers import create_point_sources
+
     if no_autofocus:
         return create_point_sources(
             viewer,
