@@ -119,6 +119,92 @@ class AssistantConsole(QPlainTextEdit):
             return
         self._set_busy_gui(busy)
 
+    def replace_conversation(self, entries, commands=None):
+        """Replace saved transcript and recall history without submitting.
+
+        ``entries`` is a list of ``{"who": ..., "text": ...}`` dictionaries;
+        accepted roles are ``user``, ``assistant``, ``tool``, and ``system``.
+        When ``commands`` is omitted, user entries become the command-history
+        entries.  Supplying a list overrides that inferred history.
+
+        Replacement is deliberately unavailable while a request is active so
+        that late output cannot be attached to the wrong conversation.
+        """
+        if self._busy:
+            raise RuntimeError(
+                "Cannot replace the conversation while a request is running."
+            )
+        if QThread.currentThread() != self.thread():
+            raise RuntimeError(
+                "Conversation replacement must run on the console GUI thread."
+            )
+        if not isinstance(entries, list):
+            raise TypeError("entries must be a list of message dictionaries")
+
+        rendered_entries = []
+        inferred_commands = []
+        allowed_roles = {"user", "assistant", "tool", "system"}
+        for index, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                raise TypeError(f"entries[{index}] must be a dictionary")
+            if set(entry) != {"who", "text"}:
+                raise ValueError(
+                    f"entries[{index}] must contain only 'who' and 'text'"
+                )
+            who = entry["who"]
+            text = entry["text"]
+            if not isinstance(who, str) or not isinstance(text, str):
+                raise TypeError(
+                    f"entries[{index}] 'who' and 'text' must be strings"
+                )
+            role = who.strip().lower()
+            if role not in allowed_roles:
+                raise ValueError(
+                    f"entries[{index}] has unsupported role {who!r}"
+                )
+            text = self._normalise_newlines(text)
+            rendered_entries.append((role, text))
+            if role == "user":
+                command = text.strip()
+                if command:
+                    inferred_commands.append(command)
+
+        if commands is None:
+            restored_commands = inferred_commands
+        else:
+            if not isinstance(commands, list):
+                raise TypeError("commands must be a list of strings or None")
+            restored_commands = []
+            for index, command in enumerate(commands):
+                if not isinstance(command, str):
+                    raise TypeError(f"commands[{index}] must be a string")
+                command = self._normalise_newlines(command).strip()
+                if not command:
+                    raise ValueError(f"commands[{index}] must not be blank")
+                restored_commands.append(command)
+
+        transcript = self._BANNER
+        for who, text in rendered_entries:
+            transcript = self._with_trailing_newline(
+                transcript + self._format_message(who, text)
+            )
+
+        # All validation happens above so malformed saved state cannot partly
+        # replace the active console.  Rebuilding once also clears any native
+        # pre-edit text that Qt may be displaying for an IME composition.
+        self._transcript = transcript
+        self._history = restored_commands
+        self._history_index = None
+        self._history_scratch = ""
+        self._busy_draft = ""
+        self._undo_stack.clear()
+        self._redo_stack.clear()
+        self._ime_active = False
+        self._ime_before_state = None
+        self._pending_messages.clear()
+        self._last_good_draft = ""
+        self._render("", caret_to_end=True)
+
     def command_text(self):
         """Return only the editable draft, preserving embedded newlines."""
         if self._busy:

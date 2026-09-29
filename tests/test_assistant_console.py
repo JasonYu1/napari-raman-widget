@@ -99,6 +99,112 @@ class AssistantConsoleTests(unittest.TestCase):
         QTest.keyClick(self.console, Qt.Key_Down)
         self.assertEqual(self.console.command_text(), "scratch")
 
+    def test_replace_conversation_bulk_restores_messages_and_history(self):
+        submitted = []
+        self.console.commandSubmitted.connect(submitted.append)
+        entries = [
+            {"who": "user", "text": "inspect sample"},
+            {"who": "assistant", "text": "Found a peak 🔬"},
+            {"who": "tool", "text": "Plot configured"},
+            {"who": "system", "text": "Profile restored"},
+            {"who": "user", "text": "compare\r\nsecond scan"},
+        ]
+
+        self.console.replace_conversation(
+            entries, commands=["saved first", "saved\r\nsecond"]
+        )
+
+        text = self.console.toPlainText()
+        self.assertIn("> inspect sample\n", text)
+        self.assertIn("Assistant: Found a peak 🔬\n", text)
+        self.assertIn("Tool: Plot configured\n", text)
+        self.assertIn("System: Profile restored\n", text)
+        self.assertIn("> compare\nsecond scan\n", text)
+        self.assertTrue(text.endswith("> "))
+        self.assertEqual(self.console.command_text(), "")
+        self.assertEqual(submitted, [])
+
+        QTest.keyClick(self.console, Qt.Key_Up)
+        self.assertEqual(self.console.command_text(), "saved\nsecond")
+        QTest.keyClick(self.console, Qt.Key_Up)
+        self.assertEqual(self.console.command_text(), "saved first")
+        QTest.keyClick(self.console, Qt.Key_Down)
+        self.assertEqual(self.console.command_text(), "saved\nsecond")
+        QTest.keyClick(self.console, Qt.Key_Down)
+        self.assertEqual(self.console.command_text(), "")
+
+    def test_replace_conversation_infers_history_and_empty_reset_is_fresh(self):
+        self.console.replace_conversation([
+            {"who": "user", "text": "one"},
+            {"who": "assistant", "text": "reply"},
+            {"who": "user", "text": "two\rthree"},
+        ])
+
+        QTest.keyClick(self.console, Qt.Key_Up)
+        self.assertEqual(self.console.command_text(), "two\nthree")
+        QTest.keyClick(self.console, Qt.Key_Up)
+        self.assertEqual(self.console.command_text(), "one")
+
+        self.console.replace_conversation([])
+
+        self.assertEqual(
+            self.console.toPlainText(),
+            self.console._BANNER + self.console.PROMPT,
+        )
+        self.assertEqual(self.console.command_text(), "")
+        QTest.keyClick(self.console, Qt.Key_Up)
+        self.assertEqual(self.console.command_text(), "")
+        QTest.keyClick(self.console, Qt.Key_Z, Qt.ControlModifier)
+        self.assertEqual(self.console.command_text(), "")
+
+    def test_replace_conversation_clears_draft_ime_and_deferred_output(self):
+        self.console.set_command_text("old draft")
+        preedit = QInputMethodEvent("かな", [])
+        QApplication.sendEvent(self.console, preedit)
+        self.console.append_message("assistant", "stale deferred output")
+        self.assertNotIn("stale deferred output", self.console.toPlainText())
+
+        self.console.replace_conversation([
+            {"who": "assistant", "text": "restored output"},
+        ])
+
+        self.assertEqual(self.console.command_text(), "")
+        self.assertIn("Assistant: restored output", self.console.toPlainText())
+        self.assertNotIn("old draft", self.console.toPlainText())
+        self.assertNotIn("stale deferred output", self.console.toPlainText())
+        self.assertFalse(self.console._ime_active)
+        self.assertEqual(self.console._pending_messages, [])
+
+    def test_replace_conversation_rejects_busy_or_invalid_state_atomically(self):
+        self.console.replace_conversation([
+            {"who": "assistant", "text": "keep me"},
+        ], commands=["kept command"])
+        self.console.set_command_text("keep draft")
+        self.console.set_busy(True)
+        busy_text = self.console.toPlainText()
+
+        with self.assertRaises(RuntimeError):
+            self.console.replace_conversation([])
+        self.assertEqual(self.console.toPlainText(), busy_text)
+        self.console.set_busy(False)
+        self.assertEqual(self.console.command_text(), "keep draft")
+
+        original = self.console.toPlainText()
+        invalid_calls = (
+            lambda: self.console.replace_conversation("not a list"),
+            lambda: self.console.replace_conversation([{"who": "alien", "text": "x"}]),
+            lambda: self.console.replace_conversation([{"who": "user"}]),
+            lambda: self.console.replace_conversation(
+                [{"who": "user", "text": "x"}], commands=[""]
+            ),
+        )
+        for invalid_call in invalid_calls:
+            with self.subTest(invalid_call=invalid_call):
+                with self.assertRaises((TypeError, ValueError)):
+                    invalid_call()
+                self.assertEqual(self.console.toPlainText(), original)
+                self.assertEqual(self.console.command_text(), "keep draft")
+
     def test_async_output_preserves_reverse_selection_and_draft_undo(self):
         self.console.set_command_text("ab😀cd")
         cursor = self.console.textCursor()

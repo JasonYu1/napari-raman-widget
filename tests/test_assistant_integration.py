@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+import tempfile
 import time
 from types import SimpleNamespace
 import unittest
@@ -19,6 +20,7 @@ from qtpy.QtWidgets import (
 )
 
 from napari_raman_widget.assistant_plot_tools import get_plot_state
+from napari_raman_widget.assistant_history import HistoryStore
 from napari_raman_widget.chat_panel import ChatPanel
 from napari_raman_widget.plot_windows import SpectrumWindow
 from napari_raman_widget.plot_workspace import show_plot
@@ -54,7 +56,9 @@ class AssistantIntegrationTests(unittest.TestCase):
         self.owner._stop_live_raman = Mock()
         self.owner._plot_windows = []
         self.owner.viewer = SimpleNamespace(window=_ViewerWindow())
-        self.chat = ChatPanel(self.owner)
+        history_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(history_dir.cleanup)
+        self.chat = ChatPanel(self.owner, history_store=HistoryStore(history_dir.name))
 
     def tearDown(self):
         self.chat.deleteLater()

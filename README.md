@@ -253,6 +253,53 @@ a new line, and **Up/Down** recalls submitted requests. You can select and
 copy earlier output, but cannot accidentally edit it. Pasting multiple lines
 does not submit them; review the text and press Enter when ready.
 
+**Memory and local profiles:** Chat is private/in-memory by default and is lost
+when the widget closes. Check **Save history** above the console to opt in to
+local persistence; this saves the current conversation into a new profile.
+The choice is remembered, and the active saved profile resumes on the next
+launch. Use **History > New profile…** to name a separate conversation, and
+the profile selector to switch between them. Switching replaces the AI's
+conversation context, transcript, and command recall; it does not replay
+commands or restore hardware/plot settings. Profile changes and clearing are
+disabled while a request is running.
+
+Uncheck **Save history** (or select **Private session**) to start a fresh,
+unsaved conversation. Existing saved profiles are kept. Enabling saving from
+a private session always creates a new profile, so it cannot silently merge
+one customer's chat into another's. **History > Clear current history…**
+clears the active conversation, draft, and command recall, and deletes its
+saved chat after confirmation; other profiles are untouched. If saving is
+still enabled, future messages will be saved again.
+
+To remove a profile entirely, select it in the profile dropdown, choose
+**History > Delete profile…**, and confirm its name. This removes the profile
+from the list and deletes its local saved chat, then clears the current chat,
+draft, and command recall and starts a fresh **Private session**. Other profiles
+are untouched. Deletion cannot be undone in the widget and cannot remove copies
+held by the API provider, backups, or other already-open Assistant sessions.
+The delete option is disabled during a request and when no saved profile is selected.
+If deletion is interrupted, a small non-chat deletion marker prevents that profile
+from loading or saving again, including after a restart. The Assistant shows a
+warning and lets you retry **Delete profile** to finish removing it.
+
+History files contain chat text and tool inputs/results in **unencrypted local
+JSON**, not secure customer accounts. On Windows they are under
+`%LOCALAPPDATA%/napari-raman-widget/assistant`; macOS uses
+`~/Library/Application Support/napari-raman-widget/assistant`, and Linux uses
+`$XDG_DATA_HOME/napari-raman-widget/assistant` (or
+`~/.local/share/napari-raman-widget/assistant`). Anyone with access to that OS
+account may read them. No API key is deliberately added to history, but text
+you type and tool output may contain sensitive information. Do not enter
+secrets or sensitive customer data. Resumed context is sent to the configured
+Anthropic API with your next request. Clearing local history cannot delete
+provider-side records or backups.
+
+Saved history retains at most 30 completed request/tool-loop groups
+and 500 visible events, with an additional file-size limit. It is not unlimited
+memory. Chats are saved after replies finish; an interrupted request may not
+be saved. Invalid or unwritable files produce a visible warning rather than
+silently overwriting saved history.
+
 This is an AI command interface, **not a system shell or Python terminal**.
 `napari_raman_widget/chat_panel.py` turns plain-English requests into the
 panel's existing GUI actions. It never
