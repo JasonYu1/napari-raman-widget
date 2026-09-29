@@ -10,6 +10,10 @@ from napari_raman_widget.chat_panel import (
     _set_widget_parameter,
     build_tools,
 )
+from napari_raman_widget.assistant_calibration_tools import (
+    CALIBRATION_CONTROL_WIDGET_ATTRIBUTES,
+)
+from napari_raman_widget.assistant_plot_tools import PLOT_CONTROL_WIDGET_ATTRIBUTES
 
 
 ROOT = Path(__file__).parents[1]
@@ -37,10 +41,50 @@ def _declared_controls(path):
             if (
                 isinstance(target, ast.Attribute)
                 and isinstance(target.value, ast.Name)
-                and target.value.id == "self"
+                and target.value.id in {"self", "owner"}
             ):
                 controls.add(target.attr)
     return controls
+
+
+def _plot_controls(path):
+    """Include helper factories and local-variable controls assigned to owners."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    factories = CONTROL_TYPES | {"QSlider", "_make_wavenumber_axis_checkbox"}
+    result = set()
+    for scope in ast.walk(tree):
+        if not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        # A name such as `checkbox` belongs to this function only, not every
+        # method in the file that accepts an existing control as an argument.
+        assignments = [node for node in ast.walk(scope) if isinstance(node, ast.Assign)]
+        local_controls = {
+            target.id
+            for node in assignments
+            if isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id in factories
+            for target in node.targets
+            if isinstance(target, ast.Name)
+        }
+        for node in assignments:
+            value = node.value
+            direct = (
+                isinstance(value, ast.Call)
+                and isinstance(value.func, ast.Name)
+                and value.func.id in factories
+            )
+            alias = isinstance(value, ast.Name) and value.id in local_controls
+            if not (direct or alias):
+                continue
+            for target in node.targets:
+                if (
+                    isinstance(target, ast.Attribute)
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id in {"self", "owner"}
+                ):
+                    result.add(target.attr)
+    return result
 
 
 class _ValueControl:
@@ -75,7 +119,9 @@ class ChatPanelTests(unittest.TestCase):
     def test_widget_registry_covers_every_editable_control(self):
         registered = {param["attr"] for param in WIDGET_PARAMS}
         declared = set()
-        for filename in ("hardware_widget.py", "demo_widget.py"):
+        for filename in (
+            "hardware_widget.py", "demo_widget.py", "spectral_calibration_ui.py"
+        ):
             declared.update(
                 _declared_controls(ROOT / "napari_raman_widget" / filename)
             )
@@ -84,6 +130,53 @@ class ChatPanelTests(unittest.TestCase):
         self.assertEqual(
             registered - declared,
             {"channel_rows", "mda_channel_rows"},
+        )
+
+    def test_new_capabilities_are_exposed_in_the_api_schema(self):
+        expected = {
+            "get_assistant_capabilities", "list_plots", "configure_plot",
+            "show_plot_workspace", "hide_plot_workspace",
+            "load_wavenumber_calibration", "clear_wavenumber_calibration",
+            "clear_dark_noise", "collect_dark_noise", "stop_live_spectra",
+            "inspect_calibration_result", "query_calibration_progress",
+            "control_spectral_axis_calibration",
+        }
+        tools = build_tools()
+        names = [tool["name"] for tool in tools]
+        self.assertEqual(len(names), len(set(names)))
+        self.assertLessEqual(expected, set(names))
+        for tool in tools:
+            schema = tool["input_schema"]
+            self.assertFalse(schema["additionalProperties"])
+            self.assertLessEqual(set(schema["required"]), set(schema["properties"]))
+
+    def test_dark_collection_is_gated_and_live_stop_is_not(self):
+        collect = ACTIONS_BY_NAME["collect_dark_noise"]
+        self.assertFalse(collect.get("readonly", False))
+        self.assertFalse(collect.get("always_run", False))
+        self.assertTrue(ACTIONS_BY_NAME["stop_live_spectra"]["always_run"])
+        self.assertTrue(ACTIONS_BY_NAME["clear_dark_noise"]["readonly"])
+
+    def test_plot_and_shared_controls_have_adapters_or_synchronized_aliases(self):
+        declared = set()
+        for filename in ("plot_windows.py", "figure_panel.py"):
+            declared |= _plot_controls(ROOT / "napari_raman_widget" / filename)
+        registered = set(PLOT_CONTROL_WIDGET_ATTRIBUTES.values())
+        registered |= set(CALIBRATION_CONTROL_WIDGET_ATTRIBUTES.values())
+        # These sliders mirror their corresponding numeric inputs, which are
+        # configured via the same signal handlers rather than a second tool.
+        synchronized = {
+            "smoothing_window_slider": "smoothing_window_input",
+            "baseline_lambda_slider": "baseline_lambda_input",
+            "_z_slider": "_z_input",
+        }
+        self.assertLessEqual(set(synchronized.values()), registered)
+        self.assertLessEqual(declared, registered | set(synchronized))
+        # Dataset controls returned by _make_slider are tuple assignments,
+        # not direct constructors, so cover their adapter mapping explicitly.
+        self.assertLessEqual({"t_input", "p_input", "z_input"}, registered)
+        self.assertLessEqual(
+            {"white_background_check", "show_wavenumber_check"}, declared
         )
 
     def test_automated_selection_exposes_every_setting_including_n_x(self):

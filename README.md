@@ -246,8 +246,16 @@ Two forms of built-in documentation ship with the panel:
 
 ## AI assistant (chat panel)
 
-`napari_raman_widget/chat_panel.py` provides the chat box that turns
-plain-English requests into the panel's existing GUI actions. It never
+The **Assistant** tab is a full-height, terminal-style console inside the
+widget. Type directly at the `> ` prompt below the conversation—there is no
+separate typing box or Send button. **Enter** sends, **Shift+Enter** inserts
+a new line, and **Up/Down** recalls submitted requests. You can select and
+copy earlier output, but cannot accidentally edit it. Pasting multiple lines
+does not submit them; review the text and press Enter when ready.
+
+This is an AI command interface, **not a system shell or Python terminal**.
+`napari_raman_widget/chat_panel.py` turns plain-English requests into the
+panel's existing GUI actions. It never
 touches hardware directly - it drives the same methods the buttons call (and
 a few napari / Micro-Manager operations), so it reuses every existing range
 check and validation. Anything that moves the stage, laser, or shutters pops
@@ -255,10 +263,10 @@ a confirmation dialog first; read-only queries run automatically.
 
 **What it can do:**
 
-- Run any panel action (connect, calibrate, collect spectra, run selection,
+- Run registered acquisition actions (connect, calibrate, collect spectra, run selection,
   run the Raman MDA, generate a dataset, ...).
 - Read state: connection, status, wavelength, grating, image size, selection
-  readiness, and every editable widget setting.
+  readiness, registered widget settings, active workflow tab, and open plots.
 - Change settings without starting a run, or supply all settings consumed by
   an action in the same request (including selection `n_x`, aiming pattern,
   Cellpose options, scan/MDA channels, autofocus, and tracking controls).
@@ -270,6 +278,32 @@ a confirmation dialog first; read-only queries run automatically.
 - Build a `useq` MDA sequence (channels, z-stack, timelapse, positions) and
   load it into the MDA widget, add the current stage position to it, then
   start it.
+- List open plots with stable IDs; show, hide, dock, or float the workspace.
+- Change supported plot controls: white/transparent background, Y-scale lock,
+  pixel/wavenumber axis, display-only smoothing and baseline subtraction,
+  and plot-specific view/navigation settings. Unsupported settings are rejected.
+- Load or clear optional wavenumber calibration, optionally attaching a loaded
+  model to one explicitly selected existing plot. Loading never automatically
+  opts a pixel plot into wavenumbers. Clear dark noise, collect new dark spectra
+  (with confirmation), or stop live Raman spectra after the current exposure.
+- Inspect a calibration result's recorded spectrum by point number, and query
+  the calibration log's actual progress/stage and bounded recent messages.
+- Start, inspect, or cancel the spectral-axis calibration wizard. Picking
+  peaks, entering known Raman shifts, and finishing/saving remain manual.
+
+Try: "List my plots", "Make the current spectrum background white and lock
+its Y scale", "Show the recorded spectrum at calibration point 3", or
+"What does the calibration log say?" For wavenumbers, supply your calibration
+JSON path and say which existing plot to apply it to, then request wavenumber
+display. Ask "What can you do?" for the current registered capabilities.
+
+The Assistant gets tool descriptions and explicit state snapshots; it does not
+see your screen, read arbitrary source files, inherit developer conversations,
+or automatically observe manual UI changes. Progress queries are not background
+monitoring. A synchronous calibration launched through chat can keep the chat
+busy until it returns; the on-screen log still shows its progress. Individual
+spectrum samples are returned only when explicitly requested, with a bounded
+output size; ordinary result queries return compact numeric summaries.
 
 **Setup:**
 
@@ -283,8 +317,11 @@ a confirmation dialog first; read-only queries run automatically.
 The assistant is created automatically when `HardwareWidget` opens; no widget
 source changes are required.
 
-Adding a new capability is a one-entry change to the `ACTIONS` registry in
-`chat_panel.py`; the API tool schemas are generated from it automatically.
+Action schemas and capability descriptions come from `ACTIONS` in
+`chat_panel.py`, including the shared `assistant_*_tools.py` registries.
+Add an adapter and registry entry when adding a capability. Coverage tests
+include main-widget fields, shared calibration controls, and plot controls;
+new UI features do not become Assistant tools automatically.
 Pass `ChatPanel(self, confirm=False)` to run recognized commands without the
 confirmation dialog (not recommended on live hardware).
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from weakref import ref
 
@@ -29,6 +30,25 @@ _PANEL_NAMES = {
     "DatasetViewerWindow": "Dataset",
 }
 
+_PANEL_ID_PREFIXES = {
+    "CalibrationPlotWindow": "calibration",
+    "DetectorImageWindow": "detector",
+    "SpectrumWindow": "spectrum",
+    "ReferenceSpectraWindow": "reference",
+    "GridScanPlotWindow": "grid-scan",
+    "DatasetViewerWindow": "dataset",
+    "LogWindow": "log",
+}
+
+
+def _panel_id_prefix(panel):
+    prefix = _PANEL_ID_PREFIXES.get(type(panel).__name__)
+    if prefix is not None:
+        return prefix
+    name = re.sub(r"(?<!^)(?=[A-Z])", "-", type(panel).__name__).lower()
+    name = re.sub(r"[^a-z0-9]+", "-", name).strip("-")
+    return name or "panel"
+
 
 class PlotWorkspace(QWidget):
     """Keep plot content alive while its Napari dock is moved or hidden.
@@ -45,6 +65,8 @@ class PlotWorkspace(QWidget):
         self._dock = None
         self._floating = True
         self._counts = Counter()
+        self._panel_id_counts = Counter()
+        self._panel_ids = {}
         self._title_callbacks = {}
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
@@ -162,6 +184,22 @@ class PlotWorkspace(QWidget):
         """Add a plot once, or focus its existing tab."""
         index = self.tabs.indexOf(panel)
         if index < 0:
+            prefix = _panel_id_prefix(panel)
+            panel_id = getattr(panel, "_plot_panel_id", None)
+            match = (
+                re.fullmatch(rf"{re.escape(prefix)}-(\d+)", panel_id)
+                if isinstance(panel_id, str)
+                else None
+            )
+            if match is None or panel_id in self._panel_ids.values():
+                self._panel_id_counts[prefix] += 1
+                panel_id = f"{prefix}-{self._panel_id_counts[prefix]}"
+            else:
+                self._panel_id_counts[prefix] = max(
+                    self._panel_id_counts[prefix], int(match.group(1))
+                )
+            panel._plot_panel_id = panel_id
+            self._panel_ids[panel] = panel_id
             category = _PANEL_NAMES.get(type(panel).__name__, panel.windowTitle())
             category = category or "Plot"
             self._counts[category] += 1
@@ -183,6 +221,22 @@ class PlotWorkspace(QWidget):
         self.show_in_viewer()
         return panel
 
+    def panel_id_for(self, panel):
+        """Return the stable workspace-local identifier for an open panel."""
+        if self.tabs.indexOf(panel) < 0:
+            raise ValueError("The requested plot panel is not open.")
+        try:
+            return self._panel_ids[panel]
+        except KeyError as error:
+            raise ValueError("The plot panel has no workspace identifier.") from error
+
+    def panel_for_id(self, panel_id):
+        """Return an open panel by stable identifier, or ``None``."""
+        for panel, candidate in self._panel_ids.items():
+            if candidate == panel_id and self.tabs.indexOf(panel) >= 0:
+                return panel
+        return None
+
     def _update_panel_title(self, panel):
         index = self.tabs.indexOf(panel)
         if index >= 0:
@@ -192,7 +246,11 @@ class PlotWorkspace(QWidget):
 
     def _update_title(self, _index=None):
         panel = self.tabs.currentWidget()
-        title = panel.windowTitle() if panel is not None else "Plots and acquisition logs"
+        title = (
+            panel.windowTitle()
+            if panel is not None
+            else "Plots and acquisition logs"
+        )
         self.title_label.setText(title)
         self.title_label.setToolTip(title)
 
@@ -215,6 +273,7 @@ class PlotWorkspace(QWidget):
         if callback is not None:
             panel.windowTitleChanged.disconnect(callback)
         self.tabs.removeTab(index)
+        self._panel_ids.pop(panel, None)
         panel.close()
         panel.setParent(None)
         if not isinstance(panel, LogWindow):

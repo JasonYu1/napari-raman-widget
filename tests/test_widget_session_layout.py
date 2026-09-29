@@ -83,6 +83,7 @@ class WidgetSessionLayoutTests(unittest.TestCase):
                     'workflow_groups.append(("Assistant", [self.chat_panel]))',
                     source,
                 )
+                self.assertIn('expanding_tabs={"Assistant"}', source)
                 self.assertIn('(\"Analysis\", [dataset_box])', source)
                 self.assertNotIn(
                     "analysis_sections.append(self.chat_panel)", source

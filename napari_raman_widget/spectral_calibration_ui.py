@@ -76,7 +76,7 @@ def load_spectral_calibration(owner, *, show_success=True):
         )
         return None
     try:
-        calibration = load_pixel_to_wavenumber_calibration(path)
+        calibration = load_spectral_calibration_file(owner, path)
     except (OSError, ValueError) as error:
         owner.spectral_calibration = None
         QMessageBox.warning(
@@ -87,19 +87,29 @@ def load_spectral_calibration(owner, *, show_success=True):
                 f"Status: spectral calibration load failed -- {error}"
             )
         return None
-    owner.spectral_calibration = calibration
-    if hasattr(owner, "status"):
-        owner.status.setText(
-            "Status: pixel-to-wavenumber calibration loaded "
-            f"(degree {calibration.degree}, "
-            f"{len(calibration.pixel_positions)} points)"
-        )
     if show_success:
         QMessageBox.information(
             owner,
             "Calibration loaded",
             "New spectrum tabs still start in pixels. "
             "Check 'Show wavenumber' in a plot to use this calibration.",
+        )
+    return calibration
+
+
+def load_spectral_calibration_file(owner, path):
+    """Validate then apply a calibration, without dialogs or partial changes."""
+    if not isinstance(path, str) or not path.strip():
+        raise ValueError("Select a calibration JSON file first.")
+    path = path.strip()
+    calibration = load_pixel_to_wavenumber_calibration(path)
+    owner.spectral_calibration = calibration
+    owner.spectral_calibration_path.setText(path)
+    if hasattr(owner, "status"):
+        owner.status.setText(
+            "Status: pixel-to-wavenumber calibration loaded "
+            f"(degree {calibration.degree}, "
+            f"{len(calibration.pixel_positions)} points)"
         )
     return calibration
 

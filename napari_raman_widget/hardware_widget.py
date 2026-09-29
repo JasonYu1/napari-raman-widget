@@ -1208,6 +1208,7 @@ class HardwareWidget(QWidget):
         self.workflow_tabs = make_workflow_tabs(
             workflow_groups,
             parent=self,
+            expanding_tabs={"Assistant"},
         )
         align_form_rows(
             [

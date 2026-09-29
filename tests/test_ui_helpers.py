@@ -85,6 +85,19 @@ class TestUiHelpers(unittest.TestCase):
         plots_button.click()
         self.assertEqual(calls, ["plots"])
 
+    def test_expanding_assistant_tab_has_no_outer_scroll_area(self):
+        assistant = QWidget()
+        tabs = make_workflow_tabs(
+            [("Setup", [QWidget()]), ("Assistant", [assistant])],
+            expanding_tabs={"Assistant"},
+        )
+        self.assertIsInstance(tabs.widget(0), QScrollArea)
+        page = tabs.widget(1)
+        self.assertNotIsInstance(page, QScrollArea)
+        self.assertIs(assistant.parentWidget(), page)
+        self.assertEqual(page.layout().count(), 1)
+        self.assertEqual(page.layout().stretch(0), 1)
+
     def test_form_rows_share_label_width_and_expand_fields(self):
         root = QWidget()
         root_layout = QVBoxLayout(root)

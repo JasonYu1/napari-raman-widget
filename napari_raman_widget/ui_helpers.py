@@ -104,10 +104,12 @@ def make_workflow_tabs(
     groups: Sequence[tuple[str, Iterable[QWidget]]],
     *,
     parent: QWidget | None = None,
+    expanding_tabs: Iterable[str] = (),
 ) -> QTabWidget:
-    """Place section widgets into independently scrollable workflow tabs."""
+    """Make scrollable form tabs or full-height, independently scrolling panes."""
     tabs = QTabWidget(parent)
     tabs.setDocumentMode(True)
+    expanding_tabs = set(expanding_tabs)
 
     for title, sections in groups:
         content = QWidget()
@@ -116,7 +118,10 @@ def make_workflow_tabs(
         content_layout.setSpacing(6)
         for section in sections:
             if section is not None:
-                content_layout.addWidget(section)
+                content_layout.addWidget(section, 1 if title in expanding_tabs else 0)
+        if title in expanding_tabs:
+            tabs.addTab(content, title)
+            continue
         content_layout.addStretch(1)
 
         scroll = QScrollArea()
