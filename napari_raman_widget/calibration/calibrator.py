@@ -9,11 +9,11 @@ from pathlib import Path
 from typing import Any
 
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 import nidaqmx
 import numpy as np
 import scipy.ndimage as ndi
 import xarray as xr
-from raman_mda_engine.aiming import SimpleGridSource
 from scipy.interpolate import griddata
 from scipy.ndimage import binary_dilation, center_of_mass
 from skimage.measure import label
@@ -186,6 +186,8 @@ class Calibrator:
         save_directory: str | Path = ".",
     ) -> xr.Dataset:
         """Acquire a grid of Raman calibration measurements."""
+        from raman_mda_engine.aiming import SimpleGridSource
+
         self.daq.galvo.stop()
         self.core.setConfig("Channel", "RM")
         self.core.setShutterOpen("Fluoshutter", True)
@@ -354,6 +356,7 @@ class ManualImageSelector:
     def __init__(
         self,
         dataset: xr.Dataset,
+        figure: Figure | None = None,
     ) -> None:
         self.images = np.asarray(
             dataset["imgs"].values
@@ -377,7 +380,12 @@ class ManualImageSelector:
             for _ in range(self.num_images)
         ]
 
-        self.fig = plt.figure(figsize=(15, 7))
+        self._owns_figure = figure is None
+        if figure is None:
+            self.fig = plt.figure(figsize=(15, 7))
+        else:
+            self.fig = figure
+            self.fig.clear()
         self.ax_full = self.fig.add_subplot(121)
         self.ax_zoom = self.fig.add_subplot(122)
 
@@ -389,7 +397,7 @@ class ManualImageSelector:
 
         self.show_image()
 
-        self.fig.canvas.mpl_connect(
+        self._key_cid = self.fig.canvas.mpl_connect(
             "key_press_event",
             self.on_key_press,
         )
@@ -662,7 +670,8 @@ class ManualImageSelector:
                 self.show_image()
             else:
                 print("Finished calibration image selection.")
-                plt.close(self.fig)
+                if self._owns_figure:
+                    plt.close(self.fig)
 
         elif key == "backspace":
             if self.current_idx > 0:
@@ -689,11 +698,24 @@ class ManualImageSelector:
                 self.show_image()
             else:
                 print("Finished calibration image selection.")
-                plt.close(self.fig)
+                if self._owns_figure:
+                    plt.close(self.fig)
+
+    def close(self) -> None:
+        """Disconnect callbacks and close a standalone selector figure."""
+        if self.cid is not None:
+            self.fig.canvas.mpl_disconnect(self.cid)
+            self.cid = None
+        self.fig.canvas.mpl_disconnect(self._key_cid)
+        if self._owns_figure:
+            plt.close(self.fig)
 
     def start(
         self,
     ) -> list[tuple[float | None, float | None]]:
         """Display the selector and return its selected points."""
-        plt.show()
+        if self._owns_figure:
+            plt.show()
+        else:
+            self.fig.canvas.draw_idle()
         return self.selected_points

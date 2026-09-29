@@ -195,7 +195,7 @@ class WidgetSeparationTests(unittest.TestCase):
                 self.assertLess(dark_loader, collect_section)
                 self.assertLess(collect_button, dark_button)
 
-    def test_every_spectral_plot_window_has_smoothing_controls(self) -> None:
+    def test_every_spectral_plot_window_has_shared_processing_controls(self) -> None:
         source = (PACKAGE / "plot_windows.py").read_text(encoding="utf-8")
         class_names = (
             "DetectorImageWindow",
@@ -209,9 +209,8 @@ class WidgetSeparationTests(unittest.TestCase):
             end = starts[index + 1] if index + 1 < len(starts) else len(source)
             class_source = source[starts[index]:end]
             with self.subTest(class_name=class_name):
-                self.assertIn("_add_baseline_controls(", class_source)
+                self.assertIn("_add_processing_section(", class_source)
                 self.assertIn("_subtract_baseline_for_plot(", class_source)
-                self.assertIn("_add_smoothing_controls(", class_source)
                 self.assertIn("_smooth_for_plot(", class_source)
 
     def test_hardware_module_has_no_demo_mode_branches(self) -> None:

@@ -2,7 +2,7 @@
 import re
 import sys
 
-from qtpy.QtWidgets import QMainWindow, QPlainTextEdit
+from qtpy.QtWidgets import QPlainTextEdit, QVBoxLayout, QWidget
 
 
 _ANSI_RE = re.compile(
@@ -10,8 +10,8 @@ _ANSI_RE = re.compile(
 )
 
 
-class LogWindow(QMainWindow):
-    """Pop-up window showing streaming stdout text."""
+class LogWindow(QWidget):
+    """Embeddable panel showing streaming stdout text."""
 
     def __init__(self, title="Log"):
         super().__init__()
@@ -20,7 +20,9 @@ class LogWindow(QMainWindow):
         self.text = QPlainTextEdit()
         self.text.setReadOnly(True)
         self.text.setStyleSheet("font-family: monospace;")
-        self.setCentralWidget(self.text)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.text)
 
     def append(self, s: str):
         # Strip ANSI escape codes (rich/colored terminal output).

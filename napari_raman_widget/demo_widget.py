@@ -21,7 +21,6 @@ from qtpy.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
-    QScrollArea,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -42,6 +41,7 @@ from .calibration import (
 from .demo import DemoWorld, configure_demo_channels, create_demo_backend
 from .engine_compat import pillar_suppression_kwargs
 from .field_help import apply_tooltips
+from .figure_panel import FigurePanel
 from .log_window import LogWindow, _StdoutRedirector
 from .live_cell_tracking import make_live_cell_engine_type
 from .live_spectra import LiveSpectrumWorker
@@ -54,6 +54,7 @@ from .plot_windows import (
     SpectrumWindow,
 )
 from .position_specs import resolve_position_specs
+from .plot_workspace import show_plot, show_plot_workspace
 from .qt_messages import install_qt_message_filter
 from .selection import (
     add_mask_with_hole,
@@ -74,7 +75,12 @@ from .spectra import (
     spectral_bias_from_dark_noise,
 )
 from .spatial_mapping import snapshot_scan_shape
-from .ui_helpers import make_collapsible
+from .ui_helpers import (
+    align_form_rows,
+    make_collapsible,
+    make_panel_header,
+    make_workflow_tabs,
+)
 from .workflows import set_up_new_seq
 
 
@@ -141,19 +147,10 @@ class DemoWidget(QWidget):
         self._live_control_states = []
         self._collect_dark_after_live_stop = False
 
-        outer = QVBoxLayout()
-
-        self.manual_link = QLabel(
-            '<a href="manual" '
-            'style="color:white; font-weight:bold; text-decoration:none;">'
-            'Help</a>'
-        )
-        self.manual_link.setAlignment(Qt.AlignRight)
-        self.manual_link.setOpenExternalLinks(False)
+        self.manual_link = QPushButton("Help")
+        self.manual_link.setFlat(True)
         self.manual_link.setToolTip("Open the user manual")
-        self.manual_link.linkActivated.connect(self.open_user_manual)
-
-        outer.addWidget(self.manual_link)
+        self.manual_link.clicked.connect(self.open_user_manual)
 
         # ================= LOADING SECTION =================
         loading_box = make_collapsible("Loading", expanded=True)
@@ -178,8 +175,15 @@ class DemoWidget(QWidget):
         dark_noise_browse = QPushButton("...")
         dark_noise_browse.setFixedWidth(30)
         dark_noise_browse.clicked.connect(self.browse_dark_noise)
+        self.clear_dark_noise_btn = QPushButton("Clear")
+        self.clear_dark_noise_btn.setToolTip(
+            "Use None (raw spectra) for new collections; existing plots "
+            "and a running live collection are unchanged"
+        )
+        self.clear_dark_noise_btn.clicked.connect(self.clear_dark_noise)
         dark_noise_layout.addWidget(self.dark_noise_path)
         dark_noise_layout.addWidget(dark_noise_browse)
+        dark_noise_layout.addWidget(self.clear_dark_noise_btn)
         loading_layout.addLayout(dark_noise_layout)
 
         loading_layout.addWidget(
@@ -325,7 +329,6 @@ class DemoWidget(QWidget):
         loading_layout.addWidget(self.reload_tf_btn)
 
         loading_box.setLayout(loading_layout)
-        outer.addWidget(loading_box)
 
         # ================= COLLECT SPECTRUM SECTION =================
         raman_box = make_collapsible(
@@ -413,7 +416,6 @@ class DemoWidget(QWidget):
         raman_layout.addWidget(self.collect_dark_noise_btn)
 
         raman_box.setLayout(raman_layout)
-        outer.addWidget(raman_box)
 
         # ================= LASER AIMING CALIBRATION SECTION =================
         calib_box = make_collapsible("Laser aiming calibration", expanded=False)
@@ -506,7 +508,6 @@ class DemoWidget(QWidget):
         self._toggle_recal_fields(False)   # hidden until checked
 
         calib_box.setLayout(calib_layout)
-        outer.addWidget(calib_box)
 
         # ================= COLLECT REFERENCE SPECTRA SECTION =================
         ref_box = make_collapsible("Axial background scan", expanded=False)
@@ -558,7 +559,6 @@ class DemoWidget(QWidget):
         ref_layout.addWidget(self.ref_collect_btn)
 
         ref_box.setLayout(ref_layout)
-        outer.addWidget(ref_box)
 
         # ================= SPATIAL MAPPING SECTION =================
         scan_box = make_collapsible("Spatial mapping", expanded=False)
@@ -650,7 +650,6 @@ class DemoWidget(QWidget):
         scan_layout.addWidget(self.scan_btn)
 
         scan_box.setLayout(scan_layout)
-        outer.addWidget(scan_box)
 
         # ================= GENERATE STAGE GRID SECTION =================
         grid_box = make_collapsible("Generate stage grid", expanded=False)
@@ -751,7 +750,6 @@ class DemoWidget(QWidget):
         grid_layout.addWidget(self.run_grid_sel_btn)
 
         grid_box.setLayout(grid_layout)
-        outer.addWidget(grid_box)
 
         # ================= AUTOMATED CELL SELECTION SECTION =================
         self.sel_box = make_collapsible("Automated cell selection", expanded=False)
@@ -913,10 +911,10 @@ class DemoWidget(QWidget):
         sel_layout.addLayout(manual_row)
 
         sel_box.setLayout(sel_layout)
-        outer.addWidget(sel_box)
 
         # ================= RUN RAMAN MDA SECTION =================
         mda_box = make_collapsible("Run Raman MDA", expanded=False)
+        self.mda_box = mda_box
         mda_layout = QVBoxLayout()
 
         mda_layout.addWidget(QLabel(
@@ -1156,29 +1154,36 @@ class DemoWidget(QWidget):
         mda_btns_row.addWidget(self.stop_mda_btn, 1)
 
         mda_layout.addLayout(mda_btns_row)
- 
-        # --- separator ---
-        sep = QLabel("-" * 45)
-        sep.setAlignment(Qt.AlignCenter)
-        mda_layout.addWidget(sep)
- 
+
+        mda_box.setLayout(mda_layout)
+
+        # ================= DATASET TOOLS SECTION =================
+        dataset_box = make_collapsible("Dataset tools", expanded=False)
+        self.dataset_box = dataset_box
+        dataset_layout = QVBoxLayout()
         self.gen_dataset_btn = QPushButton("Generate dataset")
         self.gen_dataset_btn.clicked.connect(self.generate_dataset)
-        mda_layout.addWidget(self.gen_dataset_btn)
- 
-        # --- pixel-to-stage calibration ---
-        self.px2stage_check = QCheckBox("Pixel-to-stage calibration")
+        dataset_layout.addWidget(self.gen_dataset_btn)
+        dataset_box.setLayout(dataset_layout)
+
+        # ================= PIXEL-TO-STAGE CALIBRATION SECTION =================
+        px2stage_box = make_collapsible(
+            "Pixel-to-stage calibration", expanded=False
+        )
+        self.px2stage_box = px2stage_box
+        px2stage_layout = QVBoxLayout()
+        self.px2stage_check = QCheckBox("Enable calibration tools")
         self.px2stage_check.setChecked(False)
         self.px2stage_check.toggled.connect(self._toggle_px2stage_fields)
-        mda_layout.addWidget(self.px2stage_check)
+        px2stage_layout.addWidget(self.px2stage_check)
 
         self._px2s_help = QLabel(
-            "Pick the same feature in each grid position, then fit a\n"
-            "pixel->stage Vandermonde model. Uses stage XY from the\n"
+            "Pick the same feature at each grid position to fit a "
+            "pixel-to-stage Vandermonde model. Stage XY comes from the "
             "dataset's useq_sequence attribute."
         )
         self._px2s_help.setWordWrap(True)
-        mda_layout.addWidget(self._px2s_help)
+        px2stage_layout.addWidget(self._px2s_help)
 
         px2s_ds_row = QHBoxLayout()
         self._px2s_ds_label = QLabel("Dataset (.zarr):")
@@ -1190,7 +1195,7 @@ class DemoWidget(QWidget):
         self._px2s_ds_browse.clicked.connect(self.browse_px2stage_ds)
         px2s_ds_row.addWidget(self.px2stage_ds_path)
         px2s_ds_row.addWidget(self._px2s_ds_browse)
-        mda_layout.addLayout(px2s_ds_row)
+        px2stage_layout.addLayout(px2s_ds_row)
 
         px2s_deg_row = QHBoxLayout()
         self._px2s_deg_label = QLabel("Vandermonde degree:")
@@ -1199,11 +1204,11 @@ class DemoWidget(QWidget):
         self.px2stage_degree_input.setRange(1, 5)
         self.px2stage_degree_input.setValue(1)
         px2s_deg_row.addWidget(self.px2stage_degree_input)
-        mda_layout.addLayout(px2s_deg_row)
+        px2stage_layout.addLayout(px2s_deg_row)
 
         self.px2stage_pick_btn = QPushButton("Pick points...")
         self.px2stage_pick_btn.clicked.connect(self.open_pixel_stage_picker)
-        mda_layout.addWidget(self.px2stage_pick_btn)
+        px2stage_layout.addWidget(self.px2stage_pick_btn)
 
         px2s_name_row = QHBoxLayout()
         self._px2s_name_label = QLabel("Model file:")
@@ -1211,11 +1216,11 @@ class DemoWidget(QWidget):
         self.px2stage_name_input = QLineEdit()
         self.px2stage_name_input.setText("vandermonde_model.json")
         px2s_name_row.addWidget(self.px2stage_name_input)
-        mda_layout.addLayout(px2s_name_row)
+        px2stage_layout.addLayout(px2s_name_row)
 
         self.px2stage_save_btn = QPushButton("Fit && save model")
         self.px2stage_save_btn.clicked.connect(self.fit_and_save_pixel_stage)
-        mda_layout.addWidget(self.px2stage_save_btn)
+        px2stage_layout.addWidget(self.px2stage_save_btn)
 
         # collect the px2stage widgets so they can be hidden as a group
         self._px2stage_widgets = [
@@ -1228,23 +1233,15 @@ class DemoWidget(QWidget):
         ]
         # hidden until the box is checked
         self._toggle_px2stage_fields(False)
- 
-        mda_box.setLayout(mda_layout)
-        outer.addWidget(mda_box)
 
-        # make_collapsible re-shows ALL descendants on expand, which clobbers
-        # our conditional field hiding -- re-apply it after any box expands.
-        for _box in (calib_box, scan_box, self.sel_box, mda_box):
-            _box.toggled.connect(lambda checked: self._reapply_toggles())
+        px2stage_box.setLayout(px2stage_layout)
+        grid_layout.addWidget(px2stage_box)
 
         self.chat_panel = None
         if show_ai_assistant:
             from .chat_panel import ChatPanel
 
             self.chat_panel = ChatPanel(self)
-            outer.addWidget(self.chat_panel)
-        
-        outer.addStretch()
 
         # # ================= LIVE STAGE POSITION =================
         # self.pos_label = QLabel("Stage:  X --  Y --")
@@ -1260,21 +1257,45 @@ class DemoWidget(QWidget):
             "QLabel { border-top: 1px solid palette(mid); padding: 4px; }"
         )
         self.status.setWordWrap(True)
-        outer.addWidget(self.status)
 
-        # Wrap everything in a scroll area so the panel doesn't get cut off
-        # when many sections are expanded.
-        inner = QWidget()
-        inner.setLayout(outer)
-        scroll = QScrollArea()
-        scroll.setWidget(inner)
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        workflow_groups = [
+            ("Setup", [loading_box, calib_box]),
+            ("Selection", [grid_box, self.sel_box]),
+            ("Acquire", [raman_box, ref_box, scan_box, mda_box]),
+            ("Analysis", [dataset_box]),
+        ]
+        if self.chat_panel is not None:
+            workflow_groups.append(("Assistant", [self.chat_panel]))
+        self.workflow_tabs = make_workflow_tabs(
+            workflow_groups,
+            parent=self,
+        )
+        align_form_rows(
+            [
+                loading_box,
+                calib_box,
+                grid_box,
+                self.sel_box,
+                raman_box,
+                ref_box,
+                scan_box,
+                mda_box,
+            ]
+        )
+
+        header, self.plots_btn = make_panel_header(
+            self.manual_link,
+            lambda: self._show_plot_workspace(),
+        )
         wrapper = QVBoxLayout(self)
         wrapper.setContentsMargins(0, 0, 0, 0)
-        wrapper.addWidget(scroll)
+        wrapper.setSpacing(0)
+        wrapper.addWidget(header)
+        wrapper.addWidget(self.workflow_tabs, 1)
+        # Status stays visible while the active workflow tab scrolls.
+        wrapper.addWidget(self.status)
 
-        # Keep references to pop-up windows so they don't get garbage collected.
+        # The workspace releases result references when their tabs are closed.
         self._plot_windows = []
         # attach hover help text to every field
         apply_tooltips(self)
@@ -1300,6 +1321,7 @@ class DemoWidget(QWidget):
         self.grid_box.setToolTip(
             "Generate simulated stage positions around the current shared stage XY."
         )
+        self.px2stage_box.hide()
         self.px2stage_check.hide()
         for widget in self._px2stage_widgets:
             widget.hide()
@@ -1339,6 +1361,7 @@ class DemoWidget(QWidget):
         """Keep simulator-only removals hidden after sections reopen."""
         for widget in self._demo_duplicate_controls:
             widget.hide()
+        self.px2stage_box.hide()
         self.px2stage_check.hide()
         for widget in self._px2stage_widgets:
             widget.hide()
@@ -1380,6 +1403,14 @@ class DemoWidget(QWidget):
         self.status.setText(
             "Status: demonstration ready (single Micro-Manager core)"
         )
+
+    def _show_plot_workspace(self):
+        """Reopen the dockable plot and log workspace."""
+        return show_plot_workspace(self)
+
+    def _show_plot(self, panel):
+        """Present one result or log in the shared plot workspace."""
+        return show_plot(self, panel)
 
     def open_user_manual(self, _link=None):
         pdf_path = (
@@ -1450,6 +1481,11 @@ class DemoWidget(QWidget):
         )
         if path:
             self.dark_noise_path.setText(path)
+
+    def clear_dark_noise(self):
+        """Use no dark-noise correction for subsequent collections."""
+        self.dark_noise_path.clear()
+        self.status.setText("Status: dark noise is None for new collections")
 
     def browse_tracking_cfg(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -1849,8 +1885,7 @@ class DemoWidget(QWidget):
         batch = self.sel_batch_combo.currentText() == "True"
 
         log = LogWindow(title="Dataset generation log")
-        log.show()
-        self._plot_windows.append(log)
+        self._show_plot(log)
 
         self.status.setText("Status: generating dataset...")
         self.repaint()
@@ -1883,8 +1918,7 @@ class DemoWidget(QWidget):
                 title=f"Dataset: {run_name}",
                 spectral_calibration=self.spectral_calibration,
             )
-            win.show()
-            self._plot_windows.append(win)
+            self._show_plot(win)
 
             self.status.setText(
                 f"Status: dataset generated ({len(df)} spectra) "
@@ -1929,15 +1963,20 @@ class DemoWidget(QWidget):
                     f"[px2stage] warning: {len(imgs)} frames vs "
                     f"{len(self.px2stage_xy)} stage positions"
                 )
-            import matplotlib
-            matplotlib.use("QtAgg")
-            import matplotlib.pyplot as plt
-            plt.ion()
-            self.px2stage_picker = StagePointPicker(imgs)
-            plt.show()
+            panel = FigurePanel(
+                title="Pixel-to-stage point picker",
+                instructions=(
+                    "Click a feature. Enter: next frame; Backspace: previous; "
+                    "R: clear point; N: skip frame. Use the toolbar to zoom. "
+                    "Finish with Fit & save model in Generate stage grid."
+                ),
+            )
+            self.px2stage_picker = StagePointPicker(imgs, figure=panel.figure)
+            panel.add_cleanup(self.px2stage_picker.close)
+            self._show_plot(panel)
             self.status.setText(
                 f"Status: picker open ({len(imgs)} frames) -- click through, "
-                "then Fit & save"
+                "then Fit & save in Generate stage grid"
             )
         except Exception as e:
             self.status.setText(f"Status: picker failed -- {e}")
@@ -1948,8 +1987,7 @@ class DemoWidget(QWidget):
             self.status.setText("Status: no picked points -- pick points first")
             return
         log = LogWindow(title="Pixel-to-stage fit log")
-        log.show()
-        self._plot_windows.append(log)
+        self._show_plot(log)
         try:
             points = np.asarray(self.px2stage_picker.points, dtype=float)
             xy = self.px2stage_xy
@@ -2440,8 +2478,7 @@ class DemoWidget(QWidget):
                 calibration_changed=self._spectral_calibration_created,
                 spectral_bias=spectral_bias,
             )
-            window.show()
-            self._plot_windows.append(window)
+            self._show_plot(window)
             self.status.setText(
                 f"Status: dark noise saved and selected -> {path}"
             )
@@ -2587,8 +2624,7 @@ class DemoWidget(QWidget):
                     calibration_changed=self._spectral_calibration_created,
                     spectral_bias=spectral_bias,
                 )
-            win.show()
-            self._plot_windows.append(win)
+            self._show_plot(win)
 
             self.status.setText(
                 f"Status: collected point {point_index} on RM, "
@@ -2670,6 +2706,8 @@ class DemoWidget(QWidget):
         if context is None:
             return
         context["count"] = count
+        if context.get("plot_closed"):
+            return
         title = f"{context['title']} | live #{count}"
         if self._live_raman_window is None:
             if context["read_mode"] == "image":
@@ -2686,8 +2724,7 @@ class DemoWidget(QWidget):
                     calibration_changed=self._spectral_calibration_created,
                     spectral_bias=context.get("spectral_bias"),
                 )
-            window.show()
-            self._plot_windows.append(window)
+            self._show_plot(window)
             self._live_raman_window = window
         elif context["read_mode"] == "image":
             self._live_raman_window.update_frames(spec, title=title)
@@ -2787,8 +2824,7 @@ class DemoWidget(QWidget):
         thres = float(self.cal_thres_input.value())
 
         log = LogWindow(title="Calibration log")
-        log.show()
-        self._plot_windows.append(log)
+        self._show_plot(log)
 
         self.status.setText("Status: calibrating...")
         self.repaint()
@@ -2808,8 +2844,7 @@ class DemoWidget(QWidget):
             plot_win = CalibrationPlotWindow(
                 self.calibration_ds, title="Calibration result"
             )
-            plot_win.show()
-            self._plot_windows.append(plot_win)
+            self._show_plot(plot_win)
 
             self.status.setText("Status: calibration done OK")
         except Exception as e:
@@ -2824,13 +2859,19 @@ class DemoWidget(QWidget):
             )
             return
         try:
-            import matplotlib
-            matplotlib.use("QtAgg")
-            import matplotlib.pyplot as plt
-
-            plt.ion()
-            self.selector = ManualImageSelector(self.calibration_ds)
-            plt.show()
+            panel = FigurePanel(
+                title="Manual laser calibration",
+                instructions=(
+                    "Click the laser spot. Enter: accept and advance; "
+                    "Backspace: previous image. Finish with Save recalibrated "
+                    "model in Setup."
+                ),
+            )
+            self.selector = ManualImageSelector(
+                self.calibration_ds, figure=panel.figure
+            )
+            panel.add_cleanup(self.selector.close)
+            self._show_plot(panel)
             self.status.setText(
                 "Status: selector open -- click through, then save"
             )
@@ -2892,8 +2933,7 @@ class DemoWidget(QWidget):
         self.repaint()
 
         log = LogWindow(title="Reference collection log")
-        log.show()
-        self._plot_windows.append(log)
+        self._show_plot(log)
 
         try:
             pt, point_index = self._raman_point_from_active_layer()
@@ -2924,8 +2964,7 @@ class DemoWidget(QWidget):
                 title=f"Reference spectra: {name}",
                 spectral_calibration=self.spectral_calibration,
             )
-            win.show()
-            self._plot_windows.append(win)
+            self._show_plot(win)
 
             os.makedirs("reference", exist_ok=True)
             uid = str(uuid.uuid1())[:8]
@@ -2995,8 +3034,7 @@ class DemoWidget(QWidget):
             extra_channels.append((ch, float(entry["exp"].value())))
 
         log = LogWindow(title="Grid scan log")
-        log.show()
-        self._plot_windows.append(log)
+        self._show_plot(log)
 
         self.status.setText("Status: grid scanning...")
         self.repaint()
@@ -3157,8 +3195,7 @@ class DemoWidget(QWidget):
                 title=f"Grid scan: {file_name}",
                 spectral_calibration=self.spectral_calibration,
             )
-            win.show()
-            self._plot_windows.append(win)
+            self._show_plot(win)
 
             self.status.setText(f"Status: grid scan saved -> {zarr_name}")
         except Exception as e:
@@ -3216,8 +3253,7 @@ class DemoWidget(QWidget):
         suppress_pillars = self.sel_suppress_pillars_check.isChecked()
 
         log = LogWindow(title="Automated selection log")
-        log.show()
-        self._plot_windows.append(log)
+        self._show_plot(log)
 
         self.status.setText(
             "Status: running Cellpose from the napari MDA sequence..."
@@ -3344,8 +3380,7 @@ class DemoWidget(QWidget):
             return
 
         log = LogWindow(title="Refine cell points log")
-        log.show()
-        self._plot_windows.append(log)
+        self._show_plot(log)
         self.status.setText(
             "Status: acquiring BF images and refining cell points..."
         )
@@ -3441,8 +3476,7 @@ class DemoWidget(QWidget):
         batch = self.sel_batch_combo.currentText() == "True"
 
         log = LogWindow(title="Manual selection log")
-        log.show()
-        self._plot_windows.append(log)
+        self._show_plot(log)
 
         self.status.setText("Status: setting up manual selection...")
         self.repaint()
@@ -3501,8 +3535,7 @@ class DemoWidget(QWidget):
         sq_size = float(self.sel_sqsize_input.value())
         sq_n = int(self.sel_sqn_input.value())
         log = LogWindow(title="Center clicked cells log")
-        log.show()
-        self._plot_windows.append(log)
+        self._show_plot(log)
         self.status.setText("Status: centering clicked cells...")
         self.repaint()
         try:
@@ -3558,8 +3591,7 @@ class DemoWidget(QWidget):
         autofocus_object = self.grid_af_combo.currentText()
 
         log = LogWindow(title="Stage grid log")
-        log.show()
-        self._plot_windows.append(log)
+        self._show_plot(log)
 
         self.status.setText("Status: generating stage grid...")
         self.repaint()
@@ -3739,8 +3771,7 @@ class DemoWidget(QWidget):
             extra_channels.append((ch, float(entry["exp"].value())))
 
         log = LogWindow(title="Raman MDA log")
-        log.show()
-        self._plot_windows.append(log)
+        self._show_plot(log)
 
         self.status.setText("Status: starting Raman MDA...")
         self.repaint()

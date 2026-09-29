@@ -10,7 +10,8 @@ A napari dock widget for controlling the Raman microscopy rig.
 
 ## What it does
 
-Provides a single collapsible sidebar panel inside napari with sections for:
+Provides a sidebar with Setup, Selection, Acquire, and Analysis tabs, plus an
+optional Assistant tab. Its collapsible sections cover:
 
 - Loading Micro-Manager config and transformer model
 - Collecting Raman spectra at clicked points
@@ -21,12 +22,16 @@ Provides a single collapsible sidebar panel inside napari with sections for:
 - Automated cell selection inside a mask
 - Running a Raman MDA with fluorescence channels and Z stacks
 
-It also includes three usability features layered on top of the panel:
+The interface also includes:
 
 - **Inline help** - every field has a hover tooltip explaining what it does,
-  and a **Help** link at the top of the panel opens the full PDF user manual.
+  and a **Help** button at the top of the panel opens the full PDF user manual.
 - **AI assistant** - a built-in chat box that maps plain-English commands to
   the panel's existing actions (see [AI assistant](#ai-assistant-chat-panel)).
+- **Dockable plots** - spectra, detector images, scans, calibration views,
+  datasets, and logs share the **Raman Plots** workspace, initially floating.
+- **Persistent status** - the current acquisition status stays visible below
+  the controls while you change tabs or scroll.
 
 All outputs (reference `.npy` files, `grid_scan_*.zarr`, recalibrated models,
 the MDA writer directory) are written relative to the current working
@@ -99,6 +104,40 @@ python launch_demo_napari.py
 The demo launcher connects automatically and does not require a Micro-Manager
 configuration or coordinate-transform model.
 On Windows, you can also double-click `launch_demo_napari.bat`.
+
+### Arranging plots and controls
+
+Results open as tabs in the **Raman Plots** workspace, which starts as a
+floating window. Drag tabs to reorder
+them, and hover over a tab to see its complete acquisition title. The **Plots**
+button at the top of the Raman controls brings the workspace back if hidden.
+
+Click **Dock back** to dock it inside Napari, or **Float** to detach it again.
+New results and hiding/reopening the workspace preserve your docking choice
+for the current session. You can also drag the dock title bar
+to an edge of the main window to change its dock position. **Hide** keeps all
+results available; the close button on an individual tab closes that result.
+Closing a live spectrum tab requests a stop after the current exposure;
+hiding or floating the workspace lets acquisition continue.
+
+Each spectrum has compact display controls and an expandable **Processing**
+section for baseline subtraction and smoothing. These settings change the
+display only; acquired data stays unchanged. Dataset navigation separates
+time, position, and Z from the spectral processing controls.
+
+Plot backgrounds are transparent by default so they blend into Napari's theme.
+Check **White background** on a plot for an opaque white canvas; uncheck it
+to restore transparency. Axes and labels adjust for readability.
+
+The control sidebar groups loading and calibration under **Setup**, stage-grid
+and cell tools under **Selection**, measurement workflows under **Acquire**,
+and dataset generation under **Analysis**. Pixel-to-stage calibration is inside
+**Selection → Generate stage grid**.
+The optional AI chat has its own **Assistant** tab.
+
+Dark noise starts as **None** whenever a widget opens, including when an older
+defaults file contains a dark-noise path. Select or collect a dark-noise file
+to use it for the current session, or click **Clear** to return to None.
 
 ### One-click launcher (Windows)
 
@@ -261,7 +300,8 @@ confirmation dialog (not recommended on live hardware).
   `apply_tooltips()` helper.
 - `napari_raman_widget/chat_panel.py` - built-in LLM-backed assistant that
   drives the panel's actions.
-- `napari_raman_widget/plot_windows.py` - matplotlib pop-up windows.
+- `napari_raman_widget/plot_windows.py` - dock-ready Matplotlib plot panels.
+- `napari_raman_widget/plot_workspace.py` - shared, tabbed Napari plot dock.
 - `napari_raman_widget/log_window.py` - streaming stdout log window.
 - `napari_raman_widget/ui_helpers.py` - small Qt helpers.
 - `napari_raman_widget/resources/napari-raman-widget-manual.pdf` - the user

@@ -84,13 +84,14 @@ HELP = {
     "dark_noise_path": (
         "Optional NumPy .npy array containing repeated dark spectra acquired "
         "with matching exposure and detector readout settings. Leave blank "
-        "for raw plots only."
+        "for raw plots only. Starts as None each session; Clear removes the "
+        "current selection."
     ),
     "collect_dark_noise_btn": (
         "Stop camera or Raman live acquisition, close the Raman shutter, "
         "collect repeated dark spectra, save "
         "dark_noise_<exposure>ms_<uuid>.npy, and "
-        "select it as the persistent default."
+        "select it for the current session. New sessions start with None."
     ),
     "collect_save_input": (
         "Optional base filename. Saves detector data, settings, and measured "
@@ -385,7 +386,7 @@ HELP = {
         "write ds_<run>.zarr + df_<run>.pkl, then open the dataset viewer."
     ),
 
-    # ---- pixel-to-stage calibration (inside Run Raman MDA) ----
+    # ---- pixel-to-stage calibration (inside Generate stage grid) ----
     "px2stage_check": "Reveal the Vandermonde pixel-to-stage calibration workflow.",
     "px2stage_ds_path": (
         "Generated dataset (.zarr) with a JSON useq_sequence attribute and one "

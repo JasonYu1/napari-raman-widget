@@ -83,6 +83,23 @@ class HardwareDefaultsTests(unittest.TestCase):
         self.assertEqual(values["raman_exposure_ms"], 1000)
         self.assertEqual(values["dark_noise_file"], "dark_noise_123.npy")
 
+    def test_updating_other_fields_preserves_legacy_dark_noise_value(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "defaults.json"
+            path.write_text(
+                json.dumps({"dark_noise_file": "legacy_dark.npy"}),
+                encoding="utf-8",
+            )
+
+            updated_path = update_hardware_defaults(
+                path,
+                {"raman_exposure_ms": 250},
+            )
+            _, values = load_hardware_defaults(updated_path)
+
+        self.assertEqual(values["dark_noise_file"], "legacy_dark.npy")
+        self.assertEqual(values["raman_exposure_ms"], 250)
+
 
 if __name__ == "__main__":
     unittest.main()

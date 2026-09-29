@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.figure import Figure
 
 __all__ = ["StagePointPicker"]
 
@@ -39,6 +40,7 @@ class StagePointPicker:
         self,
         images: np.ndarray,
         cmap: str = "gray",
+        figure: Figure | None = None,
     ) -> None:
         self.images = np.asarray(images)
 
@@ -58,7 +60,13 @@ class StagePointPicker:
         )
         self.current_index = 0
 
-        self.figure, self.axes = plt.subplots()
+        self._owns_figure = figure is None
+        if figure is None:
+            self.figure, self.axes = plt.subplots()
+        else:
+            self.figure = figure
+            self.figure.clear()
+            self.axes = self.figure.subplots()
         self.image_artist = self.axes.imshow(
             self.images[0],
             cmap=cmap,
@@ -79,14 +87,16 @@ class StagePointPicker:
 
         self._enable_optional_navigation()
 
-        self.figure.canvas.mpl_connect(
-            "button_press_event",
-            self._on_click,
-        )
-        self.figure.canvas.mpl_connect(
-            "key_press_event",
-            self._on_key,
-        )
+        self._callback_ids = [
+            self.figure.canvas.mpl_connect(
+                "button_press_event",
+                self._on_click,
+            ),
+            self.figure.canvas.mpl_connect(
+                "key_press_event",
+                self._on_key,
+            ),
+        ]
 
         self._draw()
 
@@ -186,7 +196,8 @@ class StagePointPicker:
             return
 
         print("Finished picking calibration points.")
-        plt.close(self.figure)
+        if self._owns_figure:
+            plt.close(self.figure)
 
     def _on_key(self, event) -> None:
         """Handle point-selection keyboard controls."""
@@ -210,4 +221,8 @@ class StagePointPicker:
 
     def close(self) -> None:
         """Close the point-selection window."""
-        plt.close(self.figure)
+        for callback_id in self._callback_ids:
+            self.figure.canvas.mpl_disconnect(callback_id)
+        self._callback_ids.clear()
+        if self._owns_figure:
+            plt.close(self.figure)

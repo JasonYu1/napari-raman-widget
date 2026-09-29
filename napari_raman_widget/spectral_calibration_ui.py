@@ -79,14 +79,14 @@ def load_spectral_calibration(owner, *, show_success=True):
         QMessageBox.information(
             owner,
             "Calibration loaded",
-            "Spectrum popups will now use Raman shift by default. "
-            "Use 'Show pixels' in a popup to switch back.",
+            "New spectrum tabs will use Raman shift by default. "
+            "Use 'Show pixels' in a plot to switch back.",
         )
     return calibration
 
 
 def spectral_calibration_created(owner, calibration, path) -> None:
-    """Store a calibration created inside one of *owner*'s popups."""
+    """Store a calibration created inside one of *owner*'s plot panels."""
     owner.spectral_calibration = calibration
     owner.spectral_calibration_path.setText(str(path))
     if hasattr(owner, "status"):
