@@ -65,6 +65,9 @@ class _ToolbarIconContrast(QObject):
         super().__init__(toolbar)
         self.toolbar = toolbar
         self._refresh_pending = False
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setSingleShot(True)
+        self._refresh_timer.timeout.connect(self.refresh)
         self._source_icons = []
         for action in toolbar.actions():
             icon = action.icon()
@@ -74,39 +77,47 @@ class _ToolbarIconContrast(QObject):
     def eventFilter(self, watched, event):
         if event.type() in self._REFRESH_EVENTS:
             self.schedule_refresh()
-        return super().eventFilter(watched, event)
+        return False
 
     def schedule_refresh(self) -> None:
-        if self._refresh_pending:
+        # Python state can already be cleared when Qt emits teardown events.
+        timer = getattr(self, "_refresh_timer", None)
+        if timer is None or getattr(self, "_refresh_pending", True):
             return
         self._refresh_pending = True
-        QTimer.singleShot(0, self.refresh)
+        try:
+            timer.start(0)
+        except RuntimeError:  # the owning toolbar has been deleted
+            self._refresh_pending = False
 
     def _background_color(self) -> QColor:
         """Sample the toolbar after Qt stylesheets have painted it."""
         return _rendered_background_color(self.toolbar)
 
     def refresh(self) -> None:
-        self._refresh_pending = False
-        if not self._source_icons:
+        if not getattr(self, "_source_icons", None):
             return
-        background = self._background_color()
-        icon_color = (
-            QColor("#f0f2f5")
-            if _luminance(background) < 140
-            else QColor("#202124")
-        )
-        icon_size = self.toolbar.iconSize()
-        for action, source_icon in self._source_icons:
-            source = source_icon.pixmap(icon_size)
-            if source.isNull():
-                continue
-            tinted = QPixmap(source)
-            painter = QPainter(tinted)
-            painter.setCompositionMode(QPainter.CompositionMode_SourceIn)
-            painter.fillRect(tinted.rect(), icon_color)
-            painter.end()
-            action.setIcon(QIcon(tinted))
+        self._refresh_pending = False
+        try:
+            background = self._background_color()
+            icon_color = (
+                QColor("#f0f2f5")
+                if _luminance(background) < 140
+                else QColor("#202124")
+            )
+            icon_size = self.toolbar.iconSize()
+            for action, source_icon in self._source_icons:
+                source = source_icon.pixmap(icon_size)
+                if source.isNull():
+                    continue
+                tinted = QPixmap(source)
+                painter = QPainter(tinted)
+                painter.setCompositionMode(QPainter.CompositionMode_SourceIn)
+                painter.fillRect(tinted.rect(), icon_color)
+                painter.end()
+                action.setIcon(QIcon(tinted))
+        except RuntimeError:  # toolbar/actions may have been deleted by Qt
+            return
 
 
 def _style_matplotlib_toolbar(toolbar) -> None:
@@ -138,14 +149,20 @@ class _MatplotlibBackgroundTheme(QObject):
         self.checkbox = checkbox
         self._applying = False
         self._refresh_pending = False
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setSingleShot(True)
+        self._refresh_timer.timeout.connect(self.refresh)
         for widget in (owner, canvas, toolbar):
             widget.installEventFilter(self)
         self._install_canvas_hooks()
 
     def eventFilter(self, watched, event):
-        if not self._applying and event.type() in self._REFRESH_EVENTS:
+        # Cyclic GC can clear this wrapper's Python attributes before Qt
+        # finishes delivering events from the owner's destruction. Teardown
+        # must be a no-op, not an uncaught exception from a Qt virtual method.
+        if event.type() in self._REFRESH_EVENTS and not getattr(self, "_applying", True):
             self.schedule_refresh()
-        return super().eventFilter(watched, event)
+        return False
 
     def _install_canvas_hooks(self) -> None:
         """Apply theme immediately before on-screen draws and exports."""
@@ -164,10 +181,14 @@ class _MatplotlibBackgroundTheme(QObject):
         self.canvas.print_figure = themed_print_figure
 
     def schedule_refresh(self) -> None:
-        if self._refresh_pending:
+        timer = getattr(self, "_refresh_timer", None)
+        if timer is None or getattr(self, "_refresh_pending", True):
             return
         self._refresh_pending = True
-        QTimer.singleShot(0, self.refresh)
+        try:
+            timer.start(0)
+        except RuntimeError:  # the owning plot has been deleted
+            self._refresh_pending = False
 
     def _theme_colors(self):
         if self.checkbox.isChecked():
@@ -225,7 +246,7 @@ class _MatplotlibBackgroundTheme(QObject):
             legend.get_frame().set_edgecolor(foreground)
 
     def apply(self, *, redraw=True) -> None:
-        if self._applying:
+        if getattr(self, "_applying", True):
             return
         self._applying = True
         try:

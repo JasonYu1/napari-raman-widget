@@ -1,4 +1,5 @@
 import os
+import sys
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -8,7 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import numpy as np
 import xarray as xr
 from matplotlib.colors import to_rgba
-from qtpy.QtCore import Qt
+from qtpy.QtCore import QCoreApplication, QEvent, QTimer, Qt
 from qtpy.QtWidgets import QApplication
 
 from napari_raman_widget.calibration.calibrator import ManualImageSelector
@@ -126,6 +127,62 @@ class FigurePanelTests(unittest.TestCase):
 
         panel.close()
         self.assertIsNone(selector.cid)
+
+    def test_theme_event_filter_is_safe_during_partial_teardown(self) -> None:
+        panel = FigurePanel("Theme teardown")
+        manager = panel._matplotlib_background_theme
+        errors = []
+
+        try:
+            del manager._applying
+            with (
+                patch.object(manager, "schedule_refresh") as schedule_refresh,
+                patch.object(
+                    sys,
+                    "excepthook",
+                    new=lambda error_type, error, traceback: errors.append(
+                        (error_type, error, traceback)
+                    ),
+                ),
+            ):
+                QCoreApplication.sendEvent(
+                    panel, QEvent(QEvent.PaletteChange)
+                )
+                filtered = manager.eventFilter(
+                    panel, QEvent(QEvent.PaletteChange)
+                )
+
+            self.assertFalse(filtered)
+            self.assertEqual(errors, [])
+            schedule_refresh.assert_not_called()
+        finally:
+            manager._applying = False
+            panel.close()
+
+    def test_queued_theme_refresh_is_safe_after_qt_children_are_deleted(
+        self,
+    ) -> None:
+        self.app.processEvents()
+        panel = FigurePanel("Queued theme teardown")
+        background_theme = panel._matplotlib_background_theme
+        icon_theme = panel.toolbar._raman_icon_contrast
+        errors = []
+
+        QTimer.singleShot(0, background_theme.refresh)
+        QTimer.singleShot(0, icon_theme.refresh)
+        with patch.object(
+            sys,
+            "excepthook",
+            new=lambda error_type, error, traceback: errors.append(
+                (error_type, error, traceback)
+            ),
+        ):
+            panel.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+            self.app.processEvents()
+            self.app.processEvents()
+
+        self.assertEqual(errors, [])
 
 
 if __name__ == "__main__":
