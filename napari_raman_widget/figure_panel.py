@@ -251,10 +251,11 @@ class _MatplotlibBackgroundTheme(QObject):
             pass
 
 
-def _add_matplotlib_background_control(
-    owner, layout, figure, canvas, toolbar
-) -> QCheckBox:
-    """Add the shared transparent/white Matplotlib background switch."""
+def _make_white_background_checkbox(owner) -> QCheckBox:
+    """Create or return a plot owner's public background checkbox."""
+    existing = getattr(owner, "white_background_check", None)
+    if existing is not None:
+        return existing
     checkbox = QCheckBox("White background")
     checkbox.setChecked(False)
     checkbox.setToolTip(
@@ -262,7 +263,22 @@ def _add_matplotlib_background_control(
         "transparent plot that follows the Napari theme."
     )
     owner.white_background_check = checkbox
-    layout.addWidget(checkbox)
+    return checkbox
+
+
+def _add_matplotlib_background_control(
+    owner,
+    layout,
+    figure,
+    canvas,
+    toolbar,
+    *,
+    add_to_layout=True,
+) -> QCheckBox:
+    """Bind the shared transparent/white Matplotlib background switch."""
+    checkbox = _make_white_background_checkbox(owner)
+    if add_to_layout:
+        layout.addWidget(checkbox)
     manager = _MatplotlibBackgroundTheme(
         owner, figure, canvas, toolbar, checkbox
     )

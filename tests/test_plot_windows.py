@@ -1,6 +1,7 @@
 import os
 import unittest
 from io import BytesIO
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -9,7 +10,14 @@ import pandas as pd
 import xarray as xr
 from matplotlib.colors import to_rgba
 from matplotlib.image import imread
-from qtpy.QtWidgets import QApplication, QMainWindow, QSizePolicy, QWidget
+from qtpy.QtWidgets import (
+    QApplication,
+    QFileDialog,
+    QMainWindow,
+    QMessageBox,
+    QSizePolicy,
+    QWidget,
+)
 
 from napari_raman_widget.plot_windows import (
     CalibrationPlotWindow,
@@ -20,6 +28,9 @@ from napari_raman_widget.plot_windows import (
     SpectrumWindow,
 )
 from napari_raman_widget.spectra import asls_baseline, smooth_spectra
+from napari_raman_widget.spectral_calibration import (
+    PixelToWavenumberCalibration,
+)
 
 
 class FixedYScaleTests(unittest.TestCase):
@@ -52,6 +63,162 @@ class FixedYScaleTests(unittest.TestCase):
             self.assertGreater(window.ax.get_ylim()[1], 200.0)
         finally:
             window.close()
+
+    def test_spectral_axis_defaults_to_pixels_and_opt_in_wavenumber(self) -> None:
+        calibration = PixelToWavenumberCalibration(
+            [0.0, 10.0], [100.0, 200.0], degree=1
+        )
+        calibrated = SpectrumWindow(
+            np.arange(11, dtype=float),
+            spectral_calibration=calibration,
+        )
+        uncalibrated = SpectrumWindow(np.arange(11, dtype=float))
+        try:
+            self.assertTrue(calibrated.show_wavenumber_check.isEnabled())
+            self.assertFalse(calibrated.show_wavenumber_check.isChecked())
+            self.assertEqual(calibrated.ax.get_xlabel(), "Pixel")
+            np.testing.assert_allclose(
+                calibrated.ax.lines[0].get_xdata(), np.arange(11)
+            )
+
+            calibrated.show_wavenumber_check.setChecked(True)
+
+            self.assertEqual(
+                calibrated.ax.get_xlabel(), "Raman shift (cm⁻¹)"
+            )
+            np.testing.assert_allclose(
+                calibrated.ax.lines[0].get_xdata(),
+                calibration.transform(np.arange(11)),
+            )
+            calibrated.show_wavenumber_check.setChecked(False)
+            self.assertEqual(calibrated.ax.get_xlabel(), "Pixel")
+
+            self.assertFalse(uncalibrated.show_wavenumber_check.isEnabled())
+            self.assertFalse(uncalibrated.show_wavenumber_check.isChecked())
+            self.assertEqual(uncalibrated.ax.get_xlabel(), "Pixel")
+        finally:
+            calibrated.close()
+            uncalibrated.close()
+
+    def test_display_choices_share_one_compact_view_row(self) -> None:
+        calibration = PixelToWavenumberCalibration(
+            [0.0, 10.0], [100.0, 200.0], degree=1
+        )
+        spectrum = SpectrumWindow(
+            np.arange(11, dtype=float),
+            spectral_calibration=calibration,
+        )
+        detector = DetectorImageWindow(
+            np.ones((1, 4, 11)), spectral_calibration=calibration
+        )
+        calibration_result = CalibrationPlotWindow(
+            xr.Dataset(
+                {
+                    "imgs": (("point", "Y", "X"), np.zeros((2, 4, 4))),
+                    "rel_BF_pos": (
+                        ("point", "coord"),
+                        [[1.0, 1.0], [2.0, 2.0]],
+                    ),
+                    "specs": (
+                        ("point", "repeat", "pixel"),
+                        np.ones((2, 2, 11)),
+                    ),
+                }
+            ),
+            spectral_calibration=calibration,
+        )
+        index = pd.MultiIndex.from_tuples(
+            [(0, 0, 0, 0)], names=["t", "p", "z", "pt"]
+        )
+        frame = pd.DataFrame(
+            [[0.0, 1.0, 2.0, 1.0, 2.0, 0.0]],
+            index=index,
+            columns=[0, 1, 2, "X", "Y", "time"],
+        )
+        images = xr.DataArray(
+            np.zeros((1, 1, 1, 1, 4, 4)),
+            dims=["t", "p", "c", "z", "y", "x"],
+            coords={"t": [0], "p": [0], "c": [0], "z": [0]},
+        )
+        dataset = DatasetViewerWindow(
+            frame, images, spectral_calibration=calibration
+        )
+        panels = [spectrum, detector, calibration_result, dataset]
+        try:
+            for panel in panels:
+                with self.subTest(panel_type=type(panel).__name__):
+                    grid = panel.view_controls_group.layout()
+                    controls = [
+                        panel.fix_y_scale_check,
+                        panel.show_wavenumber_check,
+                        panel.white_background_check,
+                    ]
+                    positions = [
+                        grid.getItemPosition(grid.indexOf(control))
+                        for control in controls
+                    ]
+                    self.assertEqual(len({position[0] for position in positions}), 1)
+                    self.assertLess(positions[0][1], positions[1][1])
+                    self.assertLess(positions[1][1], positions[2][1])
+                    self.assertIs(
+                        panel.white_background_check.parentWidget(),
+                        panel.view_controls_group,
+                    )
+        finally:
+            for panel in panels:
+                panel.close()
+
+    def test_axis_calibration_forces_pixels_then_restores_preference(
+        self,
+    ) -> None:
+        calibration = PixelToWavenumberCalibration(
+            [0.0, 10.0], [100.0, 200.0], degree=1
+        )
+        existing = SpectrumWindow(
+            np.arange(11, dtype=float),
+            spectral_calibration=calibration,
+        )
+        created = SpectrumWindow(np.arange(11, dtype=float))
+        try:
+            existing.show_wavenumber_check.setChecked(True)
+            existing._start_calibration()
+            self.assertFalse(existing.show_wavenumber_check.isChecked())
+            self.assertFalse(existing.show_wavenumber_check.isEnabled())
+            self.assertEqual(existing.ax.get_xlabel(), "Pixel")
+
+            existing._cancel_calibration()
+            self.assertTrue(existing.show_wavenumber_check.isChecked())
+            self.assertTrue(existing.show_wavenumber_check.isEnabled())
+            self.assertEqual(
+                existing.ax.get_xlabel(), "Raman shift (cm⁻¹)"
+            )
+
+            created._start_calibration()
+            created.calibration_degree_input.setValue(1)
+            created._calibration_pixels = [0, 10]
+            created._known_shifts = [100.0, 200.0]
+            with (
+                patch.object(
+                    QFileDialog,
+                    "getSaveFileName",
+                    return_value=("calibration.json", "JSON files (*.json)"),
+                ),
+                patch(
+                    "napari_raman_widget.plot_windows."
+                    "save_pixel_to_wavenumber_calibration",
+                    return_value="calibration.json",
+                ),
+                patch.object(QMessageBox, "information"),
+            ):
+                created._finish_calibration()
+
+            self.assertIsNotNone(created.spectral_calibration)
+            self.assertTrue(created.show_wavenumber_check.isEnabled())
+            self.assertFalse(created.show_wavenumber_check.isChecked())
+            self.assertEqual(created.ax.get_xlabel(), "Pixel")
+        finally:
+            existing.close()
+            created.close()
 
     def test_plot_classes_are_dockable_widget_panels(self) -> None:
         for panel_type in (

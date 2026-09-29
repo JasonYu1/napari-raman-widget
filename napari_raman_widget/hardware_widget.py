@@ -1287,9 +1287,6 @@ class HardwareWidget(QWidget):
             "micro_manager_config": self.cfg_path,
             "transformer_model": self.tf_path,
             "vandermonde_model": self.sel_vdm_path,
-            "pixel_to_wavenumber_calibration": (
-                self.spectral_calibration_path
-            ),
             "tracking_config": self.mda_track_cfg_input,
         }
         text_fields = {
@@ -1340,15 +1337,14 @@ class HardwareWidget(QWidget):
                 )
         supported = set(path_fields) | set(text_fields) | set(number_fields)
         supported |= set(combo_fields)
-        # Keep accepting legacy config files without selecting their dark
-        # noise automatically; dark-noise correction is session-scoped.
+        # Legacy files may contain correction/calibration paths, but both
+        # are now optional and must be explicitly selected in each session.
         supported.add("dark_noise_file")
+        supported.add("pixel_to_wavenumber_calibration")
         unknown = sorted(set(values) - supported)
         if unknown:
             print(f"[hardware defaults] ignored unknown keys: {unknown}")
         print(f"[hardware defaults] loaded {defaults_path}")
-        if self.spectral_calibration_path.text().strip():
-            self.load_spectral_calibration(show_success=False)
 
     # -------- file pickers --------
     def browse_spectral_calibration(self):
@@ -2699,8 +2695,9 @@ class HardwareWidget(QWidget):
         grid = int(self.cal_grid_input.value())
         thres = float(self.cal_thres_input.value())
 
-        log = LogWindow(title="Calibration log")
+        log = LogWindow(title="Calibration log", show_progress=True)
         self._show_plot(log)
+        log.start_progress("Preparing calibration")
 
         self.status.setText("Status: calibrating...")
         self.repaint()
@@ -2712,18 +2709,25 @@ class HardwareWidget(QWidget):
             )
             with _StdoutRedirector(log):
                 self.calibration_ds = self.calibrator.calibrate(
-                    grid, threshold=thres, plot=False
+                    grid,
+                    threshold=thres,
+                    plot=False,
+                    progress_callback=log.update_progress,
                 )
 
             log.append("\n--- calibration complete ---\n")
 
             plot_win = CalibrationPlotWindow(
-                self.calibration_ds, title="Calibration result"
+                self.calibration_ds,
+                title="Calibration result",
+                spectral_calibration=self.spectral_calibration,
             )
             self._show_plot(plot_win)
+            log.finish_progress("Calibration complete")
 
             self.status.setText("Status: calibration done OK")
         except Exception as e:
+            log.fail_progress("Calibration failed")
             log.append(f"\n--- calibration failed: {e} ---\n")
             self.status.setText(f"Status: calibration failed -- {e}")
 

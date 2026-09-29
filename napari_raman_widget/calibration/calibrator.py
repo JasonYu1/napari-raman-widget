@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,8 @@ from skimage.measure import label
 from tqdm.auto import tqdm
 
 from .coordinate_transform import CoordTransformer
+
+ProgressCallback = Callable[[int, int, str], None]
 
 __all__ = [
     "Calibrator",
@@ -74,6 +77,7 @@ class Calibrator:
         threshold: float,
         relative_positions: np.ndarray | None = None,
         save_directory: str | Path = ".",
+        progress_callback: ProgressCallback | None = None,
     ) -> xr.Dataset:
         """Collect images and spectra at specified galvo voltages."""
         volts = np.asarray(volts, dtype=float)
@@ -103,6 +107,15 @@ class Calibrator:
             axis=1,
         )
         accepted_volts = volts[~outside_range]
+        acquisition_total = len(accepted_volts)
+        progress_total = acquisition_total + 2
+
+        if progress_callback is not None:
+            progress_callback(
+                0,
+                progress_total,
+                f"Collecting calibration points (0/{acquisition_total})",
+            )
 
         images = []
         spectra = []
@@ -110,10 +123,11 @@ class Calibrator:
         self.core.setAutoShutter(False)
 
         try:
-            for voltage_xy in tqdm(
+            for point_index, voltage_xy in enumerate(tqdm(
                 accepted_volts,
                 desc="Collecting calibration data",
-            ):
+                disable=progress_callback is not None,
+            ), start=1):
                 repeated_voltages = np.tile(
                     voltage_xy,
                     (self.N, 1),
@@ -127,8 +141,23 @@ class Calibrator:
                 spectra.append(spectrum)
                 images.append(self.core.snap())
                 time.sleep(0.1)
+
+                if progress_callback is not None:
+                    progress_callback(
+                        point_index,
+                        progress_total,
+                        "Collecting calibration points "
+                        f"({point_index}/{acquisition_total})",
+                    )
         finally:
             self.core.setAutoShutter(True)
+
+        if progress_callback is not None:
+            progress_callback(
+                acquisition_total,
+                progress_total,
+                "Processing calibration data",
+            )
 
         images = np.asarray(images)
         spectra = np.asarray(spectra)
@@ -162,6 +191,13 @@ class Calibrator:
 
         dataset.attrs["time"] = datetime.now().isoformat()
 
+        if progress_callback is not None:
+            progress_callback(
+                acquisition_total + 1,
+                progress_total,
+                "Calibration data processed",
+            )
+
         save_directory = Path(save_directory)
         save_directory.mkdir(
             parents=True,
@@ -173,8 +209,22 @@ class Calibrator:
             / f"calibration_{uuid.uuid4()}.zarr"
         )
 
+        if progress_callback is not None:
+            progress_callback(
+                acquisition_total + 1,
+                progress_total,
+                "Saving calibration dataset",
+            )
+
         dataset.to_zarr(save_path)
         print(f"Saved calibration dataset to {save_path}")
+
+        if progress_callback is not None:
+            progress_callback(
+                progress_total,
+                progress_total,
+                "Calibration dataset saved",
+            )
 
         return dataset
 
@@ -184,6 +234,7 @@ class Calibrator:
         threshold: float = 1.5,
         plot: bool = True,
         save_directory: str | Path = ".",
+        progress_callback: ProgressCallback | None = None,
     ) -> xr.Dataset:
         """Acquire a grid of Raman calibration measurements."""
         from raman_mda_engine.aiming import SimpleGridSource
@@ -224,6 +275,7 @@ class Calibrator:
                 threshold=threshold,
                 relative_positions=pixel_positions,
                 save_directory=save_directory,
+                progress_callback=progress_callback,
             )
         finally:
             self.core.setShutterOpen(

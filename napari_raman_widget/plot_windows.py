@@ -3,6 +3,7 @@ import numpy as np
 from napari_raman_widget.figure_panel import (
     _add_matplotlib_background_control,
     _configure_matplotlib_figure,
+    _make_white_background_checkbox,
     _style_matplotlib_toolbar,
 )
 from napari_raman_widget.spectra import (
@@ -69,12 +70,19 @@ def _add_compact_control_group(layout, title, rows):
     return group
 
 
-def _finish_plot_layout(layout, toolbar, canvas):
+def _finish_plot_layout(
+    layout, toolbar, canvas, *, background_control_in_layout=True
+):
     """Add Matplotlib widgets with policies suited to resizeable docks."""
     owner = toolbar.parentWidget()
     _style_matplotlib_toolbar(toolbar)
     _add_matplotlib_background_control(
-        owner, layout, canvas.figure, canvas, toolbar
+        owner,
+        layout,
+        canvas.figure,
+        canvas,
+        toolbar,
+        add_to_layout=background_control_in_layout,
     )
     toolbar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
     canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -131,20 +139,22 @@ def _set_processing_available(owner, available):
     )
 
 
-def _spectral_x(length, calibration, show_pixels):
+def _spectral_x(length, calibration, show_wavenumber):
     pixels = np.arange(length, dtype=float)
-    if calibration is None or show_pixels:
+    if calibration is None or not show_wavenumber:
         return pixels
     return calibration.transform(pixels)
 
 
-def _set_spectral_line_axis(ax, lines, calibration, show_pixels):
+def _set_spectral_line_axis(ax, lines, calibration, show_wavenumber):
     """Update spectrum line x data and label for the selected axis units."""
     for line in lines:
         line.set_xdata(
-            _spectral_x(len(line.get_ydata()), calibration, show_pixels)
+            _spectral_x(
+                len(line.get_ydata()), calibration, show_wavenumber
+            )
         )
-    if calibration is not None and not show_pixels:
+    if calibration is not None and show_wavenumber:
         ax.set_xlabel("Raman shift (cm⁻¹)")
     else:
         ax.set_xlabel("Pixel")
@@ -152,14 +162,15 @@ def _set_spectral_line_axis(ax, lines, calibration, show_pixels):
     ax.autoscale_view()
 
 
-def _make_pixel_axis_checkbox(calibration, callback):
-    checkbox = QCheckBox("Show pixels")
-    checkbox.setChecked(calibration is None)
+def _make_wavenumber_axis_checkbox(calibration, callback):
+    """Return an opt-in wavenumber-axis control, defaulting to pixels."""
+    checkbox = QCheckBox("Show wavenumber")
+    checkbox.setChecked(False)
     checkbox.setEnabled(calibration is not None)
     if calibration is None:
         checkbox.setToolTip("Load a pixel-to-wavenumber calibration first")
     else:
-        checkbox.setToolTip("Use detector pixels instead of Raman shift")
+        checkbox.setToolTip("Use calibrated Raman shift instead of pixels")
     checkbox.toggled.connect(callback)
     return checkbox
 
@@ -425,30 +436,329 @@ def _subtract_baseline_for_plot(owner, spectra):
 
 
 class CalibrationPlotWindow(QWidget):
-    """Panel showing max projection of calibration images with point overlay."""
+    """Calibration image and the spectrum acquired at a selected point."""
 
-    def __init__(self, ds, title="Calibration result"):
+    _pick_radius_pixels = 12.0
+
+    def __init__(
+        self,
+        ds,
+        title="Calibration result",
+        spectral_calibration=None,
+    ):
         super().__init__()
         self.setWindowTitle(title)
-        self.resize(700, 650)
+        self.resize(980, 600)
+        self.ds = ds
+        self.spectral_calibration = spectral_calibration
+        self.selected_index = None
+        self.selected_spectrum = None
+        self.spectrum_line = None
+        self._fixed_y_limits = None
+        self.raw_spectra = self._dataset_array("specs")
+        self._point_positions = self._read_point_positions()
+        self._plotted_indices = np.flatnonzero(
+            np.all(np.isfinite(self._point_positions), axis=1)
+        )
+
         import matplotlib
         matplotlib.use("QtAgg")
         from matplotlib.figure import Figure
         from matplotlib.backends.backend_qtagg import (
             FigureCanvasQTAgg, NavigationToolbar2QT,
         )
+
         layout = _panel_layout(self)
-        self.fig = Figure(figsize=(7, 6))
+        self.selection_label = QLabel()
+        self.selection_label.setWordWrap(True)
+        self.fix_y_scale_check = QCheckBox("Fix Y scale")
+        self.fix_y_scale_check.setToolTip(
+            "Keep the selected spectrum's current Y limits"
+        )
+        self.fix_y_scale_check.toggled.connect(
+            self._on_fix_y_scale_toggled
+        )
+        self.show_wavenumber_check = _make_wavenumber_axis_checkbox(
+            spectral_calibration, self._redraw_spectrum
+        )
+        _make_white_background_checkbox(self)
+        self.view_controls_group = _add_compact_control_group(
+            layout,
+            "Selected acquisition",
+            [
+                [self.selection_label],
+                [
+                    self.fix_y_scale_check,
+                    self.show_wavenumber_check,
+                    self.white_background_check,
+                ],
+            ],
+        )
+
+        self.fig = Figure(figsize=(10, 5), constrained_layout=True)
         _configure_matplotlib_figure(self.fig)
         self.canvas = FigureCanvasQTAgg(self.fig)
         self.toolbar = NavigationToolbar2QT(self.canvas, self)
-        ax = self.fig.add_subplot(111)
-        imgs = ds["imgs"].max(axis=0)
-        ax.imshow(np.asarray(imgs))
-        pix_BF = np.asarray(ds["rel_BF_pos"])
-        ax.scatter(pix_BF[:, 0], pix_BF[:, 1], color="r", s=20)
-        ax.set_title(title)
-        _finish_plot_layout(layout, self.toolbar, self.canvas)
+        self.ax_image, self.ax_spectrum = self.fig.subplots(1, 2)
+        # ``ax`` was the only axes attribute implicitly available in the old
+        # single-panel implementation.  Keep it as a compatibility alias.
+        self.ax = self.ax_image
+        self._draw_image(title)
+        self._select_initial_point()
+        self._click_connection = self.canvas.mpl_connect(
+            "button_press_event", self._on_image_click
+        )
+        _finish_plot_layout(
+            layout,
+            self.toolbar,
+            self.canvas,
+            background_control_in_layout=False,
+        )
+        self._redraw_spectrum()
+
+    def _dataset_array(self, name):
+        if name not in self.ds:
+            return None
+        try:
+            return np.asarray(self.ds[name], dtype=float)
+        except (TypeError, ValueError):
+            return None
+
+    def _read_point_positions(self):
+        positions = self._dataset_array("rel_BF_pos")
+        if positions is None:
+            return np.empty((0, 2), dtype=float)
+        if positions.ndim == 1:
+            positions = positions.reshape(1, -1)
+        if positions.ndim != 2 or positions.shape[1] < 2:
+            return np.empty((0, 2), dtype=float)
+        return positions[:, :2].copy()
+
+    def _image_projection(self):
+        if "imgs" not in self.ds:
+            return None
+        try:
+            # Keep the camera's native dtype and avoid materialising a second
+            # full-sized float64 stack merely to calculate the projection.
+            images = np.asarray(self.ds["imgs"])
+        except (TypeError, ValueError):
+            return None
+        if images is None or images.ndim < 2 or images.size == 0:
+            return None
+        if images.ndim == 2:
+            return images
+        axes = tuple(range(images.ndim - 2))
+        try:
+            if np.issubdtype(images.dtype, np.floating):
+                # fmax is a NaN-tolerant ufunc reduction and allocates only
+                # the 2-D result, unlike nanmax's full-size temporary copy.
+                return np.fmax.reduce(images, axis=axes)
+            return np.max(images, axis=axes)
+        except (TypeError, ValueError):
+            return None
+
+    def _draw_image(self, title):
+        projection = self._image_projection()
+        if projection is None:
+            self.ax_image.text(
+                0.5,
+                0.5,
+                "Calibration image unavailable",
+                ha="center",
+                va="center",
+                color="#767676",
+                transform=self.ax_image.transAxes,
+            )
+            self.ax_image.set_axis_off()
+        else:
+            self.image_artist = self.ax_image.imshow(
+                projection, cmap="gray"
+            )
+            self.ax_image.set_xlabel("Image X pixel")
+            self.ax_image.set_ylabel("Image Y pixel")
+        if len(self._plotted_indices):
+            points = self._point_positions[self._plotted_indices]
+            self.points_artist = self.ax_image.scatter(
+                points[:, 0],
+                points[:, 1],
+                color="#ff4d4d",
+                edgecolor="black",
+                linewidth=0.5,
+                s=32,
+                zorder=3,
+            )
+        else:
+            self.points_artist = self.ax_image.scatter([], [], s=32)
+        self.selection_artist = self.ax_image.scatter(
+            [],
+            [],
+            facecolors="none",
+            edgecolors="#ffe066",
+            linewidth=2.0,
+            s=110,
+            zorder=4,
+        )
+        self.ax_image.set_title(f"{title} · click a red point")
+
+    def _spectrum_for_point(self, index):
+        if self.raw_spectra is None or self.raw_spectra.ndim == 0:
+            return None
+        if index < 0 or index >= self.raw_spectra.shape[0]:
+            return None
+        spectrum = np.asarray(self.raw_spectra[index], dtype=float)
+        if spectrum.ndim == 0 or spectrum.size == 0:
+            return None
+        if spectrum.ndim == 1:
+            result = spectrum.copy()
+        else:
+            repeats = spectrum.reshape(-1, spectrum.shape[-1])
+            if repeats.shape[0] == 0 or not np.isfinite(repeats).any():
+                return None
+            result = filter_mean(repeats)
+        if result.ndim != 1 or not np.isfinite(result).any():
+            return None
+        return result
+
+    def _select_initial_point(self):
+        for index in self._plotted_indices:
+            if self._spectrum_for_point(int(index)) is not None:
+                self.selected_index = int(index)
+                return
+        if len(self._plotted_indices):
+            self.selected_index = int(self._plotted_indices[0])
+
+    def _toolbar_is_active(self):
+        return bool(getattr(self.toolbar, "mode", None))
+
+    def _on_image_click(self, event):
+        if (
+            self._toolbar_is_active()
+            or event.button != 1
+            or event.inaxes is not self.ax_image
+            or event.x is None
+            or event.y is None
+            or not len(self._plotted_indices)
+        ):
+            return
+        points = self._point_positions[self._plotted_indices]
+        display_points = self.ax_image.transData.transform(points)
+        distances = np.hypot(
+            display_points[:, 0] - event.x,
+            display_points[:, 1] - event.y,
+        )
+        nearest = int(np.argmin(distances))
+        if distances[nearest] > self._pick_radius_pixels:
+            return
+        self.select_point(int(self._plotted_indices[nearest]))
+
+    def select_point(self, index):
+        """Select one real, finite calibration acquisition by row index."""
+        index = int(index)
+        if index not in self._plotted_indices:
+            return False
+        self.selected_index = index
+        self._redraw_spectrum()
+        return True
+
+    def _selection_metadata(self, spectrum):
+        if self.selected_index is None:
+            return "No finite calibration acquisition points are available."
+        index = self.selected_index
+        x, y = self._point_positions[index]
+        parts = [
+            f"Point {index + 1} of {len(self._point_positions)}",
+            f"image (x={x:.3g}, y={y:.3g})",
+        ]
+        laser_positions = self._dataset_array("laser_pos")
+        if (
+            laser_positions is not None
+            and laser_positions.ndim >= 2
+            and index < laser_positions.shape[0]
+            and laser_positions.shape[1] >= 2
+        ):
+            vx, vy = laser_positions[index, :2]
+            if np.isfinite(vx) and np.isfinite(vy):
+                parts.append(f"galvo (x={vx:.3g} V, y={vy:.3g} V)")
+        if (
+            self.raw_spectra is not None
+            and self.raw_spectra.ndim >= 1
+            and index < self.raw_spectra.shape[0]
+        ):
+            point_data = np.asarray(self.raw_spectra[index])
+            repeat_count = 1 if point_data.ndim <= 1 else int(
+                np.prod(point_data.shape[:-1])
+            )
+            parts.append(
+                f"{repeat_count} acquired trace"
+                f"{'s' if repeat_count != 1 else ''}"
+            )
+        if spectrum is None:
+            parts.append("spectrum unavailable")
+        return " · ".join(parts)
+
+    def _redraw_spectrum(self, _checked=None):
+        self.ax_spectrum.clear()
+        self.spectrum_line = None
+        self.selected_spectrum = None
+        if self.selected_index is None:
+            self.selection_artist.set_offsets(np.empty((0, 2)))
+            self.selection_label.setText(
+                "No finite calibration acquisition points are available."
+            )
+            self.ax_spectrum.text(
+                0.5,
+                0.5,
+                "Select a valid acquisition point",
+                ha="center",
+                va="center",
+                color="#767676",
+                transform=self.ax_spectrum.transAxes,
+            )
+            self.ax_spectrum.set_title("Selected spectrum")
+            self.canvas.draw_idle()
+            return
+
+        point = self._point_positions[self.selected_index]
+        self.selection_artist.set_offsets(point.reshape(1, 2))
+        spectrum = self._spectrum_for_point(self.selected_index)
+        self.selected_spectrum = spectrum
+        self.selection_label.setText(self._selection_metadata(spectrum))
+        self.ax_spectrum.set_title(
+            f"Point {self.selected_index + 1} spectrum"
+        )
+        if spectrum is None:
+            self.ax_spectrum.text(
+                0.5,
+                0.5,
+                "Spectrum unavailable for this point",
+                ha="center",
+                va="center",
+                color="#767676",
+                transform=self.ax_spectrum.transAxes,
+            )
+            self.ax_spectrum.set_xlabel("Pixel")
+            self.ax_spectrum.set_ylabel("Intensity (a.u.)")
+        else:
+            (self.spectrum_line,) = self.ax_spectrum.plot(
+                spectrum, color="#2f80ed"
+            )
+            _set_spectral_line_axis(
+                self.ax_spectrum,
+                [self.spectrum_line],
+                self.spectral_calibration,
+                self.show_wavenumber_check.isChecked(),
+            )
+            self.ax_spectrum.set_ylabel("Intensity (a.u.)")
+            if self._fixed_y_limits is not None:
+                self.ax_spectrum.set_ylim(self._fixed_y_limits)
+        self.canvas.draw_idle()
+
+    def _on_fix_y_scale_toggled(self, checked):
+        if checked and self.spectrum_line is not None:
+            self._fixed_y_limits = self.ax_spectrum.get_ylim()
+        elif not checked:
+            self._fixed_y_limits = None
+            self._redraw_spectrum()
 
 
 class DetectorImageWindow(QWidget):
@@ -495,10 +805,10 @@ class DetectorImageWindow(QWidget):
         self.end_row_input.setRange(0, self.image.shape[0] - 1)
         self.end_row_input.setValue(self.image.shape[0] - 1)
         self.end_row_input.valueChanged.connect(self._on_end_row_changed)
-        self.pixel_axis_check = _make_pixel_axis_checkbox(
+        self.show_wavenumber_check = _make_wavenumber_axis_checkbox(
             spectral_calibration, self._redraw
         )
-        self.pixel_axis_check.hide()
+        self.show_wavenumber_check.hide()
         self.fix_y_scale_check = QCheckBox("Fix Y scale")
         self.fix_y_scale_check.setToolTip(
             "Keep the spectrum Y limits from the frame shown when checked"
@@ -507,6 +817,7 @@ class DetectorImageWindow(QWidget):
             self._on_fix_y_scale_toggled
         )
         self.fix_y_scale_check.hide()
+        _make_white_background_checkbox(self)
         self.view_controls_group = _add_compact_control_group(
             layout,
             "View",
@@ -518,7 +829,11 @@ class DetectorImageWindow(QWidget):
                     to_label,
                     self.end_row_input,
                 ],
-                [self.pixel_axis_check, self.fix_y_scale_check],
+                [
+                    self.fix_y_scale_check,
+                    self.show_wavenumber_check,
+                    self.white_background_check,
+                ],
             ],
         )
         _add_processing_section(
@@ -534,7 +849,12 @@ class DetectorImageWindow(QWidget):
         self.toolbar = NavigationToolbar2QT(self.canvas, self)
         self.ax = self.fig.add_subplot(111)
         self._colorbar = None
-        _finish_plot_layout(layout, self.toolbar, self.canvas)
+        _finish_plot_layout(
+            layout,
+            self.toolbar,
+            self.canvas,
+            background_control_in_layout=False,
+        )
         self._redraw()
 
     @staticmethod
@@ -558,7 +878,7 @@ class DetectorImageWindow(QWidget):
             if self._show_spectrum
             else "Current view: detector image"
         )
-        self.pixel_axis_check.setVisible(self._show_spectrum)
+        self.show_wavenumber_check.setVisible(self._show_spectrum)
         self.fix_y_scale_check.setVisible(self._show_spectrum)
         self.baseline_subtraction_check.setVisible(self._show_spectrum)
         self.baseline_lambda_controls.setVisible(
@@ -632,7 +952,7 @@ class DetectorImageWindow(QWidget):
                 self.ax,
                 lines,
                 self.spectral_calibration,
-                self.pixel_axis_check.isChecked(),
+                self.show_wavenumber_check.isChecked(),
             )
             self.ax.set_ylabel("Summed intensity (a.u.)")
             self.ax.set_title(
@@ -687,7 +1007,7 @@ class SpectrumWindow(QWidget):
         self._pending_pixel = None
         self._calibration_pixels = []
         self._known_shifts = []
-        self._show_pixels_before_calibration = spectral_calibration is None
+        self._show_wavenumber_before_calibration = False
         import matplotlib
         matplotlib.use("QtAgg")
         from matplotlib.figure import Figure
@@ -702,7 +1022,7 @@ class SpectrumWindow(QWidget):
             "Switch between the mean spectrum and every acquired trace"
         )
         self.toggle_btn.clicked.connect(self._toggle)
-        self.pixel_axis_check = _make_pixel_axis_checkbox(
+        self.show_wavenumber_check = _make_wavenumber_axis_checkbox(
             spectral_calibration, self._redraw
         )
         self.fix_y_scale_check = QCheckBox("Fix Y scale")
@@ -712,6 +1032,7 @@ class SpectrumWindow(QWidget):
         self.fix_y_scale_check.toggled.connect(
             self._on_fix_y_scale_toggled
         )
+        _make_white_background_checkbox(self)
         self.remove_spectral_bias_check = QCheckBox("Remove spectral bias")
         self.remove_spectral_bias_check.setToolTip(
             "Subtract filter_mean(dark noise) in this plot only. The raw "
@@ -731,7 +1052,11 @@ class SpectrumWindow(QWidget):
             "View",
             [
                 [self.view_mode_label, self.toggle_btn],
-                [self.pixel_axis_check, self.fix_y_scale_check],
+                [
+                    self.fix_y_scale_check,
+                    self.show_wavenumber_check,
+                    self.white_background_check,
+                ],
                 [self.remove_spectral_bias_check, self.calibration_btn],
             ],
         )
@@ -781,7 +1106,12 @@ class SpectrumWindow(QWidget):
         self.canvas = FigureCanvasQTAgg(self.fig)
         self.toolbar = NavigationToolbar2QT(self.canvas, self)
         self.ax = self.fig.add_subplot(111)
-        _finish_plot_layout(layout, self.toolbar, self.canvas)
+        _finish_plot_layout(
+            layout,
+            self.toolbar,
+            self.canvas,
+            background_control_in_layout=False,
+        )
         self.canvas.mpl_connect("button_press_event", self._on_calibration_click)
         self.canvas.mpl_connect("key_press_event", self._on_calibration_key)
         self._redraw()
@@ -873,7 +1203,7 @@ class SpectrumWindow(QWidget):
             self.ax,
             lines,
             self.spectral_calibration,
-            self.pixel_axis_check.isChecked(),
+            self.show_wavenumber_check.isChecked(),
         )
         self.ax.set_ylabel("Intensity (a.u.)")
         title = "Mean spectrum" if self._show_mean else "All traces"
@@ -890,8 +1220,8 @@ class SpectrumWindow(QWidget):
 
     def _start_calibration(self):
         self._calibrating = True
-        self._show_pixels_before_calibration = (
-            self.pixel_axis_check.isChecked()
+        self._show_wavenumber_before_calibration = (
+            self.show_wavenumber_check.isChecked()
         )
         self._pending_pixel = None
         self._calibration_pixels = []
@@ -901,8 +1231,8 @@ class SpectrumWindow(QWidget):
         self.view_mode_label.setText("Current view: mean spectrum")
         self.toggle_btn.setEnabled(False)
         self.calibration_btn.setEnabled(False)
-        self.pixel_axis_check.setChecked(True)
-        self.pixel_axis_check.setEnabled(False)
+        self.show_wavenumber_check.setChecked(False)
+        self.show_wavenumber_check.setEnabled(False)
         self.calibration_controls.show()
         self.finish_calibration_btn.setEnabled(False)
         self._update_calibration_progress()
@@ -1073,7 +1403,7 @@ class SpectrumWindow(QWidget):
         self.spectral_calibration = calibration
         if self._calibration_changed is not None:
             self._calibration_changed(calibration, saved_path)
-        self._stop_calibration(show_wavenumber=True)
+        self._stop_calibration()
         QMessageBox.information(
             self,
             "Calibration saved",
@@ -1081,22 +1411,23 @@ class SpectrumWindow(QWidget):
         )
 
     def _cancel_calibration(self):
-        self._stop_calibration(show_wavenumber=False)
+        self._stop_calibration()
 
-    def _stop_calibration(self, show_wavenumber):
+    def _stop_calibration(self):
         self._calibrating = False
         self._pending_pixel = None
         self.calibration_controls.hide()
         self.toggle_btn.setEnabled(True)
         self.calibration_btn.setEnabled(True)
-        self.pixel_axis_check.setEnabled(
+        self.show_wavenumber_check.setEnabled(
             self.spectral_calibration is not None
         )
-        if show_wavenumber and self.spectral_calibration is not None:
-            self.pixel_axis_check.setChecked(False)
-        elif self.spectral_calibration is not None:
-            self.pixel_axis_check.setChecked(
-                self._show_pixels_before_calibration
+        if self.spectral_calibration is not None:
+            self.show_wavenumber_check.setToolTip(
+                "Use calibrated Raman shift instead of pixels"
+            )
+            self.show_wavenumber_check.setChecked(
+                self._show_wavenumber_before_calibration
             )
         self._redraw()
 
@@ -1124,11 +1455,14 @@ class ReferenceSpectraWindow(QWidget):
         self._reference_spectra = np.asarray(
             [filter_mean(repeats) for repeats in all_raman]
         )
-        self.pixel_axis_check = _make_pixel_axis_checkbox(
+        self.show_wavenumber_check = _make_wavenumber_axis_checkbox(
             spectral_calibration, self._update_spectral_axis
         )
+        _make_white_background_checkbox(self)
         self.view_controls_group = _add_compact_control_group(
-            layout, "View", [[self.pixel_axis_check]]
+            layout,
+            "View",
+            [[self.show_wavenumber_check, self.white_background_check]],
         )
         _add_processing_section(
             self,
@@ -1163,7 +1497,12 @@ class ReferenceSpectraWindow(QWidget):
         sm.set_array([])
         cbar = self.fig.colorbar(sm, ax=ax)
         cbar.set_label("z (um)")
-        _finish_plot_layout(layout, self.toolbar, self.canvas)
+        _finish_plot_layout(
+            layout,
+            self.toolbar,
+            self.canvas,
+            background_control_in_layout=False,
+        )
 
     def _redraw_spectra(self):
         spectra = _subtract_baseline_for_plot(
@@ -1179,7 +1518,7 @@ class ReferenceSpectraWindow(QWidget):
             self.ax,
             self._spectral_lines,
             self.spectral_calibration,
-            self.pixel_axis_check.isChecked(),
+            self.show_wavenumber_check.isChecked(),
         )
         if hasattr(self, "canvas"):
             self.canvas.draw_idle()
@@ -1248,15 +1587,16 @@ class GridScanPlotWindow(QWidget):
         self.view_mode_label = QLabel("Current view: mean spectrum")
         self.view_mode_label.setStyleSheet("font-weight: bold;")
         mode_button = self._make_mode_button()
-        self.pixel_axis_check = _make_pixel_axis_checkbox(
+        self.show_wavenumber_check = _make_wavenumber_axis_checkbox(
             self.spectral_calibration, self._on_spectral_axis_changed
         )
+        _make_white_background_checkbox(self)
         self.view_controls_group = _add_compact_control_group(
             rows,
             "View",
             [
                 [self.view_mode_label, mode_button],
-                [self.pixel_axis_check],
+                [self.show_wavenumber_check, self.white_background_check],
             ],
         )
         _add_processing_section(
@@ -1350,7 +1690,7 @@ class GridScanPlotWindow(QWidget):
             self._ax_spec,
             [self._spec_line],
             self.spectral_calibration,
-            self.pixel_axis_check.isChecked(),
+            self.show_wavenumber_check.isChecked(),
         )
         self._ax_spec.set_title(title)
 
@@ -1393,7 +1733,12 @@ class GridScanPlotWindow(QWidget):
         layout = _panel_layout(self)
         layout.addLayout(self._make_spectral_controls())
         self._draw_spec()
-        _finish_plot_layout(layout, self.toolbar, self.canvas)
+        _finish_plot_layout(
+            layout,
+            self.toolbar,
+            self.canvas,
+            background_control_in_layout=False,
+        )
         self.canvas.mpl_connect("pick_event", self._on_pick)
 
     # ------------------------------------------------------------------ #
@@ -1467,7 +1812,12 @@ class GridScanPlotWindow(QWidget):
         self._ax_spec.set_xlabel("Pixels")
         self._ax_spec.set_ylabel("Intensity (a.u.)")
         self._draw_spec()
-        _finish_plot_layout(main_layout, self.toolbar, self.canvas)
+        _finish_plot_layout(
+            main_layout,
+            self.toolbar,
+            self.canvas,
+            background_control_in_layout=False,
+        )
         self.canvas.mpl_connect("pick_event", self._on_pick)
 
     def _on_z_changed(self, idx):
@@ -1539,7 +1889,7 @@ class DatasetViewerWindow(QWidget):
         main_layout.addWidget(self.navigation_group)
 
         # --- View and display processing ---
-        self.pixel_axis_check = _make_pixel_axis_checkbox(
+        self.show_wavenumber_check = _make_wavenumber_axis_checkbox(
             spectral_calibration, self._update_spectral_axis
         )
         self.fix_y_scale_check = QCheckBox("Fix Y scale")
@@ -1549,10 +1899,15 @@ class DatasetViewerWindow(QWidget):
         self.fix_y_scale_check.toggled.connect(
             self._on_fix_y_scale_toggled
         )
+        _make_white_background_checkbox(self)
         self.view_controls_group = _add_compact_control_group(
             main_layout,
             "View",
-            [[self.pixel_axis_check, self.fix_y_scale_check]],
+            [[
+                self.fix_y_scale_check,
+                self.show_wavenumber_check,
+                self.white_background_check,
+            ]],
         )
         _add_processing_section(
             self,
@@ -1567,7 +1922,12 @@ class DatasetViewerWindow(QWidget):
         self.toolbar = NavigationToolbar2QT(self.canvas, self)
         self.ax_img = self.fig.add_subplot(121)
         self.ax_spec = self.fig.add_subplot(122)
-        _finish_plot_layout(main_layout, self.toolbar, self.canvas)
+        _finish_plot_layout(
+            main_layout,
+            self.toolbar,
+            self.canvas,
+            background_control_in_layout=False,
+        )
         # --- Initial draw ---
         t0 = int(self.t_vals[0])
         p0 = int(self.p_vals[0])
@@ -1707,7 +2067,7 @@ class DatasetViewerWindow(QWidget):
             self.ax_spec,
             [self.spec_line],
             self.spectral_calibration,
-            self.pixel_axis_check.isChecked(),
+            self.show_wavenumber_check.isChecked(),
         )
         if self._fixed_y_limits is not None:
             self.ax_spec.set_ylim(self._fixed_y_limits)

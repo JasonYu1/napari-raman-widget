@@ -26,6 +26,11 @@ HELP = {
         "Pixel-to-stage Vandermonde model (.json). Used only when cells are "
         "physically centered -- required by Center cell and Click to center."
     ),
+    "spectral_calibration_path": (
+        "Optional pixel-to-wavenumber calibration (.json), selected explicitly "
+        "for this session. New plots always start in pixels; check Show "
+        "wavenumber on a plot to apply the calibration."
+    ),
     "out_path": (
         "Working directory applied on Connect (created if needed). Relative "
         "result paths resolve from here. Editing after connection has no "
@@ -124,7 +129,8 @@ HELP = {
     ),
     "calibrate_btn": (
         "Acquire a new calibration dataset with the active transformer, then "
-        "open a log and calibration plot."
+        "show progress in the log, and open an interactive calibration plot. "
+        "Click a result point to inspect its recorded spectrum."
     ),
     "recal_check": (
         "Reveal the controls for manually correcting the current calibration."

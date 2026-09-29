@@ -129,6 +129,16 @@ Plot backgrounds are transparent by default so they blend into Napari's theme.
 Check **White background** on a plot for an opaque white canvas; uncheck it
 to restore transparency. Axes and labels adjust for readability.
 
+The compact display row groups **Fix Y scale** (where available), **Show
+wavenumber**, and **White background**. Spectra always start in pixels.
+Wavenumber calibration is optional and is never loaded automatically from
+saved defaults: select a calibration JSON in Setup, then opt in with **Show
+wavenumber** on a new plot. The checkbox is disabled without a calibration.
+
+Laser aiming calibration has a progress bar and stage readout in its log.
+In the calibration result, click a calibration point to inspect its stored
+spectrum alongside the image; this does not acquire new data.
+
 The control sidebar groups loading and calibration under **Setup**, stage-grid
 and cell tools under **Selection**, measurement workflows under **Acquire**,
 and dataset generation under **Analysis**. Pixel-to-stage calibration is inside

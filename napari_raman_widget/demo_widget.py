@@ -2823,8 +2823,9 @@ class DemoWidget(QWidget):
         grid = int(self.cal_grid_input.value())
         thres = float(self.cal_thres_input.value())
 
-        log = LogWindow(title="Calibration log")
+        log = LogWindow(title="Calibration log", show_progress=True)
         self._show_plot(log)
+        log.start_progress("Preparing calibration")
 
         self.status.setText("Status: calibrating...")
         self.repaint()
@@ -2836,18 +2837,25 @@ class DemoWidget(QWidget):
             )
             with _StdoutRedirector(log):
                 self.calibration_ds = self.calibrator.calibrate(
-                    grid, threshold=thres, plot=False
+                    grid,
+                    threshold=thres,
+                    plot=False,
+                    progress_callback=log.update_progress,
                 )
 
             log.append("\n--- calibration complete ---\n")
 
             plot_win = CalibrationPlotWindow(
-                self.calibration_ds, title="Calibration result"
+                self.calibration_ds,
+                title="Calibration result",
+                spectral_calibration=self.spectral_calibration,
             )
             self._show_plot(plot_win)
+            log.finish_progress("Calibration complete")
 
             self.status.setText("Status: calibration done OK")
         except Exception as e:
+            log.fail_progress("Calibration failed")
             log.append(f"\n--- calibration failed: {e} ---\n")
             self.status.setText(f"Status: calibration failed -- {e}")
 

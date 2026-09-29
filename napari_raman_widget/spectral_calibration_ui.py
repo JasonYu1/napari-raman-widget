@@ -18,19 +18,38 @@ def add_spectral_calibration_loader(owner, loading_layout) -> None:
     """Add shared calibration controls to *owner*'s Loading section."""
     owner.spectral_calibration = None
     loading_layout.addWidget(
-        QLabel("Pixel-to-wavenumber calibration (.json):")
+        QLabel("Pixel-to-wavenumber calibration (optional .json):")
     )
     row = QHBoxLayout()
     owner.spectral_calibration_path = QLineEdit()
     owner.spectral_calibration_path.setPlaceholderText(
-        "pixel_to_wavenumber_calibration.json"
+        "None (pixel axis by default)"
     )
     browse = QPushButton("...")
     browse.setFixedWidth(30)
     browse.clicked.connect(owner.browse_spectral_calibration)
+    owner.clear_spectral_calibration_btn = QPushButton("Clear")
+    owner.clear_spectral_calibration_btn.setToolTip(
+        "Remove the optional calibration for new plots; existing plots "
+        "keep their calibration."
+    )
+    owner.clear_spectral_calibration_btn.clicked.connect(
+        lambda: clear_spectral_calibration(owner)
+    )
     row.addWidget(owner.spectral_calibration_path)
     row.addWidget(browse)
+    row.addWidget(owner.clear_spectral_calibration_btn)
     loading_layout.addLayout(row)
+
+
+def clear_spectral_calibration(owner) -> None:
+    """Return new plots to an uncalibrated pixel axis."""
+    owner.spectral_calibration = None
+    owner.spectral_calibration_path.clear()
+    if hasattr(owner, "status"):
+        owner.status.setText(
+            "Status: optional wavenumber calibration cleared for new plots"
+        )
 
 
 def browse_spectral_calibration(owner) -> None:
@@ -79,8 +98,8 @@ def load_spectral_calibration(owner, *, show_success=True):
         QMessageBox.information(
             owner,
             "Calibration loaded",
-            "New spectrum tabs will use Raman shift by default. "
-            "Use 'Show pixels' in a plot to switch back.",
+            "New spectrum tabs still start in pixels. "
+            "Check 'Show wavenumber' in a plot to use this calibration.",
         )
     return calibration
 

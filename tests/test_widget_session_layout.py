@@ -44,6 +44,17 @@ class WidgetSessionLayoutTests(unittest.TestCase):
         self.assertNotIn("update_hardware_defaults", source)
         self.assertIn("selected for this session", source)
 
+    def test_hardware_does_not_preload_spectral_calibration(self):
+        source = self._source("hardware_widget.py")
+        defaults_start = source.index("def _load_user_defaults(self):")
+        defaults_end = source.index("# -------- file pickers", defaults_start)
+        defaults_source = source[defaults_start:defaults_end]
+        self.assertNotIn("self.spectral_calibration_path", defaults_source)
+        self.assertNotIn("self.load_spectral_calibration(", defaults_source)
+        self.assertIn(
+            'supported.add("pixel_to_wavenumber_calibration")', defaults_source
+        )
+
     def test_pixel_to_stage_is_nested_under_stage_grid(self):
         for filename in ("hardware_widget.py", "demo_widget.py"):
             with self.subTest(filename=filename):
