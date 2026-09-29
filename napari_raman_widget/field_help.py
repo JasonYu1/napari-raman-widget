@@ -128,8 +128,9 @@ HELP = {
         "(interpreted by Calibrator)."
     ),
     "calibrate_btn": (
-        "Acquire a new calibration dataset with the active transformer, then "
-        "show progress in the log, and open an interactive calibration plot. "
+        "Acquire a new calibration dataset in the background with real "
+        "progress in the task strip and log. Stop waits for the current "
+        "hardware step; a calibration cancelled before saving is not saved. "
         "Click a result point to inspect its recorded spectrum."
     ),
     "recal_check": (
@@ -158,8 +159,11 @@ HELP = {
     ),
     "ref_pts_input": "Number of axial samples across the full search interval.",
     "ref_collect_btn": (
-        "Run the autofocus/background scan, move to the found focus Z, plot "
-        "all spectra, and save reference/<name>_<uuid>.zarr."
+        "Preview the selected point, Z positions, repeats, duration lower "
+        "bound, and output path before starting the axial background scan. "
+        "The scan restores the original Z; it does not choose a focus. "
+        "Stop waits for the current batch and saves completed Z planes as "
+        "an explicitly partial reference dataset."
     ),
 
     # ============ SPATIAL MAPPING ============
@@ -171,7 +175,7 @@ HELP = {
     ),
     "scan_z_input": (
         "Base Raman Z = current Z minus this offset (um). The stage returns to "
-        "its original Z after a successful scan."
+        "its original Z during normal completion or stop cleanup."
     ),
     "scan_zscan_check": (
         "Collect the full Raman grid at multiple Z planes instead of one."
@@ -185,8 +189,11 @@ HELP = {
         "Duplicates are ignored; BF is excluded (always captured before/after)."
     ),
     "scan_btn": (
-        "Snap BF and extra channels, then collect the Raman grid over the "
-        "rectangle in the last Shapes layer (using its bounding box)."
+        "Preview the selected (or newest) shape's bounding-box grid in the "
+        "active Shapes layer, Z positions, spectrum count, exposure-only "
+        "duration, and output path. Start scan confirms acquisition. Stop "
+        "waits for the current batch, closes the Raman shutter, restores Z, "
+        "and saves completed spectra as an explicitly partial scan."
     ),
 
     # ============ GENERATE STAGE GRID ============

@@ -17,7 +17,7 @@ optional Assistant tab. Its collapsible sections cover:
 - Collecting Raman spectra at clicked points
 - Running laser aiming calibration
 - Manual recalibration via point selector
-- Collecting reference spectra with autofocus
+- Collecting reference spectra across an axial Z range
 - Running spatial Raman mapping (grid scan) over a shape
 - Automated cell selection inside a mask
 - Running a Raman MDA with fluorescence channels and Z stacks
@@ -33,7 +33,7 @@ The interface also includes:
 - **Persistent status** - the current acquisition status stays visible below
   the controls while you change tabs or scroll.
 
-All outputs (reference `.npy` files, `grid_scan_*.zarr`, recalibrated models,
+All outputs (reference `.zarr` datasets, `grid_scan_*.zarr`, recalibrated models,
 the MDA writer directory) are written relative to the current working
 directory - or an output folder you set in the Loading section, which is
 switched to on connect.
@@ -148,6 +148,54 @@ The optional AI chat has its own **Assistant** tab.
 Dark noise starts as **None** whenever a widget opens, including when an older
 defaults file contains a dark-noise path. Select or collect a dark-noise file
 to use it for the current session, or click **Clear** to return to None.
+
+### Reviewing and stopping acquisitions
+
+Before a **grid scan** or **axial background scan**, a review dialog shows the
+selected image region or point, grid size, Z positions, repeats, total spectrum
+count, and exact output path. The preview uses copied settings and does not
+acquire data. Choose **Start scan** to proceed or **Cancel** to return; Cancel
+is the default keyboard action. Large grids show a sampled display while the
+summary still counts every planned acquisition point.
+
+The duration estimate is an **exposure-only lower bound**, not a completion
+prediction. It excludes stage movement, settling, readout, autofocus, processing,
+and saving. Grid Z offsets are measured from the initial Z minus the configured
+Z offset. An axial background scan measures the configured evenly spaced Z
+positions around the initial Z, with the chosen repeats at each position; it
+does not run an additional fine scan or automatically choose a focus.
+
+**Laser aiming calibration, grid scans, and axial background scans** run as
+background jobs in both the hardware and demo widgets. A task strip below the
+controls shows actual completed work, the current stage, elapsed time, **Stop**,
+and **Log**. The corresponding log also shows progress and a Stop control.
+Progress advances when a measured batch or processing stage finishes; it does
+not simulate detector progress during an exposure. Conflicting widget controls
+are unavailable until the job finishes.
+
+**Stop is cooperative, not an emergency stop.** It waits for the current
+hardware step or acquisition batch to finish before cleanup; a long exposure
+or repeated-spectrum batch can take time. Keep the application open while it
+shows that a stop is pending. Hiding a log does not stop acquisition.
+
+When a requested stop completes normally, grid and axial scans save any
+completed measurements to the previewed output path. These datasets carry
+`acquisition_status="stopped"`; an uninterrupted scan uses `"complete"`.
+Axial data contains only measured Z planes and records `planned_z_planes`.
+Partial grid data stores only acquired samples, with `sample_grid_index` and
+`sample_z_index` locating them in the planned grid/Z coordinates, and records
+`completed_spectra` and `planned_spectra`. No unmeasured spectra are filled in.
+If nothing was measured, no dataset is saved. A calibration cancelled before
+saving is not saved or installed as a finished calibration. Hardware or storage
+failures can prevent saving, so inspect the final status and log.
+
+Logs hide routine successful CCD progress tuples by default. Check **Show
+camera diagnostics** to reveal the retained diagnostic lines; warnings and
+errors remain visible. This only filters the widget log: original terminal
+output is unchanged.
+
+Selection/refinement workflows and Raman MDA are not part of this task strip;
+MDA and live spectrum collection retain their existing stop controls.
 
 ### One-click launcher (Windows)
 
@@ -347,8 +395,9 @@ display. Ask "What can you do?" for the current registered capabilities.
 The Assistant gets tool descriptions and explicit state snapshots; it does not
 see your screen, read arbitrary source files, inherit developer conversations,
 or automatically observe manual UI changes. Progress queries are not background
-monitoring. A synchronous calibration launched through chat can keep the chat
-busy until it returns; the on-screen log still shows its progress. Individual
+monitoring. Calibration, grid scans, and axial background scans report their
+running state through the task strip and log after launch; a launch response
+does not mean acquisition has completed. Individual
 spectrum samples are returned only when explicitly requested, with a bounded
 output size; ordinary result queries return compact numeric summaries.
 
@@ -397,6 +446,12 @@ confirmation dialog (not recommended on live hardware).
 - `napari_raman_widget/plot_windows.py` - dock-ready Matplotlib plot panels.
 - `napari_raman_widget/plot_workspace.py` - shared, tabbed Napari plot dock.
 - `napari_raman_widget/log_window.py` - streaming stdout log window.
+- `napari_raman_widget/scan_preview.py` - immutable scan plans and confirmation
+  previews without hardware operations.
+- `napari_raman_widget/scan_workflows.py` - shared previewed grid/axial workflows
+  and background calibration launch.
+- `napari_raman_widget/acquisition_jobs.py` - serialized calibration/scan jobs,
+  progress, and cooperative stop handling.
 - `napari_raman_widget/ui_helpers.py` - small Qt helpers.
 - `napari_raman_widget/resources/napari-raman-widget-manual.pdf` - the user
   manual opened by the Help link (LaTeX source kept alongside).

@@ -9,7 +9,7 @@ import numpy as np
 __all__ = ["snapshot_scan_shape"]
 
 
-def snapshot_scan_shape(shapes_layer: Any) -> np.ndarray:
+def snapshot_scan_shape(shapes_layer: Any, *, finish_interaction=True) -> np.ndarray:
     """Copy the selected scan shape and leave its layer safe to interact with.
 
     Napari 0.5.0 can transiently leave a selected Shapes layer with
@@ -35,6 +35,7 @@ def snapshot_scan_shape(shapes_layer: Any) -> np.ndarray:
     # Changing mode asks napari to finish an in-progress drawing gesture.
     # Clearing selected_data prevents visibility refreshes from entering the
     # buggy selected-shape highlight path in napari 0.5.0.
-    shapes_layer.mode = "pan_zoom"
-    shapes_layer.selected_data = set()
+    if finish_interaction:
+        shapes_layer.mode = "pan_zoom"
+        shapes_layer.selected_data = set()
     return shape

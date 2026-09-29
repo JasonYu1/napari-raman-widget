@@ -27,10 +27,9 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from .acquisition import autofocus_w_bkd, unload
+from .acquisition import unload
 from .aiming_patterns import make_point_transformer
 from .calibration import (
-    Calibrator,
     CoordTransformer,
     ManualImageSelector,
     StagePointPicker,
@@ -50,14 +49,13 @@ from .hardware_defaults import (
 )
 from .hardware_shutdown import shutdown_core_hardware
 from .log_window import LogWindow, _StdoutRedirector
+from .acquisition_jobs import AcquisitionJobs
+from .scan_workflows import start_calibration, start_reference, start_grid_scan
 from .live_cell_tracking import make_live_cell_engine_type
 from .live_spectra import LiveSpectrumWorker
 from .plot_windows import (
-    CalibrationPlotWindow,
     DatasetViewerWindow,
     DetectorImageWindow,
-    GridScanPlotWindow,
-    ReferenceSpectraWindow,
     SpectrumWindow,
 )
 from .position_specs import resolve_position_specs
@@ -85,7 +83,6 @@ from .spectral_calibration_ui import (
     load_spectral_calibration,
     spectral_calibration_created,
 )
-from .spatial_mapping import snapshot_scan_shape
 from .ui_helpers import (
     align_form_rows,
     make_collapsible,
@@ -493,7 +490,7 @@ class HardwareWidget(QWidget):
         ref_pts_row.addWidget(self.ref_pts_input)
         ref_layout.addLayout(ref_pts_row)
 
-        self.ref_collect_btn = QPushButton("Collect reference spectra")
+        self.ref_collect_btn = QPushButton("Preview axial scan…")
         self.ref_collect_btn.clicked.connect(self.collect_reference)
         ref_layout.addWidget(self.ref_collect_btn)
 
@@ -584,7 +581,7 @@ class HardwareWidget(QWidget):
         self.add_channel_btn.clicked.connect(self._add_channel_row)
         scan_layout.addWidget(self.add_channel_btn)
 
-        self.scan_btn = QPushButton("Run grid scan")
+        self.scan_btn = QPushButton("Preview grid scan…")
         self.scan_btn.clicked.connect(self.run_grid_scan)
         scan_layout.addWidget(self.scan_btn)
 
@@ -1232,6 +1229,8 @@ class HardwareWidget(QWidget):
         wrapper.setSpacing(0)
         wrapper.addWidget(header)
         wrapper.addWidget(self.workflow_tabs, 1)
+        self._acquisition_jobs = AcquisitionJobs(self)
+        wrapper.addWidget(self._acquisition_jobs.panel)
         # Status stays visible while the active workflow tab scrolls.
         wrapper.addWidget(self.status)
 
@@ -2126,6 +2125,10 @@ class HardwareWidget(QWidget):
             self.status.setText(f"Status: grating update failed -- {e}")
 
     def disconnect(self):
+        if self._acquisition_jobs.is_running:
+            self._acquisition_jobs.request_stop()
+            self.status.setText("Status: stopping acquisition; disconnect after it finishes")
+            return
         if self._live_raman_worker is not None:
             self._stop_live_raman()
             return
@@ -2683,54 +2686,8 @@ class HardwareWidget(QWidget):
 
     # -------- laser aiming calibration --------
     def run_calibration(self):
-        if self.core is None or self.daq is None or self.collector is None:
-            self.status.setText("Status: not connected")
-            return
-        if self.transformer is None:
-            self.status.setText("Status: no transformer loaded")
-            return
-
-        N = int(self.cal_n_input.value())
-        exp = float(self.cal_exp_input.value())
-        max_volts = float(self.cal_volts_input.value())
-        grid = int(self.cal_grid_input.value())
-        thres = float(self.cal_thres_input.value())
-
-        log = LogWindow(title="Calibration log", show_progress=True)
-        self._show_plot(log)
-        log.start_progress("Preparing calibration")
-
-        self.status.setText("Status: calibrating...")
-        self.repaint()
-
-        try:
-            self.calibrator = Calibrator(
-                self.core, self.daq, self.transformer, self.collector,
-                repeats=N, exposure=exp, max_volts=max_volts,
-            )
-            with _StdoutRedirector(log):
-                self.calibration_ds = self.calibrator.calibrate(
-                    grid,
-                    threshold=thres,
-                    plot=False,
-                    progress_callback=log.update_progress,
-                )
-
-            log.append("\n--- calibration complete ---\n")
-
-            plot_win = CalibrationPlotWindow(
-                self.calibration_ds,
-                title="Calibration result",
-                spectral_calibration=self.spectral_calibration,
-            )
-            self._show_plot(plot_win)
-            log.finish_progress("Calibration complete")
-
-            self.status.setText("Status: calibration done OK")
-        except Exception as e:
-            log.fail_progress("Calibration failed")
-            log.append(f"\n--- calibration failed: {e} ---\n")
-            self.status.setText(f"Status: calibration failed -- {e}")
+        """Snapshot settings and start the shared, stoppable workflow."""
+        return start_calibration(self)
 
     # -------- recalibration --------
     def open_selector(self):
@@ -2790,290 +2747,13 @@ class HardwareWidget(QWidget):
 
     # -------- collect reference spectra --------
     def collect_reference(self):
-        if self.core is None or self.daq is None or self.collector is None:
-            self.status.setText("Status: not connected")
-            return
-        if self.transformer is None:
-            self.status.setText("Status: no transformer loaded")
-            return
-        if len(self.viewer.layers) == 0:
-            self.status.setText("Status: no layer to read point from")
-            return
-
-        name = self.ref_name_input.text().strip()
-        if not name:
-            self.status.setText("Status: enter a name for the reference")
-            return
-
-        exp = float(self.ref_exp_input.value())
-        N = int(self.ref_n_input.value())
-        search_range = float(self.ref_range_input.value())
-        search_pts = int(self.ref_pts_input.value())
-
-        self.status.setText("Status: collecting reference spectra...")
-        self.repaint()
-
-        log = LogWindow(title="Reference collection log")
-        self._show_plot(log)
-
-        try:
-            pt, point_index = self._raman_point_from_active_layer()
-
-            volts = self._pt_to_volts(pt)
-            volts_tiled = np.array([volts[0] for _ in range(N)])
-
-            with _StdoutRedirector(log):
-                focusZ, coarse_raman, all_raman = autofocus_w_bkd(
-                    self.core, self.daq, self.collector, volts_tiled,
-                    search_range=search_range,
-                    search_pts=search_pts,
-                    exposure=exp,
-                )
-            self.core.setZPosition(focusZ)
-
-            zs = np.linspace(-search_range, search_range, search_pts)
-
-            win = ReferenceSpectraWindow(
-                all_raman,
-                zs,
-                title=f"Reference spectra: {name}",
-                spectral_calibration=self.spectral_calibration,
-            )
-            self._show_plot(win)
-
-            os.makedirs("reference", exist_ok=True)
-            uid = str(uuid.uuid1())[:8]
-
-            ds = xr.Dataset(
-                {
-                    "spec": (["z", "n", "pixel"], all_raman),
-                },
-                coords={
-                    "z":        ("z",  zs),
-                    "x":        pt[1],
-                    "y":        pt[0],
-                    "exposure": exp,
-                },
-            )
-
-            zarr_path = f"reference/{name}_{uid}.zarr"
-            ds.to_zarr(zarr_path)
-
-            log.append(f"\n--- saved to {zarr_path} ---\n")
-            self.status.setText(f"Status: reference saved ({zarr_path}) OK")
-
-        except Exception as e:
-            log.append(f"\n--- reference collection failed: {e} ---\n")
-            self.status.setText(
-                f"Status: reference collection failed -- {e}"
-            )
+        """Snapshot settings and start the shared, stoppable workflow."""
+        return start_reference(self)
 
     # -------- spatial mapping --------
     def run_grid_scan(self):
-        if self.core is None or self.daq is None or self.collector is None:
-            self.status.setText("Status: not connected")
-            return
-        if self.transformer is None:
-            self.status.setText("Status: no transformer loaded")
-            return
-        if len(self.viewer.layers) == 0:
-            self.status.setText("Status: no layer to read shape from")
-            return
-
-        file_name = self.scan_name_input.text().strip()
-        if not file_name:
-            self.status.setText("Status: enter a file name")
-            return
-
-        exp = float(self.scan_exp_input.value())
-        N = int(self.scan_n_input.value())
-        z_offset = float(self.scan_z_input.value())
-        do_zscan = self.scan_zscan_check.isChecked()
-
-        if do_zscan:
-            z_half = float(self.scan_zrange_input.value())
-            z_steps = int(self.scan_zsteps_input.value())
-            z_range = np.linspace(-z_half, z_half, z_steps)
-        else:
-            z_range = np.array([0.0])
-
-        extra_channels = []
-        seen = set()
-        for entry in self.channel_rows:
-            if not entry["combo"].isEnabled():
-                continue
-            ch = entry["combo"].currentText()
-            if not ch or ch in seen:
-                continue
-            seen.add(ch)
-            extra_channels.append((ch, float(entry["exp"].value())))
-
-        log = LogWindow(title="Grid scan log")
-        self._show_plot(log)
-
-        self.status.setText("Status: grid scanning...")
-        self.repaint()
-
-        try:
-            import xarray as xr
-            from datetime import datetime
-
-            with _StdoutRedirector(log):
-                shapes = self.viewer.layers.selection.active
-                if shapes is None or not isinstance(shapes, napari.layers.Shapes):
-                    raise RuntimeError(
-                        "Select a Shapes layer and draw a rectangle first."
-                    )
-                shape0 = snapshot_scan_shape(shapes)
-
-                x_min = float(np.min(shape0[:, 0]))
-                x_max = float(np.max(shape0[:, 0]))
-                y_min = float(np.min(shape0[:, 1]))
-                y_max = float(np.max(shape0[:, 1]))
-                x = np.linspace(x_min, x_max, N)
-                y = np.linspace(y_min, y_max, N)
-                Xg, Yg = np.meshgrid(x, y)
-                grid = np.column_stack([Xg.ravel(), Yg.ravel()])
-
-                print(f"Grid: {N}x{N} = {grid.shape[0]} points")
-                if do_zscan:
-                    print(
-                        f"Z-scan: {len(z_range)} planes, "
-                        f"range [{z_range[0]:.1f}, {z_range[-1]:.1f}] um"
-                    )
-
-                self._set_scan_imaging_channel()
-                self.core.setExposure(10)
-                BF = self.core.snap()
-
-                extra_imgs = {}
-                for ch, ch_exp in extra_channels:
-                    print(f"Snapping {ch} at {ch_exp:.0f} ms")
-                    self.core.setConfig("Channel", ch)
-                    self.core.setExposure(ch_exp)
-                    extra_imgs[ch] = self.core.snap()
-
-                self.daq.galvo.stop()
-                self.daq.galvo.start()
-                currentz = self.core.getPosition()
-                base_z = currentz - z_offset
-                self._set_scan_raman_mode(True)
-
-                X_img, Y_img = self._get_image_xy()
-                volts = self.transformer.BF_to_volts(
-                    grid / np.array([Y_img, X_img]), max_volts=1.8
-                )
-                self.core.stopSequenceAcquisition()
-                self.core.setExposure(1)
-
-                all_specs = []
-                all_BF_z = []
-                for i, dz in enumerate(z_range):
-                    self.core.setPosition(base_z + dz)
-                    print(
-                        f"  z-plane {i+1}/{len(z_range)}: "
-                        f"dz={dz:+.2f} um, collecting "
-                        f"{grid.shape[0]} spectra..."
-                    )
-                    specs = self.collector.collect_spectra_pts(volts, exp)
-                    all_specs.append(specs)
-
-                    if do_zscan:
-                        self._set_scan_raman_mode(False)
-                        self._set_scan_imaging_channel()
-                        self.core.setExposure(10)
-                        BF_z = self.core.snap()
-                        all_BF_z.append(BF_z)
-                        self._set_scan_raman_mode(True)
-                        self.core.setExposure(1)
-
-                self._set_scan_raman_mode(False)
-                self.core.setPosition(currentz)
-                self._set_scan_imaging_channel()
-                self.core.setExposure(10)
-                end_BF = self.core.snap()
-
-                if do_zscan:
-                    specs_stack = np.stack(all_specs, axis=0)
-                    BF_stack = np.stack(all_BF_z, axis=0)
-                    data_vars = {
-                        "laser_pos": xr.DataArray(
-                            volts, dims=("idx", "volt")
-                        ),
-                        "grid_pos": xr.DataArray(
-                            grid, dims=("idx", "xy")
-                        ),
-                        "specs": xr.DataArray(
-                            specs_stack, dims=("z", "idx", "spec_dim")
-                        ),
-                        "z_range": xr.DataArray(
-                            z_range, dims=("z",)
-                        ),
-                        "BF": xr.DataArray(BF, dims=("Y", "X")),
-                        "BF_z": xr.DataArray(
-                            BF_stack, dims=("z", "Y", "X")
-                        ),
-                        "end_BF": xr.DataArray(end_BF, dims=("Y", "X")),
-                    }
-                    for ch, img in extra_imgs.items():
-                        data_vars[ch] = xr.DataArray(img, dims=("Y", "X"))
-
-                    ds = xr.Dataset(data_vars)
-                    ds.attrs["time"] = str(datetime.now())
-                    ds.attrs["raman_exposure_ms"] = exp
-                    ds.attrs["z_offset"] = z_offset
-                    ds.attrs["z_range_min"] = float(z_range[0])
-                    ds.attrs["z_range_max"] = float(z_range[-1])
-                    ds.attrs["z_steps"] = len(z_range)
-                    ds.attrs["channel_exposures_ms"] = {
-                        ch: ch_exp for ch, ch_exp in extra_channels
-                    }
-
-                    uid = uuid.uuid4().hex[:8]
-                    zarr_name = f"grid_scan_z_{file_name}_{uid}.zarr"
-                else:
-                    data_vars = {
-                        "laser_pos": xr.DataArray(
-                            volts, dims=("idx", "volt")
-                        ),
-                        "grid_pos": xr.DataArray(
-                            grid, dims=("idx", "volt")
-                        ),
-                        "specs": xr.DataArray(
-                            all_specs[0], dims=("N", "spec_dim")
-                        ),
-                        "BF": xr.DataArray(BF, dims=("Y", "X")),
-                        "end_BF": xr.DataArray(end_BF, dims=("Y", "X")),
-                    }
-                    for ch, img in extra_imgs.items():
-                        data_vars[ch] = xr.DataArray(img, dims=("Y", "X"))
-
-                    ds = xr.Dataset(data_vars)
-                    ds.attrs["time"] = str(datetime.now())
-                    ds.attrs["raman_exposure_ms"] = exp
-                    ds.attrs["channel_exposures_ms"] = {
-                        ch: ch_exp for ch, ch_exp in extra_channels
-                    }
-
-                    uid = uuid.uuid4().hex[:8]
-                    zarr_name = f"grid_scan_data_{file_name}_{uid}.zarr"
-
-                ds.to_zarr(zarr_name)
-                print(f"Saved grid scan to {zarr_name}")
-
-            self.scan_ds = ds
-
-            win = GridScanPlotWindow(
-                ds,
-                title=f"Grid scan: {file_name}",
-                spectral_calibration=self.spectral_calibration,
-            )
-            self._show_plot(win)
-
-            self.status.setText(f"Status: grid scan saved -> {zarr_name}")
-        except Exception as e:
-            log.append(f"\n--- grid scan failed: {e} ---\n")
-            self.status.setText(f"Status: grid scan failed -- {e}")
+        """Snapshot settings and start the shared, stoppable workflow."""
+        return start_grid_scan(self)
 
     # -------- automated cell selection --------
     def add_mask(self):
@@ -3840,6 +3520,9 @@ class HardwareWidget(QWidget):
     def shutdown_hardware(self):
         """Release MMCore devices before the Napari process can linger."""
         if self._hardware_shutdown_started:
+            return
+        if not self._acquisition_jobs.stop_and_wait():
+            print("[shutdown] acquisition still stopping; devices remain connected")
             return
         self._hardware_shutdown_started = True
 

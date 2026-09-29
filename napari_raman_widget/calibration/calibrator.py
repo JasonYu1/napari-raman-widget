@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import time
 import uuid
-from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -20,9 +19,8 @@ from scipy.ndimage import binary_dilation, center_of_mass
 from skimage.measure import label
 from tqdm.auto import tqdm
 
+from ..acquisition.control import CancelCheck, ProgressCallback, check_cancelled
 from .coordinate_transform import CoordTransformer
-
-ProgressCallback = Callable[[int, int, str], None]
 
 __all__ = [
     "Calibrator",
@@ -78,8 +76,13 @@ class Calibrator:
         relative_positions: np.ndarray | None = None,
         save_directory: str | Path = ".",
         progress_callback: ProgressCallback | None = None,
+        cancel_check: CancelCheck | None = None,
     ) -> xr.Dataset:
-        """Collect images and spectra at specified galvo voltages."""
+        """Collect images and spectra at specified galvo voltages.
+
+        Stop requests take effect between complete camera acquisitions.
+        Cancelled acquisition data is not saved as a complete calibration.
+        """
         volts = np.asarray(volts, dtype=float)
 
         if volts.ndim != 2 or volts.shape[1] != 2:
@@ -96,6 +99,7 @@ class Calibrator:
                     "relative_positions must have the same shape as volts."
                 )
 
+        check_cancelled(cancel_check)
         self.daq._galvo.out_stream.output_buf_size = 1000
         self.daq._galvo.timing.cfg_samp_clk_timing(
             1e4,
@@ -108,6 +112,8 @@ class Calibrator:
         )
         accepted_volts = volts[~outside_range]
         acquisition_total = len(accepted_volts)
+        if acquisition_total == 0:
+            raise ValueError("No calibration points are inside the voltage range.")
         progress_total = acquisition_total + 2
 
         if progress_callback is not None:
@@ -120,14 +126,15 @@ class Calibrator:
         images = []
         spectra = []
 
-        self.core.setAutoShutter(False)
-
         try:
+            check_cancelled(cancel_check)
+            self.core.setAutoShutter(False)
             for point_index, voltage_xy in enumerate(tqdm(
                 accepted_volts,
                 desc="Collecting calibration data",
                 disable=progress_callback is not None,
             ), start=1):
+                check_cancelled(cancel_check)
                 repeated_voltages = np.tile(
                     voltage_xy,
                     (self.N, 1),
@@ -139,6 +146,7 @@ class Calibrator:
                 )
 
                 spectra.append(spectrum)
+                check_cancelled(cancel_check)
                 images.append(self.core.snap())
                 time.sleep(0.1)
 
@@ -149,9 +157,11 @@ class Calibrator:
                         "Collecting calibration points "
                         f"({point_index}/{acquisition_total})",
                     )
+                check_cancelled(cancel_check)
         finally:
             self.core.setAutoShutter(True)
 
+        check_cancelled(cancel_check)
         if progress_callback is not None:
             progress_callback(
                 acquisition_total,
@@ -162,6 +172,7 @@ class Calibrator:
         images = np.asarray(images)
         spectra = np.asarray(spectra)
 
+        check_cancelled(cancel_check)
         dataset = xr.Dataset(
             {
                 "laser_pos": xr.DataArray(
@@ -198,6 +209,7 @@ class Calibrator:
                 "Calibration data processed",
             )
 
+        check_cancelled(cancel_check)
         save_directory = Path(save_directory)
         save_directory.mkdir(
             parents=True,
@@ -216,6 +228,7 @@ class Calibrator:
                 "Saving calibration dataset",
             )
 
+        check_cancelled(cancel_check)
         dataset.to_zarr(save_path)
         print(f"Saved calibration dataset to {save_path}")
 
@@ -235,15 +248,18 @@ class Calibrator:
         plot: bool = True,
         save_directory: str | Path = ".",
         progress_callback: ProgressCallback | None = None,
+        cancel_check: CancelCheck | None = None,
     ) -> xr.Dataset:
         """Acquire a grid of Raman calibration measurements."""
         from raman_mda_engine.aiming import SimpleGridSource
 
+        check_cancelled(cancel_check)
         self.daq.galvo.stop()
         self.core.setConfig("Channel", "RM")
-        self.core.setShutterOpen("Fluoshutter", True)
 
         try:
+            check_cancelled(cancel_check)
+            self.core.setShutterOpen("Fluoshutter", True)
             width = self.core.getImageWidth()
             height = self.core.getImageHeight()
 
@@ -267,6 +283,7 @@ class Calibrator:
                 max_volts=self.max_volts,
             )
 
+            check_cancelled(cancel_check)
             self.core.stopSequenceAcquisition()
             self.core.setExposure(1)
 
@@ -276,6 +293,7 @@ class Calibrator:
                 relative_positions=pixel_positions,
                 save_directory=save_directory,
                 progress_callback=progress_callback,
+                cancel_check=cancel_check,
             )
         finally:
             self.core.setShutterOpen(

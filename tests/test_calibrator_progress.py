@@ -11,6 +11,7 @@ import numpy as np
 import xarray as xr
 
 from napari_raman_widget.calibration.calibrator import Calibrator
+from napari_raman_widget.acquisition.control import AcquisitionCancelled
 
 
 class _Timing:
@@ -120,6 +121,7 @@ class CalibratorProgressTests(unittest.TestCase):
         )
         result = xr.Dataset()
         callback = Mock()
+        cancel_check = Mock(return_value=False)
         calibrator.collect_calibration_images = Mock(return_value=result)
 
         aiming = types.ModuleType("raman_mda_engine.aiming")
@@ -141,6 +143,7 @@ class CalibratorProgressTests(unittest.TestCase):
                     N=1,
                     plot=False,
                     progress_callback=callback,
+                    cancel_check=cancel_check,
                 ),
                 result,
             )
@@ -151,6 +154,55 @@ class CalibratorProgressTests(unittest.TestCase):
             ],
             callback,
         )
+        self.assertIs(
+            calibrator.collect_calibration_images.call_args.kwargs["cancel_check"],
+            cancel_check,
+        )
+
+    def test_cancelled_calibration_restores_auto_shutter_without_saving(self):
+        calibrator, core, collector = self.make_calibrator()
+        events = []
+
+        def on_progress(*event):
+            events.append(event)
+
+        with patch(
+            "napari_raman_widget.calibration.calibrator.time.sleep"
+        ), patch.object(xr.Dataset, "to_zarr") as save:
+            with self.assertRaises(AcquisitionCancelled):
+                calibrator.collect_calibration_images(
+                    np.zeros((3, 2)), threshold=1,
+                    progress_callback=on_progress,
+                    cancel_check=lambda: bool(events and events[-1][0] == 1),
+                )
+        self.assertEqual(len(collector.voltages), 1)
+        self.assertEqual(core.snap_count, 1)
+        self.assertEqual(core.auto_shutter, [False, True])
+        self.assertEqual([event[0] for event in events], [0, 1])
+        save.assert_not_called()
+
+    def test_stop_before_save_does_not_write_or_report_complete(self):
+        calibrator, core, _ = self.make_calibrator()
+        events = []
+
+        def on_progress(*event):
+            events.append(event)
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch(
+            "napari_raman_widget.calibration.calibrator.time.sleep"
+        ), patch.object(xr.Dataset, "to_zarr") as save:
+            with self.assertRaises(AcquisitionCancelled):
+                calibrator.collect_calibration_images(
+                    np.zeros((2, 2)), threshold=1,
+                    save_directory=temp_dir,
+                    progress_callback=on_progress,
+                    cancel_check=lambda: bool(
+                        events and events[-1][2] == "Saving calibration dataset"
+                    ),
+                )
+        self.assertEqual(core.auto_shutter, [False, True])
+        self.assertFalse(any(completed == total for completed, total, _ in events))
+        save.assert_not_called()
 
 
 if __name__ == "__main__":

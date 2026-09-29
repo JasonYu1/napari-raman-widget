@@ -11,6 +11,8 @@ import numpy as np
 from scipy.interpolate import interp1d
 from tqdm.auto import tqdm
 
+from .control import AcquisitionCancelled, CancelCheck, ProgressCallback, check_cancelled
+
 __all__ = [
     "autofocus_w_bkd",
     "autofocus_w_raman",
@@ -461,6 +463,8 @@ def autofocus_w_bkd(
     search_range: float = 20,
     search_pts: int = 15,
     exposure: float = 1000,
+    progress_callback: ProgressCallback | None = None,
+    cancel_check: CancelCheck | None = None,
 ) -> tuple[
     float,
     np.ndarray,
@@ -470,7 +474,10 @@ def autofocus_w_bkd(
 
     This routine records spectra but does not choose a final focus
     position. The caller may analyze the returned data and then restore
-    or update the Z position.
+    or update the Z position. On cancellation or error the original Z is
+    restored and the shutter is closed. Cancellation is checked between
+    complete spectral batches, not during a camera exposure. Progress
+    reports completed Z positions rather than individual repeated spectra.
 
     Returns
     -------
@@ -509,6 +516,7 @@ def autofocus_w_bkd(
             "volts must have shape (N, 2)."
         )
 
+    check_cancelled(cancel_check)
     initial_z = try_get_z_position(
         core
     )
@@ -522,60 +530,70 @@ def autofocus_w_bkd(
     all_spectra = []
     shutter_opened = False
 
-    try_stop_sequence_acquisition(
-        core
-    )
-    daq.galvo.stop()
-    try_set_config(
-        core,
-        "Channel",
-        "RM",
-    )
+    if progress_callback is not None:
+        progress_callback(0, search_pts, "Collecting reference spectra")
 
     try:
-        try_set_shutter_open(
+        check_cancelled(cancel_check)
+        try_stop_sequence_acquisition(core)
+        daq.galvo.stop()
+        try_set_config(
             core,
-            "Fluoshutter",
-            True,
+            "Channel",
+            "RM",
         )
-        shutter_opened = True
-
-        for z_offset in tqdm(
-            z_offsets,
-            desc="Collecting reference spectra",
-        ):
-            try_set_z_position(
-                core,
-                initial_z + z_offset,
-            )
-
-            spectra = (
-                collector.collect_spectra_pts(
-                    volts,
-                    exposure,
-                )
-            )
-            spectra = np.asarray(
-                spectra
-            )
-
-            mean_spectra.append(
-                np.mean(
-                    spectra,
-                    axis=0,
-                )
-            )
-            all_spectra.append(
-                spectra
-            )
-
-    finally:
-        if shutter_opened:
+        try:
+            check_cancelled(cancel_check)
+            # Also attempt closure if opening succeeded but its wait failed.
+            shutter_opened = True
             try_set_shutter_open(
                 core,
                 "Fluoshutter",
-                False,
+                True,
             )
+
+            for point_index, z_offset in enumerate(tqdm(
+                z_offsets,
+                desc="Collecting reference spectra",
+                disable=progress_callback is not None,
+            ), start=1):
+                check_cancelled(cancel_check)
+                try_set_z_position(
+                    core,
+                    initial_z + z_offset,
+                )
+                check_cancelled(cancel_check)
+                spectra = np.asarray(
+                    collector.collect_spectra_pts(volts, exposure)
+                )
+
+                mean_spectra.append(np.mean(spectra, axis=0))
+                all_spectra.append(spectra)
+                if progress_callback is not None:
+                    progress_callback(
+                        point_index,
+                        search_pts,
+                        "Collecting reference spectra "
+                        f"({point_index}/{search_pts} Z positions)",
+                    )
+                check_cancelled(cancel_check)
+
+        finally:
+            if shutter_opened:
+                try_set_shutter_open(
+                    core,
+                    "Fluoshutter",
+                    False,
+                )
+    except BaseException as error:
+        if isinstance(error, AcquisitionCancelled) and all_spectra:
+            error.partial_result = {
+                "initial_z": initial_z,
+                "z_offsets": z_offsets[:len(all_spectra)].copy(),
+                "all_spectra": np.asarray(all_spectra),
+            }
+        try_set_z_position(core, initial_z)
+        raise
 
     return (
         initial_z,

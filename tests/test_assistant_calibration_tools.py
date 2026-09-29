@@ -194,7 +194,8 @@ class AssistantCalibrationToolTests(unittest.TestCase):
         )
         self.assertEqual(result["log"]["recent_text"], "6789")
         self.assertTrue(result["log"]["truncated"])
-        self.assertIn("Qt main thread", result["synchronous_constraint"])
+        self.assertIn("background worker", result["synchronous_constraint"])
+        self.assertIn("delivered to the UI", result["synchronous_constraint"])
 
         show_plot(
             self.owner,
@@ -218,6 +219,63 @@ class AssistantCalibrationToolTests(unittest.TestCase):
             )
         )
         self.assertEqual(complete["progress"]["state"], "complete")
+
+    def test_full_counts_remain_busy_or_stopping_until_worker_acknowledges(self):
+        log = show_plot(
+            self.owner, LogWindow("Calibration log", show_progress=True)
+        )
+        log.start_progress("Preparing calibration", cancellable=True)
+        log.update_progress(5, 5, "Calibration dataset saved; restoring hardware")
+
+        busy = json.loads(query_calibration_progress(self.owner, {}))
+        self.assertEqual(busy["progress"]["state"], "busy")
+        self.assertEqual(busy["progress"]["completed"], 5)
+        self.assertEqual(busy["progress"]["total"], 5)
+
+        log.request_stop()
+        stopping = json.loads(query_calibration_progress(self.owner, {}))
+        self.assertEqual(stopping["progress"]["state"], "stopping")
+        self.assertEqual(stopping["progress"]["completed"], 5)
+
+        log.cancel_progress("Calibration stopped")
+        stopped = json.loads(query_calibration_progress(self.owner, {}))
+        self.assertEqual(stopped["progress"]["state"], "stopped")
+        self.assertEqual(stopped["progress"]["display_format"], "Stopped")
+        state = get_calibration_state(self.owner)
+        self.assertEqual(
+            state["latest_calibration_log"]["progress"]["state"], "stopped"
+        )
+
+    def test_explicit_terminal_states_override_progress_counter(self):
+        log = show_plot(
+            self.owner, LogWindow("Calibration log", show_progress=True)
+        )
+        log.progress_bar.setRange(0, 5)
+        for lifecycle, value in (("failed", 5), ("stopped", 5), ("complete", 3)):
+            with self.subTest(lifecycle=lifecycle):
+                log._progress_state = lifecycle
+                log.progress_bar.setValue(value)
+                result = json.loads(query_calibration_progress(self.owner, {}))
+                self.assertEqual(result["progress"]["state"], lifecycle)
+                self.assertEqual(result["progress"]["completed"], value)
+
+    def test_older_logs_without_lifecycle_state_keep_bar_based_fallback(self):
+        log = show_plot(
+            self.owner, LogWindow("Calibration log", show_progress=True)
+        )
+        del log._progress_state
+        log.progress_label.setText("Collecting calibration points")
+        log.progress_bar.setRange(0, 5)
+        for value, display_format, expected in (
+            (2, "%v / %m", "busy"),
+            (5, "%v / %m", "complete"),
+            (5, "Failed", "failed"),
+        ):
+            with self.subTest(expected=expected):
+                log.progress_bar.setValue(value)
+                log.progress_bar.setFormat(display_format)
+                result = json.loads(query_calibration_progress(self.owner, {}))
+                self.assertEqual(result["progress"]["state"], expected)
 
     def test_progress_query_does_not_invent_values_for_arbitrary_logs(self):
         calibration_log = show_plot(self.owner, LogWindow("Calibration log"))
@@ -314,7 +372,8 @@ class AssistantCalibrationToolTests(unittest.TestCase):
             for action in CALIBRATION_ACTIONS
             if action["name"] == "query_calibration_progress"
         )
-        self.assertIn("synchronous", progress_action["description"])
+        self.assertIn("background worker", progress_action["description"])
+        self.assertIn("without accessing hardware", progress_action["description"])
 
         panel = show_plot(self.owner, self.calibration_panel())
         state = get_calibration_state(self.owner)

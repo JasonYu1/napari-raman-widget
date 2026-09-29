@@ -344,10 +344,13 @@ def _progress_payload(log, *, tail_chars):
         "panel_id": _panel_id(log),
         "panel_title": log.windowTitle(),
         "progress_available": progress_available,
+        # Keep the response key for clients that used the former synchronous
+        # implementation, but describe the worker-backed behavior accurately.
         "synchronous_constraint": (
-            "Calibration currently runs on the Qt main thread. The assistant "
-            "cannot service a query while that thread is busy; this is the "
-            "latest progress state painted before the query could run."
+            "Calibration runs in a background worker. This is the latest "
+            "worker-reported progress delivered to the UI, not a live "
+            "detector query. Completed counts advance at real acquisition "
+            "or processing boundaries; no intermediate progress is estimated."
         ),
     }
     if progress_available:
@@ -355,22 +358,29 @@ def _progress_payload(log, *, tail_chars):
         maximum = int(log.progress_bar.maximum())
         value = int(log.progress_bar.value())
         label = log.progress_label.text()
-        failed = log.progress_bar.format() == "Failed"
         indeterminate = minimum == 0 and maximum == 0
-        waiting = label == "Waiting to start"
-        complete = not failed and not indeterminate and value >= maximum
-        busy = not failed and not waiting and (
-            indeterminate or (value < maximum)
-        )
-        state = (
-            "failed"
-            if failed
-            else "complete"
-            if complete
-            else "busy"
-            if busy
-            else "idle"
-        )
+        lifecycle_state = getattr(log, "_progress_state", None)
+        if lifecycle_state in {"idle", "running", "stopping", "stopped", "complete", "failed"}:
+            # A full counter can still mean "saving" or "restoring hardware".
+            # Only the worker's terminal acknowledgement marks completion.
+            state = "busy" if lifecycle_state == "running" else lifecycle_state
+        else:
+            # Older log panels do not expose an explicit lifecycle state.
+            failed = log.progress_bar.format() == "Failed"
+            waiting = label == "Waiting to start"
+            complete = not failed and not indeterminate and value >= maximum
+            busy = not failed and not waiting and (
+                indeterminate or (value < maximum)
+            )
+            state = (
+                "failed"
+                if failed
+                else "complete"
+                if complete
+                else "busy"
+                if busy
+                else "idle"
+            )
         result["progress"] = {
             "state": state,
             "label": label,
@@ -609,10 +619,12 @@ CALIBRATION_ACTIONS = [
         ],
         "description": (
             "Read the real progress-bar values, stage label, state, and a "
-            "bounded tail of an existing Calibration log. Calibration is "
-            "synchronous on Qt's main thread, so this tool cannot answer while "
-            "that thread is busy; it reports the latest state once the UI can "
-            "service the query and never estimates missing progress."
+            "bounded tail of an existing Calibration log. Calibration runs "
+            "in a background worker; this read-only query uses its latest "
+            "UI-delivered counts without accessing hardware. Stopping means "
+            "cleanup is pending, not stopped or complete, even if the count "
+            "is full. This tool never estimates missing progress or monitors "
+            "the job automatically."
         ),
     },
     {

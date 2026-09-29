@@ -19,7 +19,19 @@ class SpatialMappingTests(unittest.TestCase):
         for filename in ("hardware_widget.py", "demo_widget.py"):
             with self.subTest(filename=filename):
                 source = (package / filename).read_text(encoding="utf-8")
-                self.assertIn("shape0 = snapshot_scan_shape(shapes)", source)
+                self.assertIn("return start_grid_scan(self)", source)
+        workflow = (package / "scan_workflows.py").read_text(encoding="utf-8")
+        self.assertIn("snapshot_scan_shape(shapes, finish_interaction=False)", workflow)
+        self.assertIn("snapshot_scan_shape(shapes)\n", workflow)
+
+    def test_preview_copy_does_not_change_layer_interaction(self):
+        shape = np.array([[0, 0], [0, 3], [2, 3], [2, 0]])
+        layer = _ShapesLayer([shape], selected={0}, mode="select")
+        snapshot = snapshot_scan_shape(layer, finish_interaction=False)
+        self.assertEqual(layer.mode, "select")
+        self.assertEqual(layer.selected_data, {0})
+        shape[0, 0] = 99
+        self.assertEqual(snapshot[0, 0], 0)
 
     def test_snapshots_selected_shape_then_makes_layer_noninteractive(self):
         first = np.array([[0, 0], [0, 1], [1, 1], [1, 0]])

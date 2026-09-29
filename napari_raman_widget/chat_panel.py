@@ -547,6 +547,14 @@ def _h_stop_live(hw, inp):
     return "Live/sequence acquisition stopped."
 
 
+def _h_stop_acquisition(hw, inp):
+    job = getattr(hw, "_acquisition_jobs", None)
+    if job is None or not job.is_running:
+        return "No calibration, axial scan, or grid scan is running."
+    job.request_stop()
+    return "Stop requested; waiting for the current batch and hardware cleanup."
+
+
 def _h_get_image_size(hw, inp):
     x_size, y_size = hw._get_image_xy()
     return (
@@ -1044,6 +1052,18 @@ ACTIONS = [
         ),
     },
     {
+        "name": "stop_acquisition",
+        "label": "Stop calibration or scan",
+        "always_run": True,
+        "handler": _h_stop_acquisition,
+        "params": [],
+        "description": (
+            "Request a safe stop of the running calibration, axial background "
+            "scan, or grid scan after its current batch. Completed axial/grid "
+            "spectra are saved as partial data. Does not stop MDA or live spectra."
+        ),
+    },
+    {
         "name": "stop_live_spectra",
         "label": "Stop live Raman spectra",
         "always_run": True,
@@ -1107,7 +1127,7 @@ ACTIONS = [
             _p("threshold", "cal_thres_input", "float", "Detection threshold."),
         ],
         "description": (
-            "Acquire and save laser-grid calibration data. Opens a progress "
+            "Start background acquisition of laser-grid calibration data. Opens a progress "
             "log and a clickable image/spectrum result. Does not itself fit "
             "the corrected transformer; use the manual selector then "
             "save_recalibrated_model."
@@ -1150,7 +1170,11 @@ ACTIONS = [
                "Axial half-range in um."),
             _p("search_pts", "ref_pts_input", "int", "Number of z-samples."),
         ],
-        "description": "Run an axial background/autofocus scan at the point.",
+        "description": (
+            "Preview an axial background scan at the selected point. The user "
+            "must click Start scan in the review dialog. Acquisition runs in "
+            "the background with measured progress and safe Stop; restores initial Z."
+        ),
     },
 
     # ---- spatial mapping ----
@@ -1178,7 +1202,10 @@ ACTIONS = [
             ),
         ],
         "description": (
-            "Raman-map the rectangle in the last Shapes layer."
+            "Preview a Raman grid over the selected/latest shape in the active "
+            "Shapes layer (bounding box). Shows counts, exposure-only minimum "
+            "duration, and exact output path. Requires Start scan in the review "
+            "dialog, then runs in the background with progress and safe Stop."
         ),
     },
 
@@ -1985,6 +2012,13 @@ class ChatPanel(QWidget):
             return f"Missing parameters for {name}: {sorted(missing)}"
         hw = self.hw
 
+        job = getattr(hw, "_acquisition_jobs", None)
+        if (
+            job is not None and job.is_running
+            and not (action.get("readonly") or action.get("always_run"))
+        ):
+            return "An acquisition is running. Use its Stop control and wait before changing hardware."
+
         # special read-only query
         if name == "get_state":
             return self._read_state()
@@ -2082,6 +2116,15 @@ class ChatPanel(QWidget):
             "plot_workspace": get_plot_workspace_state(hw),
             "calibration": get_calibration_state(hw),
         }
+        job = getattr(hw, "_acquisition_jobs", None)
+        if job is not None:
+            extra_state["acquisition_job"] = {
+                "running": job.is_running,
+                "stage": job.label.text(),
+                "completed": job.bar.value() if job.bar.maximum() > 0 else None,
+                "total": job.bar.maximum() or None,
+                "elapsed": job.elapsed.text(),
+            }
         return (
             f"connected={connected}; status={status!r}; "
             f"selection_ready={selection_ready}; wavelength={wl}; "
