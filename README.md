@@ -18,7 +18,7 @@ optional Assistant tab. Its collapsible sections cover:
 - Running laser aiming calibration
 - Manual recalibration via point selector
 - Collecting reference spectra across an axial Z range
-- Running spatial Raman mapping (grid scan) over a shape
+- Running spatial Raman mapping only inside a closed region of interest (ROI)
 - Automated cell selection inside a mask
 - Running a Raman MDA with fluorescence channels and Z stacks
 
@@ -149,14 +149,89 @@ Dark noise starts as **None** whenever a widget opens, including when an older
 defaults file contains a dark-noise path. Select or collect a dark-noise file
 to use it for the current session, or click **Clear** to return to None.
 
+### Spatial mapping inside an ROI
+
+Spatial mapping always samples **inside the actual closed ROI**, not its
+bounding box. Use a rectangle, ellipse, or polygon in the active Shapes layer;
+concave polygons and rotated or sheared shapes are supported. Select only one
+ROI. If no shape is selected, the most recently drawn shape is used; selecting
+several shapes is rejected. Open lines and paths are not scan regions.
+
+Alternatively, select a **2D Labels layer** and click **Preview grid scan**.
+All non-zero label IDs are included together, regardless of the selected label
+or selected-label-only display setting. Zero-valued background, holes, and gaps
+between objects are excluded. This creates a regular sampling grid inside the
+labels, not one centroid per object. The original Labels layer is never changed.
+
+Labels must have the same pixel dimensions and pixel-to-world transform as the
+camera image. Shared image/label scaling or rotation is supported; mismatched
+or 3D label grids are rejected with an alignment message. The target point count
+is across **all labels together per Z plane**, not per object. Coarse spacing can
+miss small objects; the preview reports how many label IDs have grid points so
+you can increase the target or reduce spacing when needed.
+
+After confirming Start, a read-only **Spatial map points** layer displays the
+exact points used for acquisition, with a `label_id` feature for each point.
+Cancelling the preview does not create a layer. Saved scans include `label_id`
+alongside `grid_pos` and record the source label IDs and all-nonzero selection
+rule; keep the original Labels layer to retain the complete segmentation mask.
+
+Choose one of two **Sampling** modes:
+
+- **Total points:** enter **Target points per Z plane** (default 400).
+  The widget automatically calculates one uniform X/Y grid spacing to obtain
+  approximately that number of points inside the ROI. This is a target, not an
+  exact count or a grid side: clipping the grid to the shape changes how many
+  points fit. Review the target, actual count, and calculated spacing in the
+  preview before starting.
+- **Pixel spacing:** enter equal X/Y spacing in camera pixels (default 10 px).
+  A square lattice is clipped to the ROI, so its shape and spacing determine
+  the actual number of points. The preview reports that count before starting.
+
+Both modes keep all sampling points on a **uniform square lattice** with the
+same X and Y spacing. Total-points mode does not add scattered points or move
+individual points to force an exact count.
+
+Each mode requires at least two points per Z plane for the acquisition/DAQ
+path and supports at most 250,000. Increase the sampling density if a spacing
+choice leaves fewer than two points inside the ROI. The old `N × N` grid-side
+input is no longer used. Both modes work the same way in the hardware and demo
+widgets.
+
+Spacing is measured in **camera-image pixels**, after converting Shapes-layer
+coordinates through the napari layer transforms into the reference image.
+Keep an unambiguous visible 2D Image layer whose dimensions match the camera.
+If multiple matching images are visible, they must have the same transform;
+hide unrelated images if their transforms differ. A visible image with no
+matching camera-sized reference produces an error rather than a guessed
+conversion. Without any visible image, only an untransformed ROI already in
+raw camera-pixel coordinates is accepted. The preview identifies the pixel
+reference and rejects sample points outside the camera image.
+
+The preview overlays the planned points and ROI outline. Saved scan datasets
+retain the actual point coordinates in `grid_pos`, the ROI shape type and
+image-pixel vertices in `roi`, and the pixel-reference/source-layer names.
+Metadata also records `sampling_mode`, actual `points_per_z`, the target
+`requested_points_per_z` when applicable, and `point_spacing_px` (including
+automatically calculated spacing), plus planned/completed spectrum counts.
+This preserves the selected region and sampling settings with the data.
+
 ### Reviewing and stopping acquisitions
 
 Before a **grid scan** or **axial background scan**, a review dialog shows the
-selected image region or point, grid size, Z positions, repeats, total spectrum
-count, and exact output path. The preview uses copied settings and does not
+selected ROI or point, sampling settings, target versus actual points per Z plane, Z
+positions, repeats, total spectrum count, and exact output path. For spatial
+mapping, total spectra equals the actual ROI point count multiplied by the
+number of Z planes. The preview uses copied settings and does not
 acquire data. Choose **Start scan** to proceed or **Cancel** to return; Cancel
 is the default keyboard action. Large grids show a sampled display while the
 summary still counts every planned acquisition point.
+
+Starting a spatial grid scan automatically turns off camera live imaging
+before changing channels/exposure or taking the first image. Demo live mode
+and its image timer stop too. Cancelling the preview leaves live mode unchanged;
+live imaging stays off after the scan, and a live-stop failure prevents the
+scan from starting.
 
 The duration estimate is an **exposure-only lower bound**, not a completion
 prediction. It excludes stage movement, settling, readout, autofocus, processing,

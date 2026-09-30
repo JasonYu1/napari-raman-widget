@@ -169,9 +169,25 @@ HELP = {
     # ============ SPATIAL MAPPING ============
     "scan_name_input": "Label inserted into the saved Zarr filename.",
     "scan_exp_input": "Exposure at every Raman grid coordinate (ms).",
-    "scan_n_input": (
-        "Grid side: an N x N grid = N^2 Raman points per Z plane. Doubling N "
-        "roughly quadruples the point count."
+    "scan_sampling_mode_combo": (
+        "Both modes clip a uniform equal-X/Y square lattice to the selected "
+        "ROI. Total points automatically calculates the spacing for an "
+        "approximate target count per Z plane; Pixel spacing uses your chosen "
+        "spacing. Select one closed rectangle, ellipse, or polygon; at least "
+        "two sample points are required. An active 2D Labels layer instead "
+        "uses all non-zero label pixels; zero background is excluded."
+    ),
+    "scan_total_points_input": (
+        "Target number of Raman points per Z plane (2 to 250,000), not a grid "
+        "side. Uniform X/Y spacing is calculated automatically, then the "
+        "square grid is clipped to the ROI. The actual count is approximate; "
+        "review target versus actual count and calculated spacing in the preview. "
+        "For Labels, the target covers all non-zero labels together, not each label."
+    ),
+    "scan_spacing_input": (
+        "Same X and Y spacing in image pixels for a square sampling lattice "
+        "clipped to the selected ROI. The preview reports the actual count; "
+        "at least two points must fit."
     ),
     "scan_z_input": (
         "Base Raman Z = current Z minus this offset (um). The stage returns to "
@@ -189,9 +205,12 @@ HELP = {
         "Duplicates are ignored; BF is excluded (always captured before/after)."
     ),
     "scan_btn": (
-        "Preview the selected (or newest) shape's bounding-box grid in the "
-        "active Shapes layer, Z positions, spectrum count, exposure-only "
-        "duration, and output path. Start scan confirms acquisition. Stop "
+        "Preview sampling points inside one selected closed rectangle, ellipse, "
+        "or polygon ROI in the active Shapes layer, or all non-zero labels "
+        "in an aligned 2D Labels layer. Shows uniform X/Y spacing, "
+        "target versus actual point count, Z positions, total spectra, exposure-only "
+        "duration, and output path. Start scan turns off camera live mode and "
+        "creates a read-only Points layer for a label-based scan. Stop "
         "waits for the current batch, closes the Raman shutter, restores Z, "
         "and saves completed spectra as an explicitly partial scan."
     ),

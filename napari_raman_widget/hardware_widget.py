@@ -500,9 +500,12 @@ class HardwareWidget(QWidget):
         scan_box = make_collapsible("Spatial mapping", expanded=False)
         scan_layout = QVBoxLayout()
 
-        scan_layout.addWidget(QLabel(
-            "Draw a rectangle in a Shapes layer first, then run."
-        ))
+        scan_hint = QLabel(
+            "Select a Shapes ROI (rectangle, ellipse, or polygon), or a 2D "
+            "Labels layer to scan all non-zero labels. Background is excluded."
+        )
+        scan_hint.setWordWrap(True)
+        scan_layout.addWidget(scan_hint)
 
         scan_name_row = QHBoxLayout()
         scan_name_row.addWidget(QLabel("File name:"))
@@ -520,13 +523,7 @@ class HardwareWidget(QWidget):
         scan_exp_row.addWidget(self.scan_exp_input)
         scan_layout.addLayout(scan_exp_row)
 
-        scan_n_row = QHBoxLayout()
-        scan_n_row.addWidget(QLabel("N (grid side):"))
-        self.scan_n_input = QSpinBox()
-        self.scan_n_input.setRange(2, 500)
-        self.scan_n_input.setValue(20)
-        scan_n_row.addWidget(self.scan_n_input)
-        scan_layout.addLayout(scan_n_row)
+        scan_layout.addWidget(self._make_scan_sampling_controls())
 
         scan_z_row = QHBoxLayout()
         scan_z_row.addWidget(QLabel("Z offset (um):"))
@@ -1509,6 +1506,58 @@ class HardwareWidget(QWidget):
             # transient failure (device busy, reload in progress) -- leave the
             # last good reading up rather than flickering an error.
             pass
+
+    def _make_scan_sampling_controls(self):
+        """Build ROI sampling settings without involving hardware."""
+        controls = QWidget()
+        layout = QVBoxLayout(controls)
+        layout.setContentsMargins(0, 0, 0, 0)
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel("Sampling:"))
+        self.scan_sampling_mode_combo = QComboBox()
+        self.scan_sampling_mode_combo.addItem("Total points", "count")
+        self.scan_sampling_mode_combo.addItem("Pixel spacing", "spacing")
+        mode_row.addWidget(self.scan_sampling_mode_combo)
+        layout.addLayout(mode_row)
+
+        self.scan_count_controls = QWidget()
+        count_row = QHBoxLayout(self.scan_count_controls)
+        count_row.setContentsMargins(0, 0, 0, 0)
+        count_row.addWidget(QLabel("Target points per Z plane:"))
+        self.scan_total_points_input = QSpinBox()
+        self.scan_total_points_input.setRange(2, 250_000)
+        self.scan_total_points_input.setValue(400)
+        count_row.addWidget(self.scan_total_points_input)
+        layout.addWidget(self.scan_count_controls)
+        self.scan_count_hint = QLabel(
+            "Uniform X/Y spacing is chosen automatically. Point count is "
+            "approximate; review target and actual counts before starting."
+        )
+        self.scan_count_hint.setWordWrap(True)
+        layout.addWidget(self.scan_count_hint)
+
+        self.scan_spacing_controls = QWidget()
+        spacing_row = QHBoxLayout(self.scan_spacing_controls)
+        spacing_row.setContentsMargins(0, 0, 0, 0)
+        spacing_row.addWidget(QLabel("Spacing (X and Y):"))
+        self.scan_spacing_input = QDoubleSpinBox()
+        self.scan_spacing_input.setRange(0.01, 100_000.0)
+        self.scan_spacing_input.setDecimals(2)
+        self.scan_spacing_input.setSuffix(" px")
+        self.scan_spacing_input.setValue(10.0)
+        spacing_row.addWidget(self.scan_spacing_input)
+        layout.addWidget(self.scan_spacing_controls)
+        self.scan_sampling_mode_combo.currentIndexChanged.connect(
+            self._update_scan_sampling_fields
+        )
+        self._update_scan_sampling_fields()
+        return controls
+
+    def _update_scan_sampling_fields(self, _index=None):
+        count_mode = self.scan_sampling_mode_combo.currentData() == "count"
+        self.scan_count_controls.setVisible(count_mode)
+        self.scan_count_hint.setVisible(count_mode)
+        self.scan_spacing_controls.setVisible(not count_mode)
 
     def _toggle_zscan_fields(self, checked):
         """Show/hide the z-scan range and steps fields."""

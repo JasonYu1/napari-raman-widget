@@ -15,7 +15,7 @@ from .acquisition.control import AcquisitionCancelled, check_cancelled
 from .calibration import Calibrator
 from .plot_windows import CalibrationPlotWindow, GridScanPlotWindow, ReferenceSpectraWindow
 from .scan_preview import ScanPreviewDialog, build_axial_preview, build_grid_preview
-from .spatial_mapping import snapshot_scan_shape
+from .spatial_mapping import scan_image_reference, snapshot_scan_labels, snapshot_scan_roi, snapshot_scan_shape
 
 
 def _ready(owner):
@@ -182,6 +182,24 @@ def acquire_reference(plan, core, daq, collector, voltages, progress, cancelled,
             "path": plan.output_path, "stopped": stopped}
 
 
+def _stop_grid_live_imaging(owner):
+    """Stop live imaging on the GUI thread before any grid worker starts.
+
+    CMMCorePlus emits sequenceAcquisitionStopped here, allowing napari's live
+    timer and Live buttons to update before exposure/channel changes. The
+    simulator additionally owns a GUI timer that must be explicitly stopped.
+    A stop failure must abort preparation, not race live imaging with a scan.
+    """
+    stop_demo_live = getattr(owner, "_toggle_demo_live", None)
+    if callable(stop_demo_live):
+        stop_demo_live(False)
+    else:
+        owner.core.stopSequenceAcquisition()
+    is_running = getattr(owner.core, "isSequenceRunning", None)
+    if callable(is_running) and is_running():
+        raise RuntimeError("Live imaging is still running; cannot start spatial mapping.")
+
+
 def start_grid_scan(owner):
     if not _ready(owner):
         return
@@ -189,9 +207,23 @@ def start_grid_scan(owner):
         from napari.layers import Shapes
 
         shapes = owner.viewer.layers.selection.active
-        if not isinstance(shapes, Shapes):
-            raise ValueError("Select a Shapes layer and draw a rectangle first.")
-        shape0 = snapshot_scan_shape(shapes, finish_interaction=False)
+        is_shapes = isinstance(shapes, Shapes)
+        if not is_shapes:
+            from napari.layers import Labels
+
+            if not isinstance(shapes, Labels):
+                raise ValueError("Select a Shapes ROI or a 2D Labels layer (all non-zero labels).")
+        width, height = owner._get_image_xy()
+        image_layer = scan_image_reference(owner.viewer, width, height)
+        label_roi = None
+        if is_shapes:
+            roi = snapshot_scan_roi(shapes, image_layer=image_layer)
+            roi_options = dict(shape_type=roi.shape_type, image_layer_name=roi.image_layer_name)
+            shape_yx = roi.vertices_yx
+        else:
+            label_roi = snapshot_scan_labels(shapes, image_layer=image_layer, width=width, height=height)
+            roi_options = dict(label_roi=label_roi)
+            shape_yx = None
         name = owner.scan_name_input.text().strip()
         multi_z = owner.scan_zscan_check.isChecked()
         zs = np.linspace(-owner.scan_zrange_input.value(), owner.scan_zrange_input.value(),
@@ -202,19 +234,36 @@ def start_grid_scan(owner):
             if row["combo"].isEnabled() and channel and channel not in dict(channels):
                 channels.append((channel, float(row["exp"].value())))
         plan = build_grid_preview(
-            shape0, points_per_axis=owner.scan_n_input.value(),
+            shape_yx,
+            sampling_mode=owner.scan_sampling_mode_combo.currentData(),
+            total_points=owner.scan_total_points_input.value(),
+            spacing_px=owner.scan_spacing_input.value(),
             z_offsets_um=zs, exposure_ms=owner.scan_exp_input.value(),
             output_path=_filename(name, "grid_scan_z_" if multi_z else "grid_scan_data_"),
             extra_channels=channels, z_offset_um=owner.scan_z_input.value(), layer_name=shapes.name,
+            **roi_options,
         )
+        grid = np.asarray(plan.points_yx)
+        # Layer affine round-trips can put an edge pixel a few ulps outside
+        # the image. Permit numerical residue without clipping/resampling the
+        # frozen plan, while still rejecting genuinely out-of-frame points.
+        pixel_tolerance = 1e-7
+        if (np.any(grid < -pixel_tolerance)
+                or np.any(grid[:, 0] > height - 1 + pixel_tolerance)
+                or np.any(grid[:, 1] > width - 1 + pixel_tolerance)):
+            raise ValueError("Some scan points are outside the camera image. Move or resize the ROI and preview again.")
         if not _confirm(owner, plan):
             return
+        # The modal preview may have allowed another acquisition to start.
+        # Recheck before stopping a sequence that could now belong to an MDA.
+        if not _ready(owner):
+            return
+        _stop_grid_live_imaging(owner)
         # Only finish drawing after Start; Cancel leaves selection unchanged.
-        snapshot_scan_shape(shapes)
+        if is_shapes:
+            snapshot_scan_shape(shapes)
         core, daq, collector = owner.core, owner.daq, owner.collector
         transformer = owner.transformer
-        width, height = owner._get_image_xy()
-        grid = np.asarray(plan.points_yx)
         is_demo = type(owner).__name__ == "DemoWidget"
         volts = np.full_like(grid, np.nan) if is_demo else transformer.BF_to_volts(
             grid / [height, width], max_volts=1.8,
@@ -236,6 +285,19 @@ def start_grid_scan(owner):
             state = "partial grid scan" if result["stopped"] else "grid scan"
             owner.status.setText(f"Status: {state} saved → {result['path']}")
 
+        if label_roi is not None:
+            # Use the same frozen points as acquisition, not cell centroids.
+            # Keep the source Labels layer and selection intact for repeat scans.
+            points_layer = owner.viewer.add_points(
+                grid.copy(), name=f"Spatial map points — {plan.layer_name}",
+                affine=np.asarray(label_roi.image_to_world_yx), size=4,
+                face_color="#39a9dc",
+                features={"label_id": np.asarray(plan.point_label_ids, dtype=label_roi.dtype)},
+                metadata={"sampling_mode": plan.sampling_mode, "spacing_px": plan.spacing_px,
+                          "source_labels": plan.layer_name, "all_nonzero_labels": True},
+            )
+            points_layer.editable = False
+            owner.viewer.layers.selection.active = shapes
         owner._acquisition_jobs.start("Grid scan", operation, complete)
     except Exception as error:
         owner.status.setText(f"Status: cannot prepare grid scan — {error}")
@@ -326,6 +388,8 @@ def acquire_grid(plan, core, daq, collector, volts, imaging_channel, raman_mode,
     spectra = np.concatenate(batches, axis=0)
     data = {"laser_pos": (("idx", "volt"), volts),
             "grid_pos": (("idx", "xy"), grid), "BF": (("Y", "X"), before)}
+    if plan.label_roi is not None:
+        data["label_id"] = ("idx", np.asarray(plan.point_label_ids, dtype=plan.label_roi.dtype))
     if stopped:
         # Ragged partial scans contain only real measured samples. No NaN
         # placeholders or unmeasured images are presented as acquired data.
@@ -348,7 +412,23 @@ def acquire_grid(plan, core, daq, collector, volts, imaging_channel, raman_mode,
         "channel_exposures_ms": dict(plan.extra_channels),
         "acquisition_status": "stopped" if stopped else "complete",
         "completed_spectra": completed, "planned_spectra": plan.spectrum_count,
+        "sampling_mode": plan.sampling_mode,
+        "sampling_pattern": "square_grid",
+        "points_per_z": len(plan.points_yx),
+        "requested_points_per_z": plan.requested_point_count,
+        "point_spacing_px": plan.spacing_px,
+        "roi": {"shape_type": plan.shape_type,
+                "vertices_yx": [list(point) for point in plan.roi_vertices_yx],
+                "image_layer": plan.image_layer_name,
+                "source_layer": plan.layer_name, "inside_only": True},
     })
+    if plan.label_roi is not None:
+        dataset.attrs["roi"].update({
+            "selection": "all_nonzero_labels", "background_label": 0,
+            "label_values": list(plan.label_roi.label_values),
+            "label_image_shape": list(plan.label_roi.shape),
+            "sampled_label_count": len(set(plan.point_label_ids)),
+        })
     progress(completed, plan.spectrum_count, "Saving completed grid spectra")
     dataset.to_zarr(plan.output_path, mode="w-")
     print(f"Saved {'partial ' if stopped else ''}grid scan to {plan.output_path}")

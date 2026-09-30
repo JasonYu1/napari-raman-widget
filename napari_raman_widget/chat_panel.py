@@ -66,6 +66,7 @@ MAX_STAGE_STEP_UM = 500.0
 _AF_OBJECTS = ["None", "laser", "software", "quartz", "glass", "cell"]
 _BATCH = ["False", "True"]
 _AIMING_PATTERNS = ["Square", "Circle"]
+_SCAN_SAMPLING_MODES = ["Total points", "Pixel spacing"]
 _DETECTOR_READ_MODES = [
     "Full vertical binning (FVB)",
     "Single-track",
@@ -170,7 +171,9 @@ WIDGET_PARAMS = [
     # Spatial map
     _wp("scan_file_name", "scan_name_input", "text"),
     _wp("scan_raman_exposure_ms", "scan_exp_input", "float"),
-    _wp("scan_grid_side", "scan_n_input", "int"),
+    _wp("scan_sampling_mode", "scan_sampling_mode_combo", "combo", enum=_SCAN_SAMPLING_MODES),
+    _wp("scan_total_points", "scan_total_points_input", "int"),
+    _wp("scan_spacing_px", "scan_spacing_input", "float"),
     _wp("scan_z_offset_um", "scan_z_input", "float"),
     _wp("scan_z_enabled", "scan_zscan_check", "check"),
     _wp("scan_z_half_range_um", "scan_zrange_input", "float"),
@@ -1185,7 +1188,9 @@ ACTIONS = [
         "params": [
             _p("file_name", "scan_name_input", "text", "Output label."),
             _p("exposure_ms", "scan_exp_input", "float", "Raman exposure ms."),
-            _p("grid_side", "scan_n_input", "int", "N x N grid side."),
+            _wp("sampling_mode", "scan_sampling_mode_combo", "combo", enum=_SCAN_SAMPLING_MODES),
+            _wp("total_points", "scan_total_points_input", "int"),
+            _wp("spacing_px", "scan_spacing_input", "float"),
             _p("z_offset", "scan_z_input", "float", "Z offset in um."),
             _wp("z_scan", "scan_zscan_check", "check"),
             _wp("z_half_range_um", "scan_zrange_input", "float"),
@@ -1202,8 +1207,18 @@ ACTIONS = [
             ),
         ],
         "description": (
-            "Preview a Raman grid over the selected/latest shape in the active "
-            "Shapes layer (bounding box). Shows counts, exposure-only minimum "
+            "Preview Raman sampling only inside one selected closed rectangle, "
+            "ellipse, or polygon in the active Shapes layer, or all non-zero "
+            "IDs in an active 2D Labels layer aligned with camera pixels. Zero "
+            "background and holes are excluded; label IDs are not cell centroids. "
+            "Starting creates a read-only Points layer and preserves the labels. Choose Total "
+            "points to automatically calculate uniform X/Y spacing for an "
+            "approximate target count per Z plane, or Pixel spacing to set "
+            "that spacing directly. Both modes clip a uniform square lattice "
+            "to the ROI; the target is across all labels, not per label, and at "
+            "least two points must fit. Small labels can be missed at coarse "
+            "spacing; the preview reports sampled label IDs. Shows target versus "
+            "actual counts, calculated spacing, exposure-only minimum "
             "duration, and exact output path. Requires Start scan in the review "
             "dialog, then runs in the background with progress and safe Stop."
         ),

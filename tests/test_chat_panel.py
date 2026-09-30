@@ -299,6 +299,42 @@ class ChatPanelTests(unittest.TestCase):
             ["channel", "exposure_ms"],
         )
 
+    def test_spatial_scan_modes_replace_grid_side_without_reinterpreting_it(self):
+        actions = ACTIONS_BY_NAME["run_grid_scan"]["params"]
+        scan_params = {param["name"]: param for param in actions}
+        widget_params = {param["name"]: param for param in WIDGET_PARAMS}
+        for action_name, widget_name, attr in (
+            ("sampling_mode", "scan_sampling_mode", "scan_sampling_mode_combo"),
+            ("total_points", "scan_total_points", "scan_total_points_input"),
+            ("spacing_px", "scan_spacing_px", "scan_spacing_input"),
+        ):
+            with self.subTest(action_name=action_name):
+                self.assertEqual(scan_params[action_name]["attr"], attr)
+                self.assertEqual(widget_params[widget_name]["attr"], attr)
+                self.assertEqual(
+                    scan_params[action_name]["description"],
+                    widget_params[widget_name]["description"],
+                )
+        self.assertNotIn("grid_side", scan_params)
+        self.assertNotIn("scan_grid_side", widget_params)
+        self.assertNotIn("scan_n_input", {param["attr"] for param in WIDGET_PARAMS})
+        tools = {tool["name"]: tool for tool in build_tools()}
+        for tool_name, mode_name, old_name in (
+            ("run_grid_scan", "sampling_mode", "grid_side"),
+            ("configure_widget", "scan_sampling_mode", "scan_grid_side"),
+        ):
+            properties = tools[tool_name]["input_schema"]["properties"]
+            self.assertEqual(properties[mode_name]["enum"], ["Total points", "Pixel spacing"])
+            self.assertNotIn(old_name, properties)
+            self.assertFalse(tools[tool_name]["input_schema"]["additionalProperties"])
+        self.assertIn("inside one selected", ACTIONS_BY_NAME["run_grid_scan"]["description"])
+        description = ACTIONS_BY_NAME["run_grid_scan"]["description"]
+        self.assertIn("approximate target count", description)
+        self.assertIn("uniform X/Y spacing", description)
+        self.assertIn("target versus actual counts", description)
+        self.assertNotIn("exact count", description)
+        self.assertIn("approximate", scan_params["total_points"]["description"])
+
     def test_widget_parameter_setter_and_state_reader_use_registry_names(self):
         widget = _FakeWidget()
         by_name = {param["name"]: param for param in WIDGET_PARAMS}
