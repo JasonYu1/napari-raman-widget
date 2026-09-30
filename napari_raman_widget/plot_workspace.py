@@ -8,9 +8,7 @@ from weakref import ref
 
 from qtpy.QtCore import QSize, Qt
 from qtpy.QtWidgets import (
-    QHBoxLayout,
     QLabel,
-    QPushButton,
     QSizePolicy,
     QStackedLayout,
     QTabWidget,
@@ -73,24 +71,13 @@ class PlotWorkspace(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
-        header = QHBoxLayout()
         self.title_label = QLabel("Plots and acquisition logs")
         self.title_label.setTextFormat(Qt.PlainText)
         self.title_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.title_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        header.addWidget(self.title_label, 1)
-        self.float_button = QPushButton("Float")
-        self.float_button.setToolTip(
-            "Float the plot workspace in a separate window. You can also "
-            "drag the dock's title bar out of Napari and back into an edge."
-        )
-        self.float_button.clicked.connect(self._toggle_floating)
-        header.addWidget(self.float_button)
-        self.hide_button = QPushButton("Hide")
-        self.hide_button.setToolTip("Hide the workspace; use Plots to reopen it")
-        self.hide_button.clicked.connect(self._hide_workspace)
-        header.addWidget(self.hide_button)
-        layout.addLayout(header)
+        # Napari owns the dock title bar and its close, hide, and float icons.
+        # Keep only the acquisition title here, without duplicate controls.
+        layout.addWidget(self.title_label)
 
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
@@ -102,8 +89,8 @@ class PlotWorkspace(QWidget):
         self.tabs.currentChanged.connect(self._update_title)
         self.empty_label = QLabel(
             "Your spectra, scans, calibration views, and logs will appear here.\n"
-            "Drag tabs to reorder them. Use the button above to dock "
-            "or float this workspace."
+            "Drag tabs to reorder them. Use the title bar to dock or float "
+            "this workspace; use Plots to reopen it after hiding or closing."
         )
         self.empty_label.setWordWrap(True)
         self.empty_label.setAlignment(Qt.AlignCenter)
@@ -150,6 +137,8 @@ class PlotWorkspace(QWidget):
             if floating:
                 dock.resize(1000, 650)
         self.show()
+        if dock.isMinimized():
+            dock.setWindowState(dock.windowState() & ~Qt.WindowMinimized)
         dock.show()
         dock.raise_()
         self._floating_changed(dock.isFloating())
@@ -159,19 +148,8 @@ class PlotWorkspace(QWidget):
         if self._dock is dock:
             self._dock = None
 
-    def _toggle_floating(self):
-        dock = self.show_in_viewer()
-        if dock is not None:
-            floating = not dock.isFloating()
-            dock.setFloating(floating)
-            if floating:
-                dock.resize(1000, 650)
-            dock.show()
-            dock.raise_()
-
     def _floating_changed(self, floating):
         self._floating = bool(floating)
-        self.float_button.setText("Dock back" if floating else "Float")
 
     def _hide_workspace(self):
         if self._dock is not None:

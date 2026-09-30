@@ -8,7 +8,9 @@ from unittest.mock import Mock
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from qtpy.QtCore import QCoreApplication, QEvent, Qt
-from qtpy.QtWidgets import QApplication, QDockWidget, QMainWindow, QWidget
+from qtpy.QtWidgets import (
+    QApplication, QDockWidget, QMainWindow, QPushButton, QWidget,
+)
 
 from napari_raman_widget.log_window import LogWindow
 from napari_raman_widget.plot_workspace import show_plot, show_plot_workspace
@@ -81,11 +83,9 @@ class PlotWorkspaceTests(unittest.TestCase):
         workspace = self.owner._plot_workspace
         dock = workspace._dock
         self.assertTrue(dock.isFloating())
-        self.assertEqual(workspace.float_button.text(), "Dock back")
-        workspace.float_button.click()
+        dock.setFloating(False)
         self.assertFalse(dock.isFloating())
-        self.assertEqual(workspace.float_button.text(), "Float")
-        workspace.hide_button.click()
+        dock.close()
         self.assertTrue(dock.isHidden())
         self.assertIs(show_plot_workspace(self.owner), workspace)
         self.assertFalse(dock.isHidden())
@@ -98,7 +98,7 @@ class PlotWorkspaceTests(unittest.TestCase):
         dock = workspace._dock
         self.assertTrue(dock.isFloating())
 
-        workspace.float_button.click()
+        dock.setFloating(False)
         show_plot(self.owner, self.panel("Next spectrum"))
 
         self.assertIs(workspace._dock, dock)
@@ -108,7 +108,7 @@ class PlotWorkspaceTests(unittest.TestCase):
     def test_removed_dock_preserves_user_docking_choice(self):
         show_plot(self.owner, self.panel())
         workspace = self.owner._plot_workspace
-        workspace.float_button.click()
+        workspace._dock.setFloating(False)
         self.assertFalse(workspace._dock.isFloating())
         self.window.remove_dock_widget(workspace._dock)
 
@@ -145,10 +145,31 @@ class PlotWorkspaceTests(unittest.TestCase):
     def test_hidden_workspace_does_not_stop_live_acquisition(self):
         panel = show_plot(self.owner, self.panel())
         self.owner._live_raman_window = panel
-        self.owner._plot_workspace.hide_button.click()
+        self.owner._plot_workspace._dock.close()
 
         self.owner._stop_live_raman.assert_not_called()
         self.assertIs(self.owner._live_raman_window, panel)
+
+    def test_workspace_leaves_window_controls_to_native_dock(self):
+        workspace = show_plot_workspace(self.owner)
+
+        self.assertEqual(workspace.findChildren(QPushButton), [])
+        features = workspace._dock.features()
+        self.assertTrue(features & QDockWidget.DockWidgetClosable)
+        self.assertTrue(features & QDockWidget.DockWidgetMovable)
+        self.assertTrue(features & QDockWidget.DockWidgetFloatable)
+
+    def test_plots_restores_minimized_floating_workspace(self):
+        panel = show_plot(self.owner, self.panel())
+        workspace = self.owner._plot_workspace
+        workspace._dock.showMinimized()
+        self.assertTrue(workspace._dock.isMinimized())
+
+        show_plot_workspace(self.owner)
+
+        self.assertFalse(workspace._dock.isMinimized())
+        self.assertTrue(workspace._dock.isFloating())
+        self.assertIs(workspace.tabs.widget(0), panel)
 
     def test_closed_log_can_finish_receiving_output_from_its_producer(self):
         log = show_plot(self.owner, LogWindow("Acquisition log"))

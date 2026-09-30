@@ -112,11 +112,15 @@ floating window. Drag tabs to reorder
 them, and hover over a tab to see its complete acquisition title. The **Plots**
 button at the top of the Raman controls brings the workspace back if hidden.
 
-Click **Dock back** to dock it inside Napari, or **Float** to detach it again.
+The workspace uses Napari's native title-bar controls, just like the Raman
+controls panel: **close**, **hide** (the minimize-style icon), and **float**.
+Drag the floating window's title bar to an edge of Napari to dock it again;
+double-click the title bar to toggle floating. Floating windows use the
+platform's window decorations, so their icons can differ from docked panels.
 New results and hiding/reopening the workspace preserve your docking choice
-for the current session. You can also drag the dock title bar
-to an edge of the main window to change its dock position. **Hide** keeps all
-results available; the close button on an individual tab closes that result.
+for the current session. Hiding or closing the workspace keeps all results
+available through **Plots**; the close button on an individual tab closes
+that result. **Plots** also restores a minimized floating workspace.
 Closing a live spectrum tab requests a stop after the current exposure;
 hiding or floating the workspace lets acquisition continue.
 
