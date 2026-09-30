@@ -59,6 +59,7 @@ from .plot_windows import (
     SpectrumWindow,
 )
 from .position_specs import resolve_position_specs
+from .mda_preflight import confirm_raman_mda
 from .plot_workspace import show_plot, show_plot_workspace
 from .qt_messages import install_qt_message_filter
 from .selection import (
@@ -849,6 +850,12 @@ class HardwareWidget(QWidget):
         mda_box = make_collapsible("Run Raman MDA", expanded=False)
         self.mda_box = mda_box
         mda_layout = QVBoxLayout()
+        self.mda_advanced_box = make_collapsible("Advanced", expanded=False)
+        self.mda_advanced_box.setToolTip(
+            "Show autofocus, position, tracking, and refocus settings. "
+            "Collapsing this section keeps your settings."
+        )
+        mda_advanced_layout = QVBoxLayout()
 
         mda_layout.addWidget(QLabel(
             "Run automated cell selection first; this uses its sources "
@@ -870,7 +877,7 @@ class HardwareWidget(QWidget):
             "N=every Nth; commas=exact; blank=selection"
         )
         afp_row.addWidget(self.mda_afp_input)
-        mda_layout.addLayout(afp_row)
+        mda_advanced_layout.addLayout(afp_row)
 
         imgp_row = QHBoxLayout()
         imgp_row.addWidget(QLabel("Imaging positions:"))
@@ -880,7 +887,7 @@ class HardwareWidget(QWidget):
             "N=every Nth; commas=exact; blank=selection"
         )
         imgp_row.addWidget(self.mda_imgp_input)
-        mda_layout.addLayout(imgp_row)
+        mda_advanced_layout.addLayout(imgp_row)
 
         raman_off_row = QHBoxLayout()
         raman_off_row.addWidget(QLabel("Raman glass offset (um):"))
@@ -901,7 +908,7 @@ class HardwareWidget(QWidget):
         self.mda_af_range_input.setDecimals(2)
         self.mda_af_range_input.setSingleStep(0.5)
         af_range_row.addWidget(self.mda_af_range_input)
-        mda_layout.addLayout(af_range_row)
+        mda_advanced_layout.addLayout(af_range_row)
 
         # Coarse autofocus search points (all autofocus objects)
         search_pts_row = QHBoxLayout()
@@ -911,7 +918,7 @@ class HardwareWidget(QWidget):
         self.mda_search_pts_input.setRange(2, 500)
         self.mda_search_pts_input.setValue(8)
         search_pts_row.addWidget(self.mda_search_pts_input)
-        mda_layout.addLayout(search_pts_row)
+        mda_advanced_layout.addLayout(search_pts_row)
 
         # Laser autofocus FINE scan range
         fine_range_row = QHBoxLayout()
@@ -923,7 +930,7 @@ class HardwareWidget(QWidget):
         self.mda_fine_range_input.setDecimals(2)
         self.mda_fine_range_input.setSingleStep(0.5)
         fine_range_row.addWidget(self.mda_fine_range_input)
-        mda_layout.addLayout(fine_range_row)
+        mda_advanced_layout.addLayout(fine_range_row)
 
         # Laser autofocus FINE scan points
         fine_pts_row = QHBoxLayout()
@@ -933,7 +940,7 @@ class HardwareWidget(QWidget):
         self.mda_fine_pts_input.setRange(2, 500)
         self.mda_fine_pts_input.setValue(8)
         fine_pts_row.addWidget(self.mda_fine_pts_input)
-        mda_layout.addLayout(fine_pts_row)
+        mda_advanced_layout.addLayout(fine_pts_row)
 
         # Show/hide autofocus fields based on the selected autofocus object.
         self.sel_af_combo.currentTextChanged.connect(self._toggle_autofocus_fields)
@@ -945,17 +952,17 @@ class HardwareWidget(QWidget):
         )
         self.mda_seg_track_check.setChecked(False)
         self.mda_seg_track_check.toggled.connect(self._toggle_seg_track_fields)
-        mda_layout.addWidget(self.mda_seg_track_check)
+        mda_advanced_layout.addWidget(self.mda_seg_track_check)
         self.mda_auto_add_cells_check = QCheckBox(
             "Automatically add new cells"
         )
         self.mda_auto_add_cells_check.setChecked(False)
-        mda_layout.addWidget(self.mda_auto_add_cells_check)
+        mda_advanced_layout.addWidget(self.mda_auto_add_cells_check)
         self.mda_suppress_pillars_check = QCheckBox(
             "Exclude rectangular trap pillars from cell targets"
         )
         self.mda_suppress_pillars_check.setChecked(False)
-        mda_layout.addWidget(self.mda_suppress_pillars_check)
+        mda_advanced_layout.addWidget(self.mda_suppress_pillars_check)
         # Seg-track options (shown only when the box is checked)
         seg_ch_row = QHBoxLayout()
         self._seg_ch_label = QLabel("Segment channel:")
@@ -963,7 +970,7 @@ class HardwareWidget(QWidget):
         self.mda_seg_ch_combo = QComboBox()
         self.mda_seg_ch_combo.addItem("BF")
         seg_ch_row.addWidget(self.mda_seg_ch_combo)
-        mda_layout.addLayout(seg_ch_row)
+        mda_advanced_layout.addLayout(seg_ch_row)
         seg_scale_row = QHBoxLayout()
         self._seg_scale_label = QLabel("Image rescale factor:")
         seg_scale_row.addWidget(self._seg_scale_label)
@@ -973,7 +980,7 @@ class HardwareWidget(QWidget):
         self.mda_seg_scale_input.setDecimals(1)
         self.mda_seg_scale_input.setSingleStep(0.5)
         seg_scale_row.addWidget(self.mda_seg_scale_input)
-        mda_layout.addLayout(seg_scale_row)
+        mda_advanced_layout.addLayout(seg_scale_row)
         
         # Cellpose model dropdown
         seg_model_row = QHBoxLayout()
@@ -989,7 +996,7 @@ class HardwareWidget(QWidget):
         if "cyto2" in model_names:
             self.mda_seg_model_combo.setCurrentText("cyto2")
         seg_model_row.addWidget(self.mda_seg_model_combo)
-        mda_layout.addLayout(seg_model_row)
+        mda_advanced_layout.addLayout(seg_model_row)
         # Crop-around-mask dropdown
         seg_crop_row = QHBoxLayout()
         self._seg_crop_label = QLabel("Crop image around mask:")
@@ -997,7 +1004,7 @@ class HardwareWidget(QWidget):
         self.mda_seg_crop_combo = QComboBox()
         self.mda_seg_crop_combo.addItems(["True", "False"])
         seg_crop_row.addWidget(self.mda_seg_crop_combo)
-        mda_layout.addLayout(seg_crop_row)
+        mda_advanced_layout.addLayout(seg_crop_row)
         # Tracking config file
         seg_track_cfg_row = QHBoxLayout()
         self._seg_track_cfg_label = QLabel("Tracking config (.json):")
@@ -1010,7 +1017,7 @@ class HardwareWidget(QWidget):
         self._seg_track_cfg_browse.clicked.connect(self.browse_tracking_cfg)
         seg_track_cfg_row.addWidget(self.mda_track_cfg_input)
         seg_track_cfg_row.addWidget(self._seg_track_cfg_browse)
-        mda_layout.addLayout(seg_track_cfg_row)
+        mda_advanced_layout.addLayout(seg_track_cfg_row)
         # hidden until seg-track is checked
         self._toggle_seg_track_fields(False)
 
@@ -1048,7 +1055,7 @@ class HardwareWidget(QWidget):
         self.mda_refocus_input.setRange(1, 1_000_000)
         self.mda_refocus_input.setValue(1)
         refocus_row.addWidget(self.mda_refocus_input)
-        mda_layout.addLayout(refocus_row)
+        mda_advanced_layout.addLayout(refocus_row)
 
         zrel_row = QHBoxLayout()
         zrel_row.addWidget(QLabel("Z relative (comma-sep um):"))
@@ -1077,6 +1084,9 @@ class HardwareWidget(QWidget):
             lambda: self._add_mda_channel_row()
         )
         mda_layout.addWidget(self.mda_add_channel_btn)
+
+        self.mda_advanced_box.setLayout(mda_advanced_layout)
+        mda_layout.addWidget(self.mda_advanced_box)
 
         mda_btns_row = QHBoxLayout()
         self.run_mda_btn = QPushButton("Run Raman MDA")
@@ -3245,6 +3255,8 @@ class HardwareWidget(QWidget):
 
     # -------- run raman MDA --------
     def run_raman_mda(self):
+        if not confirm_raman_mda(self):
+            return
         if self.core is None:
             self.status.setText("Status: not connected")
             return
@@ -3359,6 +3371,7 @@ class HardwareWidget(QWidget):
             extra_channels.append((ch, float(entry["exp"].value())))
 
         log = LogWindow(title="Raman MDA log")
+        log.append(self._confirmed_mda_summary + "\n\n")
         self._show_plot(log)
 
         self.status.setText("Status: starting Raman MDA...")

@@ -129,6 +129,24 @@ section for baseline subtraction and smoothing. These settings change the
 display only; acquired data stays unchanged. Dataset navigation separates
 time, position, and Z from the spectral processing controls.
 
+In **Acquire > Run Raman MDA**, **Advanced** starts collapsed and holds
+autofocus search ranges/points, autofocus and imaging positions,
+segment-and-track options, and the refocus/segmentation cadence. Collapsing
+it preserves settings. Output, Raman glass offset, exposure, loops, interval,
+Z settings, extra channels, and Run/Stop remain outside Advanced.
+
+**Run Raman MDA** opens a pre-run review before creating output or starting
+hardware. It shows prepared stage positions, current cell/target counts,
+Raman pattern collections, time points, exposure, Z planes, and the resolved
+output folder. **Start acquisition** is disabled when setup is missing,
+settings are invalid, or another acquisition/live mode is running.
+**Back to settings** is the default and keeps your settings without starting.
+The duration is a lower bound from current cell Raman exposures and scheduled
+intervals, not a predicted completion time: imaging, autofocus, tracking,
+motion, readout, and saving add time. Non-empty output folders and intervals
+shorter than the Raman exposure workload are flagged. The confirmed review
+is also copied to the MDA log.
+
 Plot backgrounds are transparent by default so they blend into Napari's theme.
 Check **White background** on a plot for an opaque white canvas; uncheck it
 to restore transparency. Axes and labels adjust for readability.
