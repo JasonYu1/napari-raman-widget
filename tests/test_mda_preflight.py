@@ -49,7 +49,9 @@ class MdaPreflightTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
+        # GitHub's Windows runners can return 8.3 paths (e.g. RUNNER~1).
+        # Match the canonical path displayed by the pre-run review.
+        self.root = Path(temporary.name).resolve()
         self.owner = QWidget()
         self.addCleanup(self.owner.deleteLater)
         owner = self.owner
@@ -190,6 +192,27 @@ class MdaPreflightTests(unittest.TestCase):
             self.review()
         mkdir.assert_not_called()
         makedirs.assert_not_called()
+        self.assertFalse((self.root / "new-run").exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows short-path regression")
+    def test_short_windows_output_path_is_resolved_without_creating_folder(self):
+        import ctypes
+
+        get_short_path = ctypes.windll.kernel32.GetShortPathNameW
+        get_short_path.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint]
+        get_short_path.restype = ctypes.c_uint
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = get_short_path(str(self.root), buffer, len(buffer))
+        if not length or length >= len(buffer):
+            self.skipTest("No short path available for the temporary directory")
+        if os.path.normcase(buffer.value) == os.path.normcase(str(self.root)):
+            self.skipTest("8.3 names are not enabled on this volume")
+        self.owner.mda_dir_input.data = str(Path(buffer.value) / "new-run")
+
+        review = self.review()
+
+        self.assertFalse(review.errors)
+        self.assertEqual(dict(review.rows)["Output folder"], str(self.root / "new-run"))
         self.assertFalse((self.root / "new-run").exists())
 
     def test_demo_explains_ignored_extra_channels(self):
