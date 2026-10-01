@@ -29,7 +29,8 @@ The interface also includes:
 - **AI assistant** - a built-in chat box that maps plain-English commands to
   the panel's existing actions (see [AI assistant](#ai-assistant-chat-panel)).
 - **Dockable plots** - spectra, detector images, scans, calibration views,
-  datasets, and logs share the **Raman Plots** workspace, initially floating.
+  datasets, and logs share the **Raman Plots** workspace, normally a native
+  Napari tab alongside the Raman controls in the same dock area.
 - **Persistent status** - the current acquisition status stays visible below
   the controls while you change tabs or scroll.
 
@@ -107,8 +108,14 @@ On Windows, you can also double-click `launch_demo_napari.bat`.
 
 ### Arranging plots and controls
 
-Results open as tabs in the **Raman Plots** workspace, which starts as a
-floating window. Drag tabs to reorder
+Plots and logs initially open in a native **Raman Plots** tab alongside their
+Raman controls in the same Napari dock area. Demo results similarly use
+**Raman Demo Plots** alongside the demo controls. New results automatically
+bring the plots workspace and its newest result to the front. If the controls
+are floating or standalone, the workspace may open separately instead of
+joining them as a tab.
+
+Inside the workspace, each result has its own tab. Drag these tabs to reorder
 them, and hover over a tab to see its complete acquisition title. The **Plots**
 button at the top of the Raman controls brings the workspace back if hidden.
 
@@ -117,8 +124,9 @@ controls panel: **close**, **hide** (the minimize-style icon), and **float**.
 Drag the floating window's title bar to an edge of Napari to dock it again;
 double-click the title bar to toggle floating. Floating windows use the
 platform's window decorations, so their icons can differ from docked panels.
-New results and hiding/reopening the workspace preserve your docking choice
-for the current session. Hiding or closing the workspace keeps all results
+Move or float the plots independently of the controls. New results and
+hiding/reopening the workspace preserve your chosen location and floating
+state for the current session. Hiding or closing the workspace keeps all results
 available through **Plots**; the close button on an individual tab closes
 that result. **Plots** also restores a minimized floating workspace.
 Closing a live spectrum tab requests a stop after the current exposure;
@@ -237,6 +245,37 @@ Metadata also records `sampling_mode`, actual `points_per_z`, the target
 `requested_points_per_z` when applicable, and `point_spacing_px` (including
 automatically calculated spacing), plus planned/completed spectrum counts.
 This preserves the selected region and sampling settings with the data.
+
+### Raman band and ratio maps
+
+Open a spatial scan result and expand **Raman map**. Select **Band A area**
+and set its lower and upper spectral bounds, or choose **Band A / B ratio**
+and also set Band B's bounds. Click **Apply map** to color the measured points
+over the brightfield image, with a colorbar. **Points only** restores the
+standard point display and is the default for new results.
+
+Use **Colormap** and **Reverse colors** to choose the map's colors. Changes
+update an existing overlay and colorbar immediately, without clicking
+**Apply map** again or changing values or color limits. Your color choice
+persists across Z planes and map modes within that result tab; invalid points
+remain gray.
+
+Bounds use spectral pixels by default. To use cm⁻¹, load an optional
+wavenumber calibration and enable **Show wavenumber**. Band areas integrate
+the raw saved spectra using the trapezoidal rule; units are intensity × pixel
+or intensity × cm⁻¹, while ratios are dimensionless. **Processing** settings
+still affect only the displayed spectrum, not these map values.
+Changing bounds or axis units clears the old map; click **Apply map** again.
+Unit changes preserve the selected detector-bin range. Orange and blue bands
+on the spectrum indicate A and B respectively.
+
+Click a point to inspect its spectrum, and use the Z controls to review other
+planes. The color scale automatically adjusts to the current Z plane.
+Maps color only measured points: they do not interpolate across gaps,
+holes, or unsampled regions. Invalid values, including non-finite samples or
+a ratio denominator at or below 10⁻¹², appear gray and are counted in the map
+status. Mapping does not acquire data or change the saved spectra, and a band
+map alone does not identify a chemical species.
 
 ### Reviewing and stopping acquisitions
 

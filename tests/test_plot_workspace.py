@@ -9,7 +9,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from qtpy.QtCore import QCoreApplication, QEvent, Qt
 from qtpy.QtWidgets import (
-    QApplication, QDockWidget, QMainWindow, QPushButton, QWidget,
+    QApplication, QDockWidget, QMainWindow, QPushButton, QTabBar, QVBoxLayout,
+    QWidget,
 )
 
 from napari_raman_widget.log_window import LogWindow
@@ -24,7 +25,13 @@ class _Window:
     def add_dock_widget(self, panel, **kwargs):
         dock = QDockWidget(kwargs["name"], self.main)
         dock.setWidget(panel)
-        self.main.addDockWidget(Qt.BottomDockWidgetArea, dock)
+        area = {
+            "left": Qt.LeftDockWidgetArea,
+            "right": Qt.RightDockWidgetArea,
+            "top": Qt.TopDockWidgetArea,
+            "bottom": Qt.BottomDockWidgetArea,
+        }[kwargs["area"]]
+        self.main.addDockWidget(area, dock)
         self.docks.append(dock)
         return dock
 
@@ -48,6 +55,13 @@ class PlotWorkspaceTests(unittest.TestCase):
         self.owner._live_raman_window = None
         self.owner._live_raman_context = None
         self.owner._stop_live_raman = Mock()
+        # Napari may wrap plugin content rather than placing it directly in
+        # the dock; exercise discovery through that extra parent as well.
+        container = QWidget()
+        QVBoxLayout(container).addWidget(self.owner)
+        self.owner_dock = QDockWidget("napari-raman", self.window.main)
+        self.owner_dock.setWidget(container)
+        self.window.main.addDockWidget(Qt.RightDockWidgetArea, self.owner_dock)
 
     def tearDown(self):
         self.window.main.close()
@@ -82,6 +96,8 @@ class PlotWorkspaceTests(unittest.TestCase):
         show_plot(self.owner, self.panel())
         workspace = self.owner._plot_workspace
         dock = workspace._dock
+        self.assertFalse(dock.isFloating())
+        dock.setFloating(True)
         self.assertTrue(dock.isFloating())
         dock.setFloating(False)
         self.assertFalse(dock.isFloating())
@@ -96,13 +112,13 @@ class PlotWorkspaceTests(unittest.TestCase):
         show_plot(self.owner, self.panel())
         workspace = self.owner._plot_workspace
         dock = workspace._dock
-        self.assertTrue(dock.isFloating())
+        self.assertFalse(dock.isFloating())
 
-        dock.setFloating(False)
+        dock.setFloating(True)
         show_plot(self.owner, self.panel("Next spectrum"))
 
         self.assertIs(workspace._dock, dock)
-        self.assertFalse(dock.isFloating())
+        self.assertTrue(dock.isFloating())
         self.assertEqual(workspace.tabs.count(), 2)
 
     def test_removed_dock_preserves_user_docking_choice(self):
@@ -126,7 +142,8 @@ class PlotWorkspaceTests(unittest.TestCase):
 
         self.assertIsNot(new_dock, old_dock)
         self.assertIs(workspace._dock, new_dock)
-        self.assertTrue(new_dock.isFloating())
+        self.assertFalse(new_dock.isFloating())
+        self.assertIn(new_dock, self.window.main.tabifiedDockWidgets(self.owner_dock))
         self.assertEqual(len(self.window.docks), 1)
         self.assertIs(workspace.tabs.widget(0), panel)
 
@@ -162,6 +179,7 @@ class PlotWorkspaceTests(unittest.TestCase):
     def test_plots_restores_minimized_floating_workspace(self):
         panel = show_plot(self.owner, self.panel())
         workspace = self.owner._plot_workspace
+        workspace._dock.setFloating(True)
         workspace._dock.showMinimized()
         self.assertTrue(workspace._dock.isMinimized())
 
@@ -170,6 +188,114 @@ class PlotWorkspaceTests(unittest.TestCase):
         self.assertFalse(workspace._dock.isMinimized())
         self.assertTrue(workspace._dock.isFloating())
         self.assertIs(workspace.tabs.widget(0), panel)
+
+    def test_results_tabify_with_own_controls_not_last_plugin_in_area(self):
+        unrelated = QDockWidget("Other plugin", self.window.main)
+        unrelated.setWidget(QWidget())
+        self.window.main.addDockWidget(Qt.RightDockWidgetArea, unrelated)
+        panel = show_plot(self.owner, self.panel())
+        workspace = self.owner._plot_workspace
+        dock = workspace._dock
+
+        self.assertFalse(dock.isFloating())
+        self.assertEqual(self.window.main.dockWidgetArea(dock), Qt.RightDockWidgetArea)
+        self.assertIn(dock, self.window.main.tabifiedDockWidgets(self.owner_dock))
+        self.assertNotIn(dock, self.window.main.tabifiedDockWidgets(unrelated))
+        log = show_plot(self.owner, LogWindow("Acquisition log"))
+        self.assertIs(workspace.tabs.currentWidget(), log)
+        self.assertIs(workspace.tabs.widget(0), panel)
+        self.assertEqual(len(self.window.docks), 1)
+
+    def test_default_uses_actual_controls_area(self):
+        self.window.main.addDockWidget(Qt.LeftDockWidgetArea, self.owner_dock)
+        workspace = show_plot_workspace(self.owner)
+        self.assertEqual(self.window.main.dockWidgetArea(workspace._dock), Qt.LeftDockWidgetArea)
+        self.assertIn(workspace._dock, self.window.main.tabifiedDockWidgets(self.owner_dock))
+
+    def test_new_result_raises_native_plot_tab(self):
+        self.window.main.resize(1000, 800)
+        self.window.main.show()
+        workspace = show_plot_workspace(self.owner)
+        self.owner_dock.raise_()
+        self.app.processEvents()
+        show_plot(self.owner, self.panel())
+        self.app.processEvents()
+        native_bar = next(
+            bar for bar in self.window.main.findChildren(QTabBar)
+            if "napari-raman" in [bar.tabText(i) for i in range(bar.count())]
+        )
+        self.assertEqual(native_bar.tabText(native_bar.currentIndex()), workspace._dock.windowTitle())
+
+    def test_moved_separate_dock_stays_put_for_results_hide_and_native_close(self):
+        show_plot(self.owner, self.panel())
+        workspace = self.owner._plot_workspace
+        dock = workspace._dock
+        self.window.main.addDockWidget(Qt.BottomDockWidgetArea, dock)
+        dock.hide()
+        show_plot(self.owner, self.panel("Another result"))
+        self.assertIs(workspace._dock, dock)
+        self.assertEqual(self.window.main.dockWidgetArea(dock), Qt.BottomDockWidgetArea)
+        self.assertEqual(self.window.main.tabifiedDockWidgets(dock), [])
+
+        self.window.remove_dock_widget(dock)
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        new_dock = workspace.show_in_viewer()
+        self.assertEqual(self.window.main.dockWidgetArea(new_dock), Qt.BottomDockWidgetArea)
+        self.assertEqual(self.window.main.tabifiedDockWidgets(new_dock), [])
+        self.assertEqual(workspace.tabs.count(), 2)
+
+    def test_native_close_restores_users_new_tab_group(self):
+        show_plot(self.owner, self.panel())
+        workspace = self.owner._plot_workspace
+        other = QDockWidget("User chosen neighbor", self.window.main)
+        other.setWidget(QWidget())
+        self.window.main.addDockWidget(Qt.TopDockWidgetArea, other)
+        self.window.main.addDockWidget(Qt.TopDockWidgetArea, workspace._dock)
+        self.window.main.tabifyDockWidget(other, workspace._dock)
+        self.window.remove_dock_widget(workspace._dock)
+        new_dock = workspace.show_in_viewer()
+        self.assertEqual(self.window.main.dockWidgetArea(new_dock), Qt.TopDockWidgetArea)
+        self.assertIn(new_dock, self.window.main.tabifiedDockWidgets(other))
+        self.assertNotIn(new_dock, self.window.main.tabifiedDockWidgets(self.owner_dock))
+
+    def test_native_close_ignores_deleted_tab_peer(self):
+        show_plot(self.owner, self.panel())
+        workspace = self.owner._plot_workspace
+        other = QDockWidget("Temporary neighbor", self.window.main)
+        other.setWidget(QWidget())
+        self.window.main.addDockWidget(Qt.LeftDockWidgetArea, other)
+        self.window.main.addDockWidget(Qt.LeftDockWidgetArea, workspace._dock)
+        self.window.main.tabifyDockWidget(other, workspace._dock)
+        self.window.remove_dock_widget(workspace._dock)
+        other.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        new_dock = workspace.show_in_viewer()
+        self.assertEqual(self.window.main.dockWidgetArea(new_dock), Qt.LeftDockWidgetArea)
+        self.assertEqual(self.window.main.tabifiedDockWidgets(new_dock), [])
+
+    def test_native_close_preserves_floating_choice(self):
+        panel = show_plot(self.owner, self.panel())
+        workspace = self.owner._plot_workspace
+        workspace._dock.setFloating(True)
+        self.window.remove_dock_widget(workspace._dock)
+        new_dock = workspace.show_in_viewer()
+        self.assertTrue(new_dock.isFloating())
+        self.assertIs(workspace.tabs.currentWidget(), panel)
+
+    def test_floating_controls_are_not_moved_by_new_results(self):
+        self.owner_dock.setFloating(True)
+        workspace = show_plot_workspace(self.owner)
+        self.assertTrue(self.owner_dock.isFloating())
+        self.assertFalse(workspace._dock.isFloating())
+        self.assertEqual(self.window.main.dockWidgetArea(workspace._dock), Qt.RightDockWidgetArea)
+        self.assertEqual(self.window.main.tabifiedDockWidgets(workspace._dock), [])
+
+    def test_standalone_controls_fall_back_to_right_dock(self):
+        self.owner.setParent(None)
+        workspace = show_plot_workspace(self.owner)
+        self.assertFalse(workspace._dock.isFloating())
+        self.assertEqual(self.window.main.dockWidgetArea(workspace._dock), Qt.RightDockWidgetArea)
+        self.assertEqual(self.window.main.tabifiedDockWidgets(workspace._dock), [])
 
     def test_closed_log_can_finish_receiving_output_from_its_producer(self):
         log = show_plot(self.owner, LogWindow("Acquisition log"))

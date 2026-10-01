@@ -168,6 +168,61 @@ class FixedYScaleTests(unittest.TestCase):
             for panel in panels:
                 panel.close()
 
+    def test_show_all_sits_beside_axis_calibration_and_remains_functional(self) -> None:
+        for bias in (None, np.ones(11)):
+            with self.subTest(has_spectral_bias=bias is not None):
+                window = SpectrumWindow(
+                    np.arange(22, dtype=float).reshape(2, 11),
+                    spectral_bias=bias,
+                )
+                try:
+                    grid = window.view_controls_group.layout()
+
+                    def position(control):
+                        return grid.getItemPosition(grid.indexOf(control))
+
+                    toggle = position(window.toggle_btn)
+                    calibrate = position(window.calibration_btn)
+                    self.assertEqual(toggle[0], calibrate[0])
+                    self.assertEqual(toggle[1] + toggle[3], calibrate[1])
+                    self.assertNotEqual(
+                        toggle[0], position(window.view_mode_label)[0]
+                    )
+                    self.assertEqual(
+                        position(window.remove_spectral_bias_check)[0], toggle[0]
+                    )
+                    self.assertEqual(
+                        window.remove_spectral_bias_check.isHidden(), bias is None
+                    )
+                    view_rows = {
+                        position(control)[0] for control in (
+                            window.fix_y_scale_check,
+                            window.show_wavenumber_check,
+                            window.white_background_check,
+                        )
+                    }
+                    self.assertEqual(len(view_rows), 1)
+                    self.assertNotIn(toggle[0], view_rows)
+
+                    self.assertEqual(window.toggle_btn.text(), "Show all")
+                    window.toggle_btn.click()
+                    self.assertEqual(window.toggle_btn.text(), "Show mean")
+                    self.assertEqual(len(window.ax.lines), 2)
+                    window.toggle_btn.click()
+                    self.assertEqual(window.toggle_btn.text(), "Show all")
+                    self.assertEqual(len(window.ax.lines), 1)
+                    window.calibration_btn.click()
+                    self.assertFalse(window.toggle_btn.isEnabled())
+                    window.toggle_btn.click()
+                    self.assertTrue(window._show_mean)
+                    window.cancel_calibration_btn.click()
+                    self.assertTrue(window.toggle_btn.isEnabled())
+                    window.toggle_btn.click()
+                    self.assertEqual(window.toggle_btn.text(), "Show mean")
+                    self.assertEqual(len(window.ax.lines), 2)
+                finally:
+                    window.close()
+
     def test_axis_calibration_forces_pixels_then_restores_preference(
         self,
     ) -> None:

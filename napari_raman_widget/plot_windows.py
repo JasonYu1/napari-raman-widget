@@ -1,5 +1,6 @@
 """Dock-ready Matplotlib panels for calibration, spectra, and scans."""
 import numpy as np
+from napari_raman_widget.band_map_controls import BandMapControls
 from napari_raman_widget.figure_panel import (
     _add_matplotlib_background_control,
     _configure_matplotlib_figure,
@@ -1051,13 +1052,17 @@ class SpectrumWindow(QWidget):
             layout,
             "View",
             [
-                [self.view_mode_label, self.toggle_btn],
+                [self.view_mode_label],
                 [
                     self.fix_y_scale_check,
                     self.show_wavenumber_check,
                     self.white_background_check,
                 ],
-                [self.remove_spectral_bias_check, self.calibration_btn],
+                [
+                    self.remove_spectral_bias_check,
+                    self.toggle_btn,
+                    self.calibration_btn,
+                ],
             ],
         )
         _add_processing_section(
@@ -1567,6 +1572,7 @@ class GridScanPlotWindow(QWidget):
         else:
             self._init_single(ds, title, Figure, FigureCanvasQTAgg,
                               NavigationToolbar2QT)
+        self.band_map_controls.attach()
 
     # ------------------------------------------------------------------ #
     #  Shared helpers                                                      #
@@ -1605,9 +1611,12 @@ class GridScanPlotWindow(QWidget):
             self._on_spectral_axis_changed,
             self._specs.shape[-1],
         )
+        self.band_map_controls = BandMapControls(self)
+        rows.insertWidget(1, self.band_map_controls)
         return rows
 
     def _on_spectral_axis_changed(self, _checked=None):
+        self.band_map_controls.sync_axis()
         self._draw_spec()
         if hasattr(self, "canvas"):
             self.canvas.draw_idle()
@@ -1667,6 +1676,7 @@ class GridScanPlotWindow(QWidget):
         self.view_mode_label.setText("Current view: selected point")
         self._update_highlight()
         self._draw_spec()
+        self.band_map_controls.selection_changed()
         self.canvas.draw_idle()
 
     def _draw_spec(self):
@@ -1765,12 +1775,15 @@ class GridScanPlotWindow(QWidget):
         )
         slider_row.addWidget(self._z_label)
         self._z_slider = QSlider(Qt.Horizontal)
+        # Update large band maps on release rather than throughout a drag.
+        self._z_slider.setTracking(False)
         self._z_slider.setMinimum(0)
         self._z_slider.setMaximum(self._n_z - 1)
         self._z_slider.setValue(0)
         self._z_slider.valueChanged.connect(self._on_z_changed)
         slider_row.addWidget(self._z_slider, 1)
         self._z_input = QSpinBox()
+        self._z_input.setKeyboardTracking(False)
         self._z_input.setRange(0, self._n_z - 1)
         self._z_input.setValue(0)
         self._z_input.setToolTip("Z-plane index")
@@ -1831,6 +1844,7 @@ class GridScanPlotWindow(QWidget):
         self._ax_bf.set_title(f"BF_z  z={z_val:+.2f}")
         # Update spectrum for the new z (respects average / clicked mode)
         self._draw_spec()
+        self.band_map_controls.plane_changed()
         self.canvas.draw_idle()
 
 

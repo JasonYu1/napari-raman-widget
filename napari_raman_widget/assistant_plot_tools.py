@@ -208,6 +208,34 @@ def _panel_state(workspace, panel):
         )
     elif panel_type == "GridScanPlotWindow":
         state["selected_grid_point_index"] = int(panel._sel)
+        map_controls = getattr(panel, "band_map_controls", None)
+        if map_controls is not None:
+            map_values = map_controls.values
+            valid_points = (
+                None if map_values is None
+                else sum(math.isfinite(value) for value in map_values)
+            )
+            state["raman_map"] = {
+                "mode": map_controls.mode_combo.currentData(),
+                "unit": map_controls._unit,
+                "colormap": map_controls.colormap_combo.currentText(),
+                "reverse_colormap": bool(map_controls.reverse_check.isChecked()),
+                "band_a": [
+                    float(map_controls.a_low.value()),
+                    float(map_controls.a_high.value()),
+                ],
+                "band_b": [
+                    float(map_controls.b_low.value()),
+                    float(map_controls.b_high.value()),
+                ],
+                "applied": bool(map_controls._applied),
+                "valid_points": valid_points,
+                "invalid_points": (
+                    None if map_values is None
+                    else len(map_values) - valid_points
+                ),
+                "uses_raw_spectra": True,
+            }
     elif panel_type == "DatasetViewerWindow":
         state["selected_dataset_point_index"] = int(panel._pt_selected)
     if panel_type == "LogWindow":

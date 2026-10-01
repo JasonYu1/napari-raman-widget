@@ -342,6 +342,79 @@ class AssistantPlotToolTests(unittest.TestCase):
         self.assertFalse(get_plot_workspace_state(self.owner)["visible"])
         self.assertIs(resolve_plot_panel(self.owner, second._plot_panel_id), second)
 
+    def test_grid_map_state_is_read_only_and_reports_applied_values(self):
+        dataset = _grid_dataset()
+        dataset["specs"].values[1] = np.nan
+        grid = show_plot(self.owner, GridScanPlotWindow(dataset))
+        controls = grid.band_map_controls
+        original = dataset["specs"].values.copy()
+
+        initial = get_plot_state(self.owner)[0]
+        self.assertEqual(initial["raman_map"]["mode"], "points")
+        self.assertEqual(initial["raman_map"]["unit"], "pixel")
+        self.assertEqual(initial["raman_map"]["colormap"], "viridis")
+        self.assertFalse(initial["raman_map"]["reverse_colormap"])
+        self.assertFalse(initial["raman_map"]["applied"])
+        self.assertIsNone(initial["raman_map"]["valid_points"])
+        self.assertIsNone(initial["raman_map"]["invalid_points"])
+        self.assertNotIn("raman_map", initial["supported_controls"])
+        self.assertIsNone(controls.values)
+
+        controls.mode_combo.setCurrentIndex(controls.mode_combo.findData("ratio"))
+        controls.a_low.setValue(1)
+        controls.a_high.setValue(4)
+        controls.b_low.setValue(5)
+        controls.b_high.setValue(7)
+        controls.apply_button.click()
+        values_before = controls.values.copy()
+        applied = json.loads(self.call("list_plots"))["plots"][0]["raman_map"]
+
+        self.assertEqual(applied, {
+            "mode": "ratio",
+            "unit": "pixel",
+            "colormap": "viridis",
+            "reverse_colormap": False,
+            "band_a": [1.0, 4.0],
+            "band_b": [5.0, 7.0],
+            "applied": True,
+            "valid_points": 1,
+            "invalid_points": 1,
+            "uses_raw_spectra": True,
+        })
+        np.testing.assert_array_equal(controls.values, values_before)
+        np.testing.assert_array_equal(dataset["specs"].values, original)
+
+        controls.colormap_combo.setCurrentText("plasma")
+        controls.reverse_check.setChecked(True)
+        recolored = get_plot_state(self.owner)[0]
+        self.assertEqual(recolored["raman_map"]["colormap"], "plasma")
+        self.assertTrue(recolored["raman_map"]["reverse_colormap"])
+        self.assertTrue(recolored["raman_map"]["applied"])
+        self.assertNotIn("colormap", recolored["supported_controls"])
+        self.assertNotIn("reverse_colormap", recolored["supported_controls"])
+        np.testing.assert_array_equal(controls.values, values_before)
+        np.testing.assert_array_equal(dataset["specs"].values, original)
+
+        controls.a_high.setValue(3)
+        changed = get_plot_state(self.owner)[0]["raman_map"]
+        self.assertFalse(changed["applied"])
+        self.assertEqual(changed["band_a"], [1.0, 3.0])
+        self.assertIsNone(changed["valid_points"])
+
+    def test_grid_map_state_follows_optional_wavenumber_calibration(self):
+        calibration = PixelToWavenumberCalibration(
+            [0.0, 10.0], [100.0, 200.0], degree=1
+        )
+        grid = show_plot(
+            self.owner,
+            GridScanPlotWindow(_grid_dataset(), spectral_calibration=calibration),
+        )
+        grid.show_wavenumber_check.setChecked(True)
+        mapped = get_plot_state(self.owner)[0]["raman_map"]
+        self.assertEqual(mapped["unit"], "cm⁻¹")
+        np.testing.assert_allclose(mapped["band_a"], [100.0, 200.0])
+        self.assertFalse(mapped["applied"])
+
     def test_unknown_or_wrong_panel_fields_fail_without_changes(self):
         panel = show_plot(self.owner, SpectrumWindow(np.arange(11.0)))
 

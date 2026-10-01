@@ -6,9 +6,11 @@ import re
 from collections import Counter
 from weakref import ref
 
-from qtpy.QtCore import QSize, Qt
+from qtpy.QtCore import QEvent, QSize, Qt
 from qtpy.QtWidgets import (
+    QDockWidget,
     QLabel,
+    QMainWindow,
     QSizePolicy,
     QStackedLayout,
     QTabWidget,
@@ -17,6 +19,23 @@ from qtpy.QtWidgets import (
 )
 
 from .log_window import LogWindow
+
+
+_DOCK_AREA_NAMES = {
+    Qt.LeftDockWidgetArea: "left",
+    Qt.RightDockWidgetArea: "right",
+    Qt.TopDockWidgetArea: "top",
+    Qt.BottomDockWidgetArea: "bottom",
+}
+
+
+def _ancestor(widget, widget_type):
+    """Find a Qt container without relying on Napari's private attributes."""
+    while widget is not None:
+        widget = widget.parentWidget()
+        if isinstance(widget, widget_type):
+            return widget
+    return None
 
 
 _PANEL_NAMES = {
@@ -51,7 +70,8 @@ def _panel_id_prefix(panel):
 class PlotWorkspace(QWidget):
     """Keep plot content alive while its Napari dock is moved or hidden.
 
-    The workspace starts floating. Closing a result tab releases it.
+    The workspace starts tabbed beside its Raman controls. Closing a result
+    tab releases it.
     Closing the workspace only hides or
     detaches the dock; the owner's Plots button reopens the same results.
     """
@@ -61,7 +81,9 @@ class PlotWorkspace(QWidget):
         self._owner = ref(owner)
         owner.destroyed.connect(self.deleteLater)
         self._dock = None
-        self._floating = True
+        self._floating = False
+        self._dock_area = None
+        self._tab_peers = None
         self._counts = Counter()
         self._panel_id_counts = Counter()
         self._panel_ids = {}
@@ -105,8 +127,72 @@ class PlotWorkspace(QWidget):
     def minimumSizeHint(self):
         return QSize(360, 220)
 
+    def event(self, event):
+        # Napari's native close action reparents the content before removing
+        # its dock. Capture the user's actual layout while it still exists.
+        if event.type() == QEvent.ParentAboutToChange:
+            self._remember_dock_layout()
+        elif event.type() == QEvent.ParentChange and self.parentWidget() is None:
+            # Never-shown widgets skip ParentAboutToChange. Napari has not
+            # removed the old (now empty) dock from its main window yet.
+            self._remember_dock_layout(allow_detached=True)
+        return super().event(event)
+
+    def _remember_dock_layout(self, *, allow_detached=False):
+        dock = getattr(self, "_dock", None)
+        try:
+            if dock is None:
+                return
+            content = dock.widget()
+            if content is not self and not (allow_detached and content is None):
+                return
+            main = _ancestor(dock, QMainWindow)
+            if main is None:
+                return
+            area = _DOCK_AREA_NAMES.get(main.dockWidgetArea(dock))
+            if area is not None:
+                self._dock_area = area
+            self._floating = dock.isFloating()
+            self._tab_peers = [ref(peer) for peer in main.tabifiedDockWidgets(dock)]
+        except RuntimeError:
+            # The Qt wrapper may already have been deleted during shutdown.
+            return
+
+    def _initial_dock_layout(self, owner):
+        owner_dock = _ancestor(owner, QDockWidget)
+        main = _ancestor(owner_dock, QMainWindow)
+        area = (
+            _DOCK_AREA_NAMES.get(main.dockWidgetArea(owner_dock))
+            if main is not None else None
+        )
+        peers = (
+            [ref(owner_dock)]
+            if main is not None and area is not None and not owner_dock.isFloating()
+            else []
+        )
+        # Standalone or floating controls cannot form a native tab group;
+        # leave them alone and use their last dock area (or the right side).
+        return self._dock_area or area or "right", peers if self._tab_peers is None else self._tab_peers
+
+    @staticmethod
+    def _restore_tab_group(dock, peers):
+        main = _ancestor(dock, QMainWindow)
+        if main is None:
+            return
+        for peer_ref in peers:
+            peer = peer_ref()
+            try:
+                if (peer is not None and _ancestor(peer, QMainWindow) is main
+                        and not peer.isFloating()
+                        and main.dockWidgetArea(peer) == main.dockWidgetArea(dock)):
+                    main.tabifyDockWidget(peer, dock)
+                    break
+            except RuntimeError:
+                # A saved sibling may have been closed since this workspace.
+                continue
+
     def show_in_viewer(self):
-        """Show or recreate our dock using only Napari's public window API."""
+        """Show our native Napari dock without moving an existing workspace."""
         owner = self._owner()
         if owner is None:
             return
@@ -119,6 +205,7 @@ class PlotWorkspace(QWidget):
             attached = False
         if not attached:
             floating = self._floating
+            area, peers = self._initial_dock_layout(owner)
             dock = owner.viewer.window.add_dock_widget(
                 self,
                 name=(
@@ -126,16 +213,19 @@ class PlotWorkspace(QWidget):
                     if type(owner).__name__ == "DemoWidget"
                     else "Raman Plots"
                 ),
-                area="bottom",
+                area=area,
                 allowed_areas=("left", "right", "top", "bottom"),
                 add_vertical_stretch=False,
             )
             self._dock = dock
+            self._dock_area = area
             dock.topLevelChanged.connect(self._floating_changed)
             dock.destroyed.connect(lambda: self._forget_dock(dock))
             dock.setFloating(floating)
             if floating:
                 dock.resize(1000, 650)
+            else:
+                self._restore_tab_group(dock, peers)
         self.show()
         if dock.isMinimized():
             dock.setWindowState(dock.windowState() & ~Qt.WindowMinimized)
