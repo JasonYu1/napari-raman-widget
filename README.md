@@ -34,10 +34,9 @@ The interface also includes:
 - **Persistent status** - the current acquisition status stays visible below
   the controls while you change tabs or scroll.
 
-All outputs (reference `.zarr` datasets, `grid_scan_*.zarr`, recalibrated models,
-the MDA writer directory) are written relative to the current working
-directory - or an output folder you set in the Loading section, which is
-switched to on connect.
+Relative outputs (reference `.zarr` datasets, `grid_scan_*.zarr`, recalibrated
+models, and the MDA writer directory) resolve from the current **Active
+folder**, shown in **Setup > Loading**. Absolute output paths stay unchanged.
 
 ## Video demonstrations
 
@@ -105,6 +104,23 @@ python launch_demo_napari.py
 The demo launcher connects automatically and does not require a Micro-Manager
 configuration or coordinate-transform model.
 On Windows, you can also double-click `launch_demo_napari.bat`.
+
+### Changing the output folder
+
+In **Setup > Loading**, type or browse to an output folder, then click
+**Apply folder**. The entered path is a draft until applied; **Active folder**
+shows where future relative outputs will go. Applying creates the folder if
+needed and validates it without reconnecting hardware. Hardware **Connect**
+also applies the selected folder automatically. The same Apply control is
+available in demo mode.
+
+Stop acquisitions, camera/Raman live mode, and MDA before applying: a running
+operation in any registered Raman or demo widget blocks the change. This
+changes the **process-wide working directory**, so it also affects relative
+paths used by other plugins in the same Napari process. Existing files are
+not moved, and absolute output paths are unchanged. Existing relative input
+file selections are converted to absolute paths when the files exist, so they
+continue to refer to the same files after a folder change.
 
 ### Arranging plots and controls
 

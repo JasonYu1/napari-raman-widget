@@ -32,9 +32,15 @@ HELP = {
         "wavenumber on a plot to apply the calibration."
     ),
     "out_path": (
-        "Working directory applied on Connect (created if needed). Relative "
-        "result paths resolve from here. Editing after connection has no "
-        "effect."
+        "Draft output folder; typing or browsing does not activate it. Click "
+        "Apply folder to use it for future relative outputs (Connect also "
+        "applies it); Active folder shows the directory currently in use."
+    ),
+    "apply_output_folder_btn": (
+        "Create/validate the selected folder and make it the process-wide "
+        "working directory without reconnecting; existing files are not "
+        "moved and absolute output paths stay unchanged. Stop all Raman/demo "
+        "acquisitions, live imaging and MDA before applying."
     ),
     "wl_input": (
         "Desired spectrometer center wavelength (nm). The bold label shows "

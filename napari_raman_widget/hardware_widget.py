@@ -60,6 +60,7 @@ from .plot_windows import (
 )
 from .position_specs import resolve_position_specs
 from .mda_preflight import confirm_raman_mda
+from .output_folder import add_output_folder_controls, apply_output_folder
 from .plot_workspace import show_plot, show_plot_workspace
 from .qt_messages import install_qt_message_filter
 from .selection import (
@@ -207,7 +208,7 @@ class HardwareWidget(QWidget):
         loading_layout.addLayout(dark_noise_layout)
 
         loading_layout.addWidget(
-            QLabel("Output folder (optional, applied on connect):")
+            QLabel("Output folder (new saves; Apply folder or Connect):")
         )
         out_row = QHBoxLayout()
         self.out_path = QLineEdit()
@@ -218,6 +219,7 @@ class HardwareWidget(QWidget):
         out_row.addWidget(self.out_path)
         out_row.addWidget(out_browse)
         loading_layout.addLayout(out_row)
+        add_output_folder_controls(self, out_row, loading_layout)
 
         # Wavelength control
         wl_row = QHBoxLayout()
@@ -1383,10 +1385,14 @@ class HardwareWidget(QWidget):
 
     def browse_out(self):
         path = QFileDialog.getExistingDirectory(
-            self, "Select output folder", ""
+            self, "Select output folder", self.out_path.text().strip() or str(Path.cwd())
         )
         if path:
             self.out_path.setText(path)
+
+    def apply_output_folder(self, _checked=False):
+        """Apply a new output directory without reconnecting hardware."""
+        return apply_output_folder(self)
 
     def browse_vandermonde(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -2020,17 +2026,8 @@ class HardwareWidget(QWidget):
         self.status.setText("Status: connecting...")
         self.repaint()
 
-        out = self.out_path.text().strip()
-        if out:
-            try:
-                os.makedirs(out, exist_ok=True)
-                os.chdir(out)
-                print(f"[cwd] changed to {os.getcwd()}")
-            except Exception as e:
-                self.status.setText(
-                    f"Status: couldn't cd to output folder -- {e}"
-                )
-                return
+        if not apply_output_folder(self, show_success=False, preserve_inputs=False):
+            return
 
         try:
             from pymmcore_plus import CMMCorePlus
