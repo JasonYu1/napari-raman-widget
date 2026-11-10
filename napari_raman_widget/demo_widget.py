@@ -27,6 +27,7 @@ from qtpy.QtWidgets import (
 )
 
 from .acquisition import unload
+from .acquisition.control import check_cancelled
 from .calibration import (
     CoordTransformer,
     ManualImageSelector,
@@ -54,8 +55,14 @@ from .plot_windows import (
 from .position_specs import resolve_position_specs
 from .mda_preflight import confirm_raman_mda
 from .output_folder import add_output_folder_controls, apply_output_folder
+from .point_collection import collect_repeated_spectra
 from .plot_workspace import show_plot, show_plot_workspace
 from .qt_messages import install_qt_message_filter
+from .racer_ui import (
+    add_racer_calibration_controls,
+    clear_racer_calibration,
+    matching_racer_calibration,
+)
 from .selection import (
     add_mask_with_hole,
     automated_point_selections,
@@ -71,7 +78,9 @@ from .spectral_calibration_ui import (
     spectral_calibration_created,
 )
 from .spectra import (
+    racer_detector_signature,
     save_collection_record,
+    save_dark_noise_artifacts,
     spectral_bias_from_dark_noise,
 )
 from .ui_helpers import (
@@ -184,6 +193,8 @@ class DemoWidget(QWidget):
         dark_noise_layout.addWidget(dark_noise_browse)
         dark_noise_layout.addWidget(self.clear_dark_noise_btn)
         loading_layout.addLayout(dark_noise_layout)
+
+        add_racer_calibration_controls(self, loading_layout)
 
         loading_layout.addWidget(
             QLabel("Output folder (new saves; click Apply folder):")
@@ -349,8 +360,13 @@ class DemoWidget(QWidget):
         n_row = QHBoxLayout()
         n_row.addWidget(QLabel("N (repeats, >=2):"))
         self.n_input = QSpinBox()
-        self.n_input.setRange(2, 1000)
-        self.n_input.setValue(2)
+        self.n_input.setRange(2, 50_000)
+        self.n_input.setValue(3)
+        self.n_input.setToolTip(
+            "Finite collections require at least 2 repeats; RACER "
+            "calibration stores require at least 3, and many more are "
+            "recommended."
+        )
         n_row.addWidget(self.n_input)
         raman_layout.addLayout(n_row)
 
@@ -2363,6 +2379,7 @@ class DemoWidget(QWidget):
         self.px2stage_xy = None
         self.vandermonde = None
         self.demo_backend = None
+        clear_racer_calibration(self)
         self.status.setText("Status: disconnected")
         self.connect_btn.setEnabled(True)
         self.disconnect_btn.setEnabled(False)
@@ -2482,7 +2499,7 @@ class DemoWidget(QWidget):
         return spectral_bias_from_dark_noise(dark_noise)
 
     def collect_dark_noise(self):
-        """Stop demo live acquisition and save repeated dark spectra."""
+        """Stop demo live acquisition and save dark calibration artifacts."""
         if self.live_collect_check.isChecked():
             self.live_collect_check.setChecked(False)
         if self._live_raman_worker is not None:
@@ -2498,18 +2515,19 @@ class DemoWidget(QWidget):
         if self.collector is None or self.daq is None:
             self.status.setText("Status: not connected")
             return
-
-        read_mode = self.collect_read_mode_combo.currentData()
-        if read_mode == "image":
-            self.status.setText(
-                "Status: dark-noise bias removal supports FVB or "
-                "single-track readout"
-            )
+        if not self._acquisition_jobs.available():
             return
 
-        exposure = float(self.exposure_input.value())
-        repeats = int(self.n_input.value())
         try:
+            read_mode = self.collect_read_mode_combo.currentData()
+            exposure = float(self.exposure_input.value())
+            repeats = int(self.n_input.value())
+            read_mode_options = self._collect_read_mode_options(read_mode)
+            collector = self.collector
+            output_path = (
+                Path.cwd()
+                / f"dark_noise_{exposure:g}ms_{uuid.uuid4()}.npy"
+            )
             if self.demo_live_check.isChecked():
                 self.demo_live_check.setChecked(False)
             if self.core is not None:
@@ -2517,47 +2535,102 @@ class DemoWidget(QWidget):
                     self.core.stopSequenceAcquisition()
                 except Exception:
                     pass
-
-            self.status.setText(
-                f"Status: collecting {repeats} simulated dark spectra..."
-            )
-            self.repaint()
-            dark_noise = self.collector.collect_spectra_image_points(
-                np.zeros((repeats, 2), dtype=float),
-                exposure,
-                **self._collect_read_mode_options(read_mode),
-            )
-            dark_noise = np.asarray(dark_noise)
-            spectral_bias = spectral_bias_from_dark_noise(dark_noise)
-
-            path = (
-                Path.cwd()
-                / f"dark_noise_{exposure:g}ms_{uuid.uuid4()}.npy"
-            )
-            np.save(path, dark_noise, allow_pickle=False)
-            self.dark_noise_path.setText(str(path.resolve()))
-
-            window = SpectrumWindow(
-                dark_noise,
-                title=(
-                    f"Dark noise | {read_mode} | "
-                    f"{repeats}x{exposure:.0f} ms"
-                ),
-                spectral_calibration=self.spectral_calibration,
-                calibration_changed=self._spectral_calibration_created,
-                spectral_bias=spectral_bias,
-            )
-            self._show_plot(window)
-            self.status.setText(
-                f"Status: dark noise saved and selected -> {path}"
-            )
         except Exception as error:
             self.status.setText(
                 f"Status: dark-noise collection failed -- {error}"
             )
-        finally:
-            self.collect_dark_noise_btn.setEnabled(True)
-            self.collect_dark_noise_btn.setText("Collect dark noise")
+            return
+
+        noun = "frames" if read_mode == "image" else "spectra"
+
+        def operation(progress, cancelled):
+            collection_started_at = datetime.now().astimezone()
+            collection_started = time.perf_counter()
+            dark_noise = collect_repeated_spectra(
+                collector.collect_spectra_image_points,
+                np.zeros(2, dtype=float),
+                repeats,
+                exposure,
+                read_mode_options=read_mode_options,
+                progress=progress,
+                cancelled=cancelled,
+                stage_prefix=f"Collecting simulated dark {noun}",
+            )
+            check_cancelled(cancelled)
+            collection_elapsed = time.perf_counter() - collection_started
+            collection_finished_at = datetime.now().astimezone()
+            progress(repeats, repeats, "Saving dark calibration artifacts")
+            npy_path, racer_store = save_dark_noise_artifacts(
+                output_path,
+                dark_noise,
+                collector=collector,
+                read_mode=read_mode,
+                exposure_ms=exposure,
+                metadata={
+                    "collection_started_at": collection_started_at.isoformat(),
+                    "collection_finished_at": collection_finished_at.isoformat(),
+                    "collection_elapsed_seconds": collection_elapsed,
+                },
+            )
+            return {
+                "dark_noise": dark_noise,
+                "npy_path": npy_path,
+                "racer_store": racer_store,
+                "collection_elapsed": collection_elapsed,
+            }
+
+        def complete(result):
+            dark_noise = result["dark_noise"]
+            npy_path = result["npy_path"]
+            racer_store = result["racer_store"]
+            title = (
+                f"Dark noise | {read_mode} | {repeats}x{exposure:.0f} ms"
+            )
+            if read_mode == "image":
+                window = DetectorImageWindow(
+                    dark_noise,
+                    title=title,
+                    spectral_calibration=self.spectral_calibration,
+                )
+            else:
+                spectral_bias = spectral_bias_from_dark_noise(dark_noise)
+                self.dark_noise_path.setText(str(npy_path.resolve()))
+                window = SpectrumWindow(
+                    dark_noise,
+                    title=title,
+                    spectral_calibration=self.spectral_calibration,
+                    calibration_changed=self._spectral_calibration_created,
+                    spectral_bias=spectral_bias,
+                )
+            self._show_plot(window)
+            if racer_store is not None and npy_path is not None:
+                message = (
+                    f"dark bias selected for this session -> {npy_path}; "
+                    f"RACER closed-shutter calibration -> {racer_store}"
+                )
+            elif racer_store is not None:
+                message = (
+                    "image dark frames saved as RACER closed-shutter "
+                    f"calibration -> {racer_store}; spectral bias unchanged"
+                )
+            else:
+                message = (
+                    f"dark bias selected for this session -> {npy_path}; "
+                    "RACER does not support single-track readout"
+                )
+            if racer_store is not None and repeats < 3:
+                message += (
+                    "; warning: RACER requires at least 3 frames, so this "
+                    "store cannot be fitted"
+                )
+            self.status.setText(
+                f"Status: {message}; "
+                f"{result['collection_elapsed']:.3f} s"
+            )
+
+        self._acquisition_jobs.start(
+            "Dark-noise collection", operation, complete
+        )
 
     def _update_collect_live_fields(self, checked=None):
         """Switch between finite repeats and one-at-a-time live collection."""
@@ -2604,9 +2677,10 @@ class DemoWidget(QWidget):
             self._start_live_raman(exposure, read_mode)
             return
 
+        if not self._acquisition_jobs.available():
+            return
+
         try:
-            collection_started_at = datetime.now().astimezone()
-            collection_started = time.perf_counter()
             pt, point_index = self._raman_point_from_active_layer()
             spectral_bias = (
                 self._load_spectral_bias()
@@ -2614,36 +2688,54 @@ class DemoWidget(QWidget):
                 else None
             )
             bias_available = spectral_bias is not None
-
-            self.daq.galvo.stop()
-            self.daq.galvo.start()
-
+            target = np.asarray(pt, dtype=float)
             read_mode_options = self._collect_read_mode_options(read_mode)
-            spec = self.collector.collect_spectra_image_points(
-                np.tile(pt, (N, 1)),
+            save_name = self.collect_save_input.text().strip()
+            track_center = (
+                int(self.collect_track_center_input.value())
+                if read_mode == "single_track"
+                else None
+            )
+            track_height = (
+                int(self.collect_track_height_input.value())
+                if read_mode == "single_track"
+                else None
+            )
+            dark_noise_file = (
+                self.dark_noise_path.text().strip()
+                if bias_available
+                else None
+            )
+            collector = self.collector
+            daq = self.daq
+        except Exception as error:
+            self.status.setText(f"Status: collection failed -- {error}")
+            return
+
+        def operation(progress, cancelled):
+            collection_started_at = datetime.now().astimezone()
+            collection_started = time.perf_counter()
+            daq.galvo.stop()
+            daq.galvo.start()
+            spec = collect_repeated_spectra(
+                collector.collect_spectra_image_points,
+                target,
+                N,
                 exposure,
-                **read_mode_options,
+                read_mode_options=read_mode_options,
+                progress=progress,
+                cancelled=cancelled,
+                point_index=point_index,
             )
             collection_elapsed = time.perf_counter() - collection_started
             collection_finished_at = datetime.now().astimezone()
-
-            wavelength = float(self.collector.get_wavelength())
-            grating = int(self.collector.get_grating())
+            wavelength = float(collector.get_wavelength())
+            grating = int(collector.get_grating())
             peak = float(np.max(spec))
 
-            save_name = self.collect_save_input.text().strip()
             saved_msg = ""
             if save_name:
-                track_center = (
-                    int(self.collect_track_center_input.value())
-                    if read_mode == "single_track"
-                    else None
-                )
-                track_height = (
-                    int(self.collect_track_height_input.value())
-                    if read_mode == "single_track"
-                    else None
-                )
+                progress(N, N, "Saving selected-point spectra")
                 store_path = save_collection_record(
                     save_name,
                     spec,
@@ -2664,26 +2756,59 @@ class DemoWidget(QWidget):
                         "grating": grating,
                         "peak_intensity": peak,
                         "spectral_bias_available": bias_available,
-                        "dark_noise_file": (
-                            self.dark_noise_path.text().strip()
-                            if bias_available
-                            else None
+                        "dark_noise_file": dark_noise_file,
+                        **(
+                            {
+                                "racer_role": "open_reference_candidate",
+                                "units": "ADU",
+                                "gain_e_per_adu": 0.7,
+                                "saturation_adu": 65535.0,
+                                "gain_source": "racer_default_assumption",
+                                "racer_detector_signature": (
+                                    racer_detector_signature(
+                                        collector,
+                                        spec,
+                                        read_mode,
+                                        exposure,
+                                    )
+                                ),
+                            }
+                            if read_mode in {"fvb", "image"}
+                            else {}
                         ),
                     },
                 )
                 saved_msg = f" -> {store_path}"
                 print(f"Saved collection dataset to {store_path}")
 
+            return {
+                "spec": spec,
+                "collection_elapsed": collection_elapsed,
+                "wavelength": wavelength,
+                "grating": grating,
+                "peak": peak,
+                "saved_msg": saved_msg,
+            }
+
+        def complete(result):
+            spec = result["spec"]
+            wavelength = result["wavelength"]
+            grating = result["grating"]
             title = (
                 f"Raman point {point_index} | RM | {read_mode} | "
                 f"{wavelength:.1f} nm | grating {grating} | "
                 f"{exposure:.0f} ms"
+            )
+            racer_calibration = matching_racer_calibration(
+                self, spec, exposure, read_mode
             )
             if read_mode == "image":
                 win = DetectorImageWindow(
                     spec,
                     title=title,
                     spectral_calibration=self.spectral_calibration,
+                    cosmic_ray_calibration=racer_calibration,
+                    exposure_ms=exposure,
                 )
             else:
                 win = SpectrumWindow(
@@ -2692,17 +2817,22 @@ class DemoWidget(QWidget):
                     spectral_calibration=self.spectral_calibration,
                     calibration_changed=self._spectral_calibration_created,
                     spectral_bias=spectral_bias,
+                    cosmic_ray_calibration=racer_calibration,
+                    exposure_ms=exposure,
                 )
             self._show_plot(win)
 
             self.status.setText(
                 f"Status: collected point {point_index} on RM, "
                 f"{N}x{exposure:.0f} ms, {wavelength:.1f} nm, "
-                f"grating {grating}, {read_mode}, {collection_elapsed:.3f} s, "
-                f"peak {peak:.1f}{saved_msg}"
+                f"grating {grating}, {read_mode}, "
+                f"{result['collection_elapsed']:.3f} s, "
+                f"peak {result['peak']:.1f}{result['saved_msg']}"
             )
-        except Exception as e:
-            self.status.setText(f"Status: collection failed -- {e}")
+
+        self._acquisition_jobs.start(
+            "Selected-point spectra", operation, complete
+        )
 
     def _start_live_raman(self, exposure, read_mode):
         """Start simulated one-frame acquisition cycles off the UI thread."""
@@ -2779,11 +2909,19 @@ class DemoWidget(QWidget):
             return
         title = f"{context['title']} | live #{count}"
         if self._live_raman_window is None:
+            racer_calibration = matching_racer_calibration(
+                self,
+                spec,
+                context["exposure"],
+                context["read_mode"],
+            )
             if context["read_mode"] == "image":
                 window = DetectorImageWindow(
                     spec,
                     title=title,
                     spectral_calibration=self.spectral_calibration,
+                    cosmic_ray_calibration=racer_calibration,
+                    exposure_ms=context["exposure"],
                 )
             else:
                 window = SpectrumWindow(
@@ -2792,6 +2930,8 @@ class DemoWidget(QWidget):
                     spectral_calibration=self.spectral_calibration,
                     calibration_changed=self._spectral_calibration_created,
                     spectral_bias=context.get("spectral_bias"),
+                    cosmic_ray_calibration=racer_calibration,
+                    exposure_ms=context["exposure"],
                 )
             self._show_plot(window)
             self._live_raman_window = window
@@ -2861,6 +3001,10 @@ class DemoWidget(QWidget):
             self.collect_read_mode_combo,
             self.collect_single_track_controls,
             self.collect_save_input,
+            self.load_racer_calibration_btn,
+            self.clear_racer_calibration_btn,
+            self.racer_calibration_settings_btn,
+            self.racer_calibration_path_controls,
         )
         if running:
             self._live_control_states = [

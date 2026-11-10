@@ -14,6 +14,7 @@ from .acquisition import autofocus_w_bkd
 from .acquisition.control import AcquisitionCancelled, check_cancelled
 from .calibration import Calibrator
 from .plot_windows import CalibrationPlotWindow, GridScanPlotWindow, ReferenceSpectraWindow
+from .racer_ui import matching_racer_calibration
 from .scan_preview import ScanPreviewDialog, build_axial_preview, build_grid_preview
 from .spatial_mapping import scan_image_reference, snapshot_scan_labels, snapshot_scan_roi, snapshot_scan_shape
 
@@ -51,10 +52,11 @@ def _confirm(owner, plan):
 def start_calibration(owner):
     if not _ready(owner):
         return
+    exposure_ms = float(owner.cal_exp_input.value())
     calibrator = Calibrator(
         owner.core, owner.daq, owner.transformer, owner.collector,
         repeats=int(owner.cal_n_input.value()),
-        exposure=float(owner.cal_exp_input.value()),
+        exposure=exposure_ms,
         max_volts=float(owner.cal_volts_input.value()),
     )
     grid = int(owner.cal_grid_input.value())
@@ -72,9 +74,15 @@ def start_calibration(owner):
     def complete(result):
         owner.calibrator = calibrator
         owner.calibration_ds = result["dataset"]
+        spectra = np.asarray(result["dataset"]["specs"].values)
+        racer_calibration = matching_racer_calibration(
+            owner, spectra, exposure_ms, "fvb"
+        )
         owner._show_plot(CalibrationPlotWindow(
             result["dataset"], title="Calibration result",
             spectral_calibration=spectral_calibration,
+            cosmic_ray_calibration=racer_calibration,
+            exposure_ms=exposure_ms,
         ))
         owner.status.setText("Status: calibration done OK")
 
@@ -111,9 +119,14 @@ def start_reference(owner):
 
         def complete(result):
             label = "Partial axial scan" if result["stopped"] else "Reference spectra"
+            racer_calibration = matching_racer_calibration(
+                owner, result["spectra"], plan.exposure_ms, "fvb"
+            )
             owner._show_plot(ReferenceSpectraWindow(
                 result["spectra"], result["zs"], title=f"{label}: {name}",
                 spectral_calibration=spectral_calibration,
+                cosmic_ray_calibration=racer_calibration,
+                exposure_ms=plan.exposure_ms,
             ))
             owner.status.setText(f"Status: {label.lower()} saved → {result['path']}")
 
@@ -278,9 +291,15 @@ def start_grid_scan(owner):
         def complete(result):
             owner.scan_ds = result["dataset"]
             if not result["stopped"]:
+                spectra = np.asarray(result["dataset"]["specs"].values)
+                racer_calibration = matching_racer_calibration(
+                    owner, spectra, plan.exposure_ms, "fvb"
+                )
                 owner._show_plot(GridScanPlotWindow(
                     result["dataset"], title=f"Grid scan: {name}",
                     spectral_calibration=spectral_calibration,
+                    cosmic_ray_calibration=racer_calibration,
+                    exposure_ms=plan.exposure_ms,
                 ))
             state = "partial grid scan" if result["stopped"] else "grid scan"
             owner.status.setText(f"Status: {state} saved → {result['path']}")

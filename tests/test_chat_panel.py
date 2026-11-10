@@ -168,6 +168,7 @@ class ChatPanelTests(unittest.TestCase):
         synchronized = {
             "smoothing_window_slider": "smoothing_window_input",
             "baseline_lambda_slider": "baseline_lambda_input",
+            "repeat_slider": "repeat_input",
             "_z_slider": "_z_input",
         }
         self.assertLessEqual(set(synchronized.values()), registered)

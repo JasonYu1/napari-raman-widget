@@ -33,6 +33,49 @@ from napari_raman_widget.spectral_calibration import (
 )
 
 
+class _FakeCosmicRayCalibration:
+    def __init__(
+        self, *, offset=2.0, compatible=True, reason="", failure=None
+    ):
+        self.offset = float(offset)
+        self.compatible = bool(compatible)
+        self.reason = reason
+        self.failure = failure
+        self.compatibility_calls = []
+        self.correct_calls = []
+
+    def compatibility(self, values, *, exposure_ms=None, read_mode=None):
+        self.compatibility_calls.append(
+            (np.asarray(values).shape, exposure_ms, read_mode)
+        )
+        return self.compatible, self.reason
+
+    def correct(self, values):
+        values = np.asarray(values)
+        self.correct_calls.append(np.array(values, copy=True))
+        if self.failure is not None:
+            raise self.failure
+        return values - self.offset
+
+
+class _DarkOnlyPeakCalibration(_FakeCosmicRayCalibration):
+    read_mode = "fvb"
+    open_reference_path = None
+
+    def __init__(self, detector_length):
+        super().__init__(offset=0.0)
+        self.fvb_dark_sigma_adu = np.ones(detector_length, dtype=float)
+
+    def correct(self, values):
+        values = np.asarray(values)
+        self.correct_calls.append(np.array(values, copy=True))
+        corrected = np.array(values, dtype=float, copy=True)
+        corrected[2] = 10.0
+        if corrected[-1] > 500.0:
+            corrected[-1] = 10.0
+        return corrected
+
+
 class FixedYScaleTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -211,17 +254,125 @@ class FixedYScaleTests(unittest.TestCase):
                     window.toggle_btn.click()
                     self.assertEqual(window.toggle_btn.text(), "Show all")
                     self.assertEqual(len(window.ax.lines), 1)
+                    window.repeat_slider.setValue(2)
                     window.calibration_btn.click()
                     self.assertFalse(window.toggle_btn.isEnabled())
+                    self.assertEqual(window.repeat_slider.value(), 0)
+                    self.assertFalse(window.repeat_controls.isEnabled())
                     window.toggle_btn.click()
                     self.assertTrue(window._show_mean)
                     window.cancel_calibration_btn.click()
                     self.assertTrue(window.toggle_btn.isEnabled())
+                    self.assertTrue(window.repeat_controls.isEnabled())
                     window.toggle_btn.click()
                     self.assertEqual(window.toggle_btn.text(), "Show mean")
                     self.assertEqual(len(window.ax.lines), 2)
                 finally:
                     window.close()
+
+    def test_spectrum_repeat_slider_shows_individual_and_aggregate_views(
+        self,
+    ) -> None:
+        raw = np.arange(15, dtype=float).reshape(3, 5)
+        original = raw.copy()
+        window = SpectrumWindow(raw)
+        try:
+            self.assertFalse(window.repeat_controls.isHidden())
+            self.assertEqual(window.repeat_slider.maximum(), 3)
+            self.assertEqual(window.repeat_slider.value(), 0)
+            self.assertEqual(window.repeat_input.specialValueText(), "Mean")
+            np.testing.assert_allclose(
+                window.ax.lines[0].get_ydata(),
+                raw.mean(axis=0),
+            )
+
+            window.repeat_slider.setValue(2)
+
+            self.assertEqual(window.repeat_input.value(), 2)
+            self.assertEqual(len(window.ax.lines), 1)
+            np.testing.assert_array_equal(
+                window.ax.lines[0].get_ydata(), raw[1]
+            )
+            self.assertIn("repeat 2 of 3", window.view_mode_label.text())
+            self.assertIn("Repeat 2 of 3", window.ax.get_title())
+
+            window.toggle_btn.click()
+
+            self.assertEqual(window.repeat_slider.value(), 0)
+            self.assertFalse(window._show_mean)
+            self.assertEqual(len(window.ax.lines), 3)
+
+            window.repeat_input.setValue(3)
+
+            self.assertTrue(window._show_mean)
+            self.assertEqual(len(window.ax.lines), 1)
+            np.testing.assert_array_equal(
+                window.ax.lines[0].get_ydata(), raw[2]
+            )
+            window.repeat_slider.setValue(0)
+            np.testing.assert_allclose(
+                window.ax.lines[0].get_ydata(), raw.mean(axis=0)
+            )
+            np.testing.assert_array_equal(window.spec, original)
+        finally:
+            window.close()
+
+    def test_detector_repeat_slider_selects_image_and_row_sum(self) -> None:
+        frames = np.arange(24, dtype=float).reshape(3, 2, 4)
+        original = frames.copy()
+        window = DetectorImageWindow(frames)
+        try:
+            self.assertFalse(window.repeat_controls.isHidden())
+            np.testing.assert_allclose(
+                np.asarray(window.ax.images[0].get_array()),
+                frames.mean(axis=0),
+            )
+
+            window.repeat_slider.setValue(2)
+
+            np.testing.assert_array_equal(
+                np.asarray(window.ax.images[0].get_array()), frames[1]
+            )
+            self.assertIn("repeat 2 of 3", window.view_mode_label.text())
+            window._toggle_view()
+            np.testing.assert_array_equal(
+                window.ax.lines[0].get_ydata(), frames[1].sum(axis=0)
+            )
+
+            window.repeat_input.setValue(0)
+
+            np.testing.assert_allclose(
+                window.ax.lines[0].get_ydata(),
+                frames.mean(axis=0).sum(axis=0),
+            )
+            np.testing.assert_array_equal(window.raw_frames, original)
+        finally:
+            window.close()
+
+    def test_repeat_controls_hide_for_one_repeat_and_reset_on_update(self):
+        spectrum = SpectrumWindow(np.arange(5, dtype=float))
+        detector = DetectorImageWindow(np.ones((2, 4), dtype=float))
+        try:
+            for panel in (spectrum, detector):
+                self.assertTrue(panel.repeat_controls.isHidden())
+                self.assertFalse(panel.repeat_controls.isEnabled())
+
+            spectrum.update_spectrum(np.ones((3, 5), dtype=float))
+            detector.update_frames(np.ones((3, 2, 4), dtype=float))
+            for panel in (spectrum, detector):
+                self.assertFalse(panel.repeat_controls.isHidden())
+                self.assertTrue(panel.repeat_controls.isEnabled())
+                panel.repeat_slider.setValue(3)
+
+            spectrum.update_spectrum(np.ones((1, 5), dtype=float))
+            detector.update_frames(np.ones((1, 2, 4), dtype=float))
+            for panel in (spectrum, detector):
+                self.assertEqual(panel.repeat_slider.value(), 0)
+                self.assertTrue(panel.repeat_controls.isHidden())
+                self.assertFalse(panel.repeat_controls.isEnabled())
+        finally:
+            spectrum.close()
+            detector.close()
 
     def test_axis_calibration_forces_pixels_then_restores_preference(
         self,
@@ -495,6 +646,400 @@ class FixedYScaleTests(unittest.TestCase):
             window.baseline_lambda_slider.setValue(24)
             self.assertEqual(window.baseline_lambda_input.value(), 1e6)
             self.assertEqual(window.baseline_lambda_label.text(), "λ: 1e6")
+        finally:
+            window.close()
+
+    def test_cosmic_ray_control_is_present_default_off_and_informative(self):
+        unavailable = SpectrumWindow(np.arange(5, dtype=float))
+        incompatible_calibration = _FakeCosmicRayCalibration(
+            compatible=False,
+            reason="exposure does not match the calibration",
+        )
+        incompatible = SpectrumWindow(
+            np.arange(5, dtype=float),
+            cosmic_ray_calibration=incompatible_calibration,
+            exposure_ms=50.0,
+        )
+        try:
+            for window in (unavailable, incompatible):
+                self.assertEqual(
+                    window.cosmic_ray_removal_check.text(),
+                    "Remove cosmic rays (RACER)",
+                )
+                self.assertFalse(window.cosmic_ray_removal_check.isChecked())
+                self.assertFalse(window.cosmic_ray_removal_check.isEnabled())
+                self.assertTrue(window.cosmic_ray_removal_check.toolTip())
+            self.assertIn(
+                "load a compatible", unavailable.cosmic_ray_removal_check.toolTip()
+            )
+            self.assertIn(
+                "exposure does not match",
+                incompatible.cosmic_ray_removal_check.toolTip(),
+            )
+            self.assertEqual(
+                incompatible_calibration.compatibility_calls,
+                [((1, 5), 50.0, "fvb")],
+            )
+        finally:
+            unavailable.close()
+            incompatible.close()
+
+    def test_cosmic_ray_removal_is_available_in_all_spectral_panels(self):
+        offset = 2.0
+        calibration_raw = np.array(
+            [
+                [[10, 11, 12, 13, 14], [10, 11, 12, 13, 14]],
+                [[20, 21, 22, 23, 24], [20, 21, 22, 23, 24]],
+            ],
+            dtype=float,
+        )
+        calibration_ds = xr.Dataset(
+            {
+                "imgs": (("point", "Y", "X"), np.zeros((2, 3, 3))),
+                "rel_BF_pos": (
+                    ("point", "coord"),
+                    [[1.0, 1.0], [2.0, 2.0]],
+                ),
+                "specs": (
+                    ("point", "repeat", "pixel"), calibration_raw
+                ),
+            }
+        )
+        detector_raw = np.stack(
+            [np.arange(10, dtype=float).reshape(2, 5) + 10] * 2
+        )
+        spectrum_raw = np.array(
+            [[30, 31, 32, 33, 34], [30, 31, 32, 33, 34]],
+            dtype=float,
+        )
+        reference_raw = np.array(
+            [
+                [[40, 41, 42, 43, 44], [40, 41, 42, 43, 44]],
+                [[50, 51, 52, 53, 54], [50, 51, 52, 53, 54]],
+            ],
+            dtype=float,
+        )
+        grid_raw = np.array(
+            [[60, 61, 62, 63, 64], [60, 61, 62, 63, 64]],
+            dtype=float,
+        )
+        grid_ds = xr.Dataset(
+            {
+                "BF": (("Y", "X"), np.zeros((3, 3))),
+                "grid_pos": (
+                    ("point", "coord"), [[1.0, 1.0], [2.0, 2.0]]
+                ),
+                "specs": (("point", "pixel"), grid_raw),
+            }
+        )
+        dataset_raw = np.array([70, 71, 72, 73, 74], dtype=float)
+        dataset_index = pd.MultiIndex.from_tuples(
+            [(0, 0, 0, 0)], names=["t", "p", "z", "pt"]
+        )
+        dataset_df = pd.DataFrame(
+            [[*dataset_raw, 1.0, 2.0, 0.0]],
+            index=dataset_index,
+            columns=[0, 1, 2, 3, 4, "X", "Y", "time"],
+        )
+        dataset_da = xr.DataArray(
+            np.zeros((1, 1, 1, 1, 3, 3)),
+            dims=["t", "p", "c", "z", "y", "x"],
+            coords={"t": [0], "p": [0], "c": [0], "z": [0]},
+        )
+
+        calibrations = [_FakeCosmicRayCalibration(offset=offset) for _ in range(6)]
+        panels = [
+            CalibrationPlotWindow(
+                calibration_ds,
+                cosmic_ray_calibration=calibrations[0],
+                exposure_ms=25.0,
+            ),
+            DetectorImageWindow(
+                detector_raw,
+                cosmic_ray_calibration=calibrations[1],
+                exposure_ms=25.0,
+            ),
+            SpectrumWindow(
+                spectrum_raw,
+                cosmic_ray_calibration=calibrations[2],
+                exposure_ms=25.0,
+            ),
+            ReferenceSpectraWindow(
+                reference_raw,
+                [-1.0, 1.0],
+                cosmic_ray_calibration=calibrations[3],
+                exposure_ms=25.0,
+            ),
+            GridScanPlotWindow(
+                grid_ds,
+                cosmic_ray_calibration=calibrations[4],
+                exposure_ms=25.0,
+            ),
+            DatasetViewerWindow(
+                dataset_df,
+                dataset_da,
+                cosmic_ray_calibration=calibrations[5],
+                exposure_ms=25.0,
+            ),
+        ]
+        raw_snapshots = [
+            calibration_raw,
+            detector_raw,
+            spectrum_raw,
+            reference_raw,
+            grid_raw,
+            dataset_raw.reshape(1, -1),
+        ]
+        try:
+            for panel in panels:
+                self.assertFalse(panel.cosmic_ray_removal_check.isChecked())
+                self.assertTrue(panel.cosmic_ray_removal_check.isEnabled())
+
+            for panel in panels:
+                panel.cosmic_ray_removal_check.setChecked(True)
+
+            np.testing.assert_allclose(
+                panels[0].spectrum_line.get_ydata(),
+                calibration_raw[0, 0] - offset,
+            )
+            np.testing.assert_allclose(
+                np.asarray(panels[1].ax.images[0].get_array()),
+                detector_raw.mean(axis=0) - offset,
+            )
+            np.testing.assert_allclose(
+                panels[2].ax.lines[0].get_ydata(),
+                spectrum_raw[0] - offset,
+            )
+            for line, expected in zip(panels[3]._spectral_lines, reference_raw):
+                np.testing.assert_allclose(
+                    line.get_ydata(), expected[0] - offset
+                )
+            np.testing.assert_allclose(
+                panels[4]._spec_line.get_ydata(), grid_raw[0] - offset
+            )
+            np.testing.assert_allclose(
+                panels[5].spec_line.get_ydata(), dataset_raw - offset
+            )
+
+            retained_raw = [
+                panels[0].raw_spectra,
+                panels[1].raw_frames,
+                panels[2].spec,
+                panels[3]._raw_reference_spectra,
+                panels[4]._specs,
+                panels[5]._raw_dataset_spectra,
+            ]
+            for actual, expected in zip(retained_raw, raw_snapshots):
+                np.testing.assert_array_equal(actual, expected)
+
+            expected_calls = [4, 2, 2, 4, 2, 1]
+            self.assertEqual(
+                [len(calibration.correct_calls) for calibration in calibrations],
+                expected_calls,
+            )
+            expected_compatibility_shapes = [
+                (4, 5),
+                (2, 2, 5),
+                (2, 5),
+                (4, 5),
+                (2, 5),
+                (1, 5),
+            ]
+            self.assertEqual(
+                [
+                    calibration.compatibility_calls[0][0]
+                    for calibration in calibrations
+                ],
+                expected_compatibility_shapes,
+            )
+            self.assertEqual(calibrations[1].compatibility_calls[0][2], "image")
+        finally:
+            for panel in panels:
+                panel.close()
+
+    def test_cosmic_ray_correction_is_ordered_cached_and_invalidated(self):
+        raw = np.array(
+            [[20, 21, 22, 23, 24], [20, 21, 22, 23, 24]], dtype=float
+        )
+        original = raw.copy()
+        bias = np.arange(5, dtype=float)
+        calibration = _FakeCosmicRayCalibration(offset=3.0)
+        window = SpectrumWindow(
+            raw,
+            spectral_bias=bias,
+            cosmic_ray_calibration=calibration,
+        )
+        try:
+            window.cosmic_ray_removal_check.setChecked(True)
+            self.assertEqual(len(calibration.correct_calls), 2)
+            np.testing.assert_allclose(
+                window.ax.lines[0].get_ydata(), raw[0] - 3.0
+            )
+
+            window.remove_spectral_bias_check.setChecked(True)
+            np.testing.assert_allclose(
+                window.ax.lines[0].get_ydata(), raw[0] - 3.0 - bias
+            )
+            window._redraw()
+            window._toggle()
+            self.assertEqual(len(calibration.correct_calls), 2)
+            np.testing.assert_array_equal(window.spec, original)
+
+            replacement = np.array([[50, 51, 52, 53, 54]], dtype=float)
+            window.update_spectrum(replacement)
+            self.assertEqual(len(calibration.correct_calls), 3)
+            np.testing.assert_array_equal(window.spec, replacement)
+            np.testing.assert_allclose(
+                window.ax.lines[0].get_ydata(), replacement[0] - 3.0 - bias
+            )
+        finally:
+            window.close()
+
+    def test_selected_repeat_uses_cached_cosmic_correction_then_bias(self):
+        raw = np.array(
+            [[10, 11, 12, 13, 14], [30, 31, 32, 33, 34]], dtype=float
+        )
+        bias = np.arange(5, dtype=float)
+        calibration = _FakeCosmicRayCalibration(offset=2.0)
+        window = SpectrumWindow(
+            raw,
+            spectral_bias=bias,
+            cosmic_ray_calibration=calibration,
+        )
+        try:
+            window.cosmic_ray_removal_check.setChecked(True)
+            window.remove_spectral_bias_check.setChecked(True)
+            window.repeat_slider.setValue(2)
+
+            np.testing.assert_allclose(
+                window.ax.lines[0].get_ydata(), raw[1] - 2.0 - bias
+            )
+            self.assertEqual(len(calibration.correct_calls), 2)
+
+            window.repeat_slider.setValue(1)
+
+            np.testing.assert_allclose(
+                window.ax.lines[0].get_ydata(), raw[0] - 2.0 - bias
+            )
+            self.assertEqual(len(calibration.correct_calls), 2)
+        finally:
+            window.close()
+
+    def test_dark_only_fvb_preserves_repeatable_peak_and_removes_one_off(self):
+        raw = np.array(
+            [
+                [10.0, 11.0, 100.0, 13.0, 14.0],
+                [10.0, 12.0, 101.0, 13.0, 1000.0],
+                [11.0, 11.0, 99.0, 14.0, 15.0],
+            ]
+        )
+        original = raw.copy()
+        calibration = _DarkOnlyPeakCalibration(raw.shape[1])
+        window = SpectrumWindow(raw, cosmic_ray_calibration=calibration)
+        try:
+            self.assertTrue(window.cosmic_ray_removal_check.isEnabled())
+            window.cosmic_ray_removal_check.setChecked(True)
+
+            corrected = window._cosmic_ray_corrected_cache
+            np.testing.assert_array_equal(corrected[:, 2], raw[:, 2])
+            self.assertEqual(corrected[1, -1], 10.0)
+            np.testing.assert_array_equal(corrected[[0, 2], -1], raw[[0, 2], -1])
+            np.testing.assert_array_equal(window.spec, original)
+            self.assertIn("corrected 1 detector value", window.cosmic_ray_status_label.text())
+            self.assertIn("Preserved 3", window.cosmic_ray_status_label.text())
+        finally:
+            window.close()
+
+    def test_dark_only_fvb_repeat_guard_handles_two_repeats(self):
+        raw = np.array(
+            [
+                [10.0, 11.0, 100.0, 13.0, 14.0],
+                [10.0, 12.0, 101.0, 13.0, 1000.0],
+            ]
+        )
+        calibration = _DarkOnlyPeakCalibration(raw.shape[1])
+        window = SpectrumWindow(raw, cosmic_ray_calibration=calibration)
+        try:
+            window.cosmic_ray_removal_check.setChecked(True)
+            corrected = window._cosmic_ray_corrected_cache
+            np.testing.assert_array_equal(corrected[:, 2], raw[:, 2])
+            self.assertEqual(corrected[1, -1], 10.0)
+        finally:
+            window.close()
+
+    def test_dark_only_fvb_is_disabled_for_one_spectrum(self):
+        calibration = _DarkOnlyPeakCalibration(5)
+        window = SpectrumWindow(
+            np.arange(5, dtype=float),
+            cosmic_ray_calibration=calibration,
+        )
+        try:
+            self.assertFalse(window.cosmic_ray_removal_check.isEnabled())
+            self.assertIn(
+                "at least two repeats",
+                window.cosmic_ray_removal_check.toolTip(),
+            )
+            self.assertIn(
+                "at least two repeats", window.cosmic_ray_status_label.text()
+            )
+        finally:
+            window.close()
+
+    def test_detector_cosmic_ray_cache_covers_image_and_row_sum_updates(self):
+        frames = np.arange(30, dtype=float).reshape(2, 3, 5)
+        calibration = _FakeCosmicRayCalibration(offset=1.0)
+        window = DetectorImageWindow(
+            frames, cosmic_ray_calibration=calibration
+        )
+        try:
+            window.cosmic_ray_removal_check.setChecked(True)
+            self.assertEqual(len(calibration.correct_calls), 2)
+            self.assertIn(
+                "corrected 30 detector values across 2 frames",
+                window.cosmic_ray_status_label.text(),
+            )
+            window._redraw()
+            window._toggle_view()
+            self.assertEqual(len(calibration.correct_calls), 2)
+            np.testing.assert_allclose(
+                window.ax.lines[0].get_ydata(),
+                (frames.mean(axis=0) - 1.0).sum(axis=0),
+            )
+            window.repeat_slider.setValue(2)
+            np.testing.assert_allclose(
+                window.ax.lines[0].get_ydata(),
+                (frames[1] - 1.0).sum(axis=0),
+            )
+            self.assertEqual(len(calibration.correct_calls), 2)
+
+            replacement = np.full((1, 3, 5), 10.0)
+            window.update_frames(replacement)
+            self.assertEqual(len(calibration.correct_calls), 3)
+            np.testing.assert_array_equal(window.raw_frames, replacement)
+            np.testing.assert_allclose(
+                window.ax.lines[0].get_ydata(),
+                np.full(5, 27.0),
+            )
+        finally:
+            window.close()
+
+    def test_cosmic_ray_failure_disables_control_without_changing_raw(self):
+        raw = np.arange(5, dtype=float).reshape(1, -1)
+        calibration = _FakeCosmicRayCalibration(
+            failure=RuntimeError("model could not process this spectrum")
+        )
+        window = SpectrumWindow(raw, cosmic_ray_calibration=calibration)
+        try:
+            window.cosmic_ray_removal_check.setChecked(True)
+
+            self.assertFalse(window.cosmic_ray_removal_check.isChecked())
+            self.assertFalse(window.cosmic_ray_removal_check.isEnabled())
+            self.assertIn(
+                "correction failed", window.cosmic_ray_removal_check.toolTip()
+            )
+            self.assertIn("model could not process", window._cosmic_ray_error)
+            np.testing.assert_array_equal(window.spec, raw)
+            np.testing.assert_allclose(window.ax.lines[0].get_ydata(), raw[0])
         finally:
             window.close()
 

@@ -1,0 +1,67 @@
+{
+    "center_wavelength_nm": 870.0,
+    "collection_elapsed_seconds": 180.1377777999951,
+    "collection_finished_at": "2026-11-09T22:31:11.760341-05:00",
+    "collection_started_at": "2026-11-09T22:28:11.622567-05:00",
+    "data_dtype": "int32",
+    "data_shape": [
+        10,
+        256,
+        2000
+    ],
+    "data_variable": "signal",
+    "exposure_ms": 1000.0,
+    "format_version": 1,
+    "gain_e_per_adu": 0.7,
+    "gain_source": "racer_default_assumption",
+    "galvo_volts": [
+        0.02122024175192805,
+        -0.12769143642455494
+    ],
+    "grating": 3,
+    "peak_intensity": 8570.0,
+    "point_index": 0,
+    "point_yx": [
+        496.65065598808917,
+        703.8985655274383
+    ],
+    "racer_detector_signature": {
+        "actual_exposure_ms": 1000.03,
+        "ad_channel_index": 0,
+        "baseline_clamp": 0,
+        "bit_depth": 16,
+        "camera_identity_source": "andor_sdk",
+        "camera_serial": "32125",
+        "collector_type": "raman_control.andor.AndorSpectraCollector",
+        "detector_shape": [
+            256,
+            2000
+        ],
+        "detector_x_bin": 1,
+        "detector_x_start": 0,
+        "detector_x_stop_exclusive": 2000,
+        "detector_y_bin": 1,
+        "detector_y_start": 0,
+        "detector_y_stop_exclusive": 256,
+        "em_gain_mode": 0,
+        "gain_source": "racer_default_assumption",
+        "horizontal_shift_speed": 0.033,
+        "horizontal_shift_speed_index": 2,
+        "number_accumulations": 1,
+        "output_amplifier_index": 0,
+        "preamp_gain": 1.0,
+        "preamp_gain_index": 0,
+        "read_mode": "image",
+        "requested_exposure_ms": 1000.0,
+        "schema_version": 2,
+        "vertical_shift_speed": 16.25,
+        "vertical_shift_speed_index": 0
+    },
+    "racer_role": "open_reference_candidate",
+    "read_mode": "image",
+    "record_type": "point_layer_raman_collection",
+    "repeats": 10,
+    "saturation_adu": 65535.0,
+    "spectral_bias_available": false,
+    "units": "ADU"
+}

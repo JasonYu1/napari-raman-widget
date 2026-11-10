@@ -33,8 +33,10 @@ PLOT_CONTROL_WIDGET_ATTRIBUTES = {
     "smoothing_window": "smoothing_window_input",
     "baseline_subtraction": "baseline_subtraction_check",
     "baseline_lambda": "baseline_lambda_input",
+    "cosmic_ray_removal": "cosmic_ray_removal_check",
     "remove_spectral_bias": "remove_spectral_bias_check",
     "spectrum_view": "toggle_btn",
+    "repeat_index": "repeat_input",
     "detector_view": "toggle_btn",
     "detector_start_row": "start_row_input",
     "detector_end_row": "end_row_input",
@@ -139,6 +141,7 @@ def _panel_state(workspace, panel):
         "show_wavenumber",
         "smoothing",
         "baseline_subtraction",
+        "cosmic_ray_removal",
     ):
         _checkbox_state(panel, name, values, limits, enabled)
     for name in ("smoothing_window", "baseline_lambda"):
@@ -148,6 +151,7 @@ def _panel_state(workspace, panel):
         values["spectrum_view"] = "mean" if panel._show_mean else "all"
         enabled["spectrum_view"] = bool(panel.toggle_btn.isEnabled())
         limits["spectrum_view"] = {"choices": ["mean", "all"]}
+        _numeric_state(panel, "repeat_index", values, limits, enabled)
         if getattr(panel, "spectral_bias", None) is not None:
             _checkbox_state(
                 panel, "remove_spectral_bias", values, limits, enabled
@@ -158,6 +162,7 @@ def _panel_state(workspace, panel):
         )
         enabled["detector_view"] = bool(panel.toggle_btn.isEnabled())
         limits["detector_view"] = {"choices": ["image", "spectrum"]}
+        _numeric_state(panel, "repeat_index", values, limits, enabled)
         _numeric_state(
             panel, "detector_start_row", values, limits, enabled
         )
@@ -200,6 +205,10 @@ def _panel_state(workspace, panel):
     if hasattr(panel, "show_wavenumber_check"):
         state["spectral_calibration_available"] = (
             getattr(panel, "spectral_calibration", None) is not None
+        )
+    if hasattr(panel, "cosmic_ray_removal_check"):
+        state["cosmic_ray_error"] = getattr(
+            panel, "_cosmic_ray_error", None
         )
     if panel_type == "CalibrationPlotWindow":
         selected = getattr(panel, "selected_index", None)
@@ -390,11 +399,12 @@ def _h_configure_plot(owner, tool_input):
             raise ValueError(
                 "spectrum_view is unavailable during axis calibration."
             )
-        operations.append(
-            lambda target=target: panel.toggle_btn.click()
-            if ((target == "mean") != panel._show_mean)
-            else None
-        )
+        def set_spectrum_view(target=target):
+            panel.repeat_input.setValue(0)
+            if (target == "mean") != panel._show_mean:
+                panel.toggle_btn.click()
+
+        operations.append(set_spectrum_view)
 
     if "detector_view" in tool_input:
         if panel_type != "DetectorImageWindow":
@@ -420,6 +430,7 @@ def _h_configure_plot(owner, tool_input):
         )
 
     numeric_names = (
+        "repeat_index",
         "detector_start_row",
         "detector_end_row",
         "grid_z_index",
@@ -434,6 +445,11 @@ def _h_configure_plot(owner, tool_input):
         widget = _widget(panel, name)
         value = _as_int(name, tool_input[name])
         _in_range(name, value, widget)
+        if name == "repeat_index" and value > 0 and not widget.isEnabled():
+            raise ValueError(
+                "repeat_index is unavailable because this plot has only one "
+                "repeat or axis calibration is active."
+            )
         numeric_values[name] = value
 
     if panel_type == "DetectorImageWindow":
@@ -495,9 +511,11 @@ def _h_configure_plot(owner, tool_input):
             lambda widget=widget, value=value: widget.setValue(value)
         )
 
+    cosmic_enable_operation = None
     for name in (
         "baseline_subtraction",
         "smoothing",
+        "cosmic_ray_removal",
         "remove_spectral_bias",
     ):
         if name not in tool_input:
@@ -514,7 +532,13 @@ def _h_configure_plot(owner, tool_input):
         value = _as_bool(name, tool_input[name])
         if value and not widget.isEnabled():
             raise ValueError(f"{name} is unavailable for this plot's data.")
-        operations.append(lambda widget=widget, value=value: widget.setChecked(value))
+        def operation(widget=widget, value=value):
+            widget.setChecked(value)
+
+        if name == "cosmic_ray_removal" and value:
+            cosmic_enable_operation = operation
+        else:
+            operations.append(operation)
 
     if "show_wavenumber" in tool_input:
         widget = _widget(panel, "show_wavenumber")
@@ -554,6 +578,15 @@ def _h_configure_plot(owner, tool_input):
                 "fix_y_scale is only available in detector_view='spectrum'."
             )
         operations.append(lambda widget=widget, value=value: widget.setChecked(value))
+
+    if cosmic_enable_operation is not None:
+        cosmic_enable_operation()
+        widget = _widget(panel, "cosmic_ray_removal")
+        if not widget.isChecked():
+            reason = getattr(panel, "_cosmic_ray_error", None)
+            if not reason:
+                reason = widget.toolTip() or "correction did not complete"
+            raise ValueError(f"cosmic_ray_removal failed: {reason}")
 
     for operation in operations:
         operation()
@@ -667,6 +700,12 @@ PLOT_ACTIONS = [
                 "AsLS lambda within the panel's reported limits.",
             ),
             _p(
+                "cosmic_ray_removal",
+                "check",
+                "Enable display-only RACER cosmic-ray removal; requires a "
+                "matching session calibration.",
+            ),
+            _p(
                 "remove_spectral_bias",
                 "check",
                 "Subtract the loaded dark-noise bias for this spectrum.",
@@ -676,6 +715,12 @@ PLOT_ACTIONS = [
                 "combo",
                 "Mean spectrum or all acquired traces.",
                 enum=("mean", "all"),
+            ),
+            _p(
+                "repeat_index",
+                "int",
+                "Repeat to display: 0 is aggregate, 1 through N selects one "
+                "acquired repeat.",
             ),
             _p(
                 "detector_view",

@@ -13,6 +13,7 @@ authors = [
 ]
 dependencies = [
     "cellpose>=3.1.1.3,<4",
+    "cosmic-ray-bayes[io] @ git+https://github.com/JasonYu1/racer-raman.git@364f201736567416989eb5b2a55ae34fa7b250ff",
     "matplotlib",
     "mda-simulator",
     "napari",
@@ -20,11 +21,11 @@ dependencies = [
     "napari-micromanager",
     "nidaqmx",
     "numpy",
-    "pandas",
+    "pandas>=2",
     "pymmcore-plus",
     "qtpy",
     "requests",
-    "raman-control @ git+https://github.com/JasonYu1/raman-control.git@74b2a965e55e18aa662de1e170e1855e3b5047a7",
+    "raman-control @ git+https://github.com/JasonYu1/raman-control.git@5cc3e46f2faa1075806b2f16b1bd80deba5c4b2c",
     "raman-mda-engine @ git+https://github.com/JasonYu1/raman-mda-engine.git@a90f67e660c2d3b25fdad24bf6b0e70091368aad",
     "scikit-image",
     "scikit-learn",
@@ -34,7 +35,7 @@ dependencies = [
     "tqdm",
     "useq-schema",
     "xarray",
-    "zarr",
+    "zarr>=2.15,<3",
 ]
 
 [project.optional-dependencies]

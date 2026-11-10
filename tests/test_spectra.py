@@ -7,12 +7,45 @@ import xarray as xr
 
 from napari_raman_widget.spectra import (
     asls_baseline,
+    racer_detector_signature,
     save_collection_record,
+    save_dark_noise_artifacts,
     smooth_spectra,
     spectral_bias_from_dark_noise,
     subtract_spectral_bias,
     sum_detector_rows,
 )
+
+
+class _Collector:
+    detector_rows = 256
+
+
+class _Sdk:
+    def GetDetector(self):
+        return 0, 8, 256
+
+    def GetCameraSerialNumber(self):
+        return 0, 12345
+
+    def GetBitDepth(self, _channel):
+        return 0, 16
+
+    def GetPreAmpGain(self, _index):
+        return 0, 1.0
+
+    def GetHSSpeed(self, _channel, _amplifier, _index):
+        return 0, 2.5
+
+    def GetVSSpeed(self, _index):
+        return 0, 8.25
+
+    def GetAcquisitionTimings(self):
+        return 0, 1.0, 1.0, 1.0
+
+
+class _SdkCollector(_Collector):
+    _sdk = _Sdk()
 
 
 class CollectionRecordTests(unittest.TestCase):
@@ -48,6 +81,124 @@ class CollectionRecordTests(unittest.TestCase):
                 )
             finally:
                 saved.close()
+
+
+class DarkNoiseArtifactTests(unittest.TestCase):
+    def test_fvb_writes_bias_npy_and_racer_closed_shutter_zarr(self) -> None:
+        data = np.arange(24, dtype=np.uint16).reshape(3, 8)
+        with tempfile.TemporaryDirectory() as directory:
+            npy_path, store_path = save_dark_noise_artifacts(
+                Path(directory) / "dark.npy",
+                data,
+                collector=_Collector(),
+                read_mode="fvb",
+                exposure_ms=1000,
+                metadata={"operator_note": "shutter closed"},
+            )
+
+            self.assertEqual(npy_path, Path(directory) / "dark.npy")
+            self.assertEqual(store_path, Path(directory) / "dark.zarr")
+            np.testing.assert_array_equal(np.load(npy_path), data)
+            saved = xr.open_zarr(store_path, consolidated=True)
+            try:
+                np.testing.assert_array_equal(saved["signal"].values, data)
+                self.assertEqual(
+                    saved["signal"].dims, ("repeat", "detector_x")
+                )
+                self.assertEqual(saved.attrs["read_mode"], "fvb")
+                self.assertEqual(saved.attrs["exposure_ms"], 1000.0)
+                self.assertEqual(
+                    saved.attrs["record_type"],
+                    "racer_closed_shutter_calibration",
+                )
+                self.assertEqual(saved.attrs["racer_role"], "closed_shutter")
+                self.assertEqual(saved.attrs["units"], "ADU")
+                self.assertEqual(saved.attrs["gain_e_per_adu"], 0.7)
+                self.assertEqual(saved.attrs["saturation_adu"], 65535.0)
+                self.assertEqual(
+                    saved.attrs["gain_source"], "racer_default_assumption"
+                )
+                signature = saved.attrs["racer_detector_signature"]
+                self.assertEqual(signature["schema_version"], 2)
+                self.assertEqual(signature["read_mode"], "fvb")
+                self.assertEqual(signature["detector_shape"], [8])
+                self.assertEqual(signature["detector_y_stop_exclusive"], 256)
+                self.assertEqual(signature["detector_y_bin"], "full")
+                self.assertEqual(signature["horizontal_shift_speed_index"], 2)
+                self.assertEqual(saved.attrs["operator_note"], "shutter closed")
+            finally:
+                saved.close()
+
+    def test_detector_signature_captures_available_hardware_identity(self) -> None:
+        signature = racer_detector_signature(
+            _SdkCollector(), np.zeros((3, 8)), "fvb", 1000
+        )
+
+        self.assertEqual(signature["camera_serial"], "12345")
+        self.assertEqual(signature["camera_identity_source"], "andor_sdk")
+        self.assertEqual(signature["bit_depth"], 16)
+        self.assertEqual(signature["preamp_gain"], 1.0)
+        self.assertEqual(signature["horizontal_shift_speed"], 2.5)
+        self.assertEqual(signature["vertical_shift_speed"], 8.25)
+        self.assertEqual(signature["requested_exposure_ms"], 1000.0)
+        self.assertEqual(signature["actual_exposure_ms"], 1000.0)
+
+    def test_image_writes_only_racer_zarr(self) -> None:
+        data = np.arange(24, dtype=np.uint16).reshape(2, 3, 4)
+        with tempfile.TemporaryDirectory() as directory:
+            npy_path, store_path = save_dark_noise_artifacts(
+                Path(directory) / "dark.npy",
+                data,
+                collector=_Collector(),
+                read_mode="image",
+                exposure_ms=250,
+            )
+
+            self.assertIsNone(npy_path)
+            self.assertFalse((Path(directory) / "dark.npy").exists())
+            self.assertEqual(store_path, Path(directory) / "dark.zarr")
+            saved = xr.open_zarr(store_path, consolidated=True)
+            try:
+                np.testing.assert_array_equal(saved["signal"].values, data)
+                self.assertEqual(
+                    saved["signal"].dims,
+                    ("repeat", "detector_y", "detector_x"),
+                )
+                self.assertEqual(saved.attrs["read_mode"], "image")
+                self.assertEqual(saved.attrs["exposure_ms"], 250.0)
+                signature = saved.attrs["racer_detector_signature"]
+                self.assertEqual(signature["detector_shape"], [3, 4])
+                self.assertEqual(signature["detector_y_stop_exclusive"], 3)
+                self.assertEqual(signature["detector_y_bin"], 1)
+            finally:
+                saved.close()
+
+    def test_single_track_remains_bias_only(self) -> None:
+        data = np.arange(12, dtype=np.uint16).reshape(3, 4)
+        with tempfile.TemporaryDirectory() as directory:
+            npy_path, store_path = save_dark_noise_artifacts(
+                Path(directory) / "dark.npy",
+                data,
+                collector=_Collector(),
+                read_mode="single_track",
+                exposure_ms=500,
+            )
+
+            self.assertEqual(npy_path, Path(directory) / "dark.npy")
+            self.assertIsNone(store_path)
+            np.testing.assert_array_equal(np.load(npy_path), data)
+            self.assertFalse((Path(directory) / "dark.zarr").exists())
+
+    def test_rejects_shape_that_does_not_match_read_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ValueError, "image dark data"):
+                save_dark_noise_artifacts(
+                    Path(directory) / "dark.npy",
+                    np.zeros((3, 8)),
+                    collector=_Collector(),
+                    read_mode="image",
+                    exposure_ms=100,
+                )
 
 
 class DetectorRowSumTests(unittest.TestCase):

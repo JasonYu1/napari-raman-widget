@@ -100,9 +100,10 @@ HELP = {
     ),
     "collect_dark_noise_btn": (
         "Stop camera or Raman live acquisition, close the Raman shutter, "
-        "collect repeated dark spectra, save "
-        "dark_noise_<exposure>ms_<uuid>.npy, and "
-        "select it for the current session. New sessions start with None."
+        "and collect repeated dark spectra or frames in a background job "
+        "with measured progress and Stop/Log controls. Completed FVB runs "
+        "save matching .npy bias and RACER closed-shutter .zarr files; Image "
+        "runs save the .zarr calibration. Interrupted runs are discarded."
     ),
     "collect_save_input": (
         "Optional base filename. Saves detector data, settings, and measured "

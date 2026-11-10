@@ -71,6 +71,61 @@ def _add_compact_control_group(layout, title, rows):
     return group
 
 
+def _make_repeat_controls(owner, changed):
+    """Create synchronized aggregate/individual repeat navigation controls."""
+
+    owner.repeat_controls = QWidget()
+    repeat_layout = QHBoxLayout(owner.repeat_controls)
+    repeat_layout.setContentsMargins(0, 0, 0, 0)
+    repeat_layout.setSpacing(6)
+    repeat_layout.addWidget(QLabel("Display repeat:"))
+    owner.repeat_input = QSpinBox()
+    owner.repeat_input.setSpecialValueText("Mean")
+    owner.repeat_input.setKeyboardTracking(False)
+    owner.repeat_input.setMaximumWidth(90)
+    owner.repeat_input.setToolTip(
+        "Mean shows the aggregate; 1 through N shows one acquired repeat"
+    )
+    repeat_layout.addWidget(owner.repeat_input)
+    owner.repeat_slider = QSlider(Qt.Horizontal)
+    owner.repeat_slider.setSingleStep(1)
+    owner.repeat_slider.setPageStep(1)
+    owner.repeat_slider.setToolTip(
+        "0 shows the aggregate; 1 through N shows one acquired repeat"
+    )
+    repeat_layout.addWidget(owner.repeat_slider, 1)
+    owner.repeat_count_label = QLabel()
+    owner.repeat_count_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+    repeat_layout.addWidget(owner.repeat_count_label)
+    owner.repeat_input.valueChanged.connect(owner.repeat_slider.setValue)
+    owner.repeat_slider.valueChanged.connect(owner.repeat_input.setValue)
+    owner.repeat_slider.valueChanged.connect(changed)
+    return owner.repeat_controls
+
+
+def _configure_repeat_controls(owner, repeat_count, *, reset=False):
+    """Set repeat bounds and hide navigation for a single measurement."""
+
+    repeat_count = max(1, int(repeat_count))
+    selected = int(owner.repeat_slider.value())
+    if reset or selected > repeat_count:
+        selected = 0
+    owner.repeat_slider.blockSignals(True)
+    owner.repeat_input.blockSignals(True)
+    try:
+        owner.repeat_slider.setRange(0, repeat_count)
+        owner.repeat_input.setRange(0, repeat_count)
+        owner.repeat_slider.setValue(selected)
+        owner.repeat_input.setValue(selected)
+    finally:
+        owner.repeat_slider.blockSignals(False)
+        owner.repeat_input.blockSignals(False)
+    owner.repeat_count_label.setText(f"of {repeat_count}")
+    available = repeat_count > 1 and not getattr(owner, "_calibrating", False)
+    owner.repeat_controls.setVisible(repeat_count > 1)
+    owner.repeat_controls.setEnabled(available)
+
+
 def _finish_plot_layout(
     layout, toolbar, canvas, *, background_control_in_layout=True
 ):
@@ -92,7 +147,336 @@ def _finish_plot_layout(
     layout.addWidget(canvas, 1)
 
 
-def _add_processing_section(owner, layout, redraw, spectral_length):
+def _set_cosmic_ray_status(owner, text="", *, visible=None):
+    """Update the small processing summary when that control is available."""
+
+    label = getattr(owner, "cosmic_ray_status_label", None)
+    if label is None:
+        return
+    label.setText(str(text))
+    label.setVisible(bool(text) if visible is None else bool(visible))
+
+
+def _is_dark_only_fvb(calibration):
+    """Return whether a calibration has no illuminated FVB reference."""
+
+    return (
+        calibration is not None
+        and getattr(calibration, "read_mode", "fvb") == "fvb"
+        and hasattr(calibration, "open_reference_path")
+        and calibration.open_reference_path is None
+    )
+
+
+def _set_cosmic_ray_unavailable(owner, reason):
+    """Disable RACER after an incompatibility or correction failure."""
+    reason = str(reason).strip() or "the calibration is incompatible"
+    owner._cosmic_ray_error = reason
+    checkbox = owner.cosmic_ray_removal_check
+    checkbox.blockSignals(True)
+    checkbox.setChecked(False)
+    checkbox.blockSignals(False)
+    checkbox.setEnabled(False)
+    checkbox.setToolTip(f"RACER unavailable: {reason}")
+    _set_cosmic_ray_status(owner, f"RACER unavailable: {reason}")
+
+
+def _refresh_cosmic_ray_compatibility(owner):
+    """Validate the current raw data without attempting a correction."""
+    calibration = owner.cosmic_ray_calibration
+    if calibration is None:
+        _set_cosmic_ray_unavailable(
+            owner, "load a compatible cosmic-ray calibration first"
+        )
+        return
+    raw_values = np.asarray(owner._cosmic_ray_values)
+    if (
+        owner.cosmic_ray_read_mode == "fvb"
+        and _is_dark_only_fvb(calibration)
+    ):
+        if not owner._cosmic_ray_fvb_repeat_guard:
+            _set_cosmic_ray_unavailable(
+                owner,
+                "dark-only FVB correction is limited to same-point repeats "
+                "in the Spectrum view; load an illuminated FVB reference "
+                "for this panel",
+            )
+            return
+        if raw_values.ndim != 2 or raw_values.shape[0] < 2:
+            _set_cosmic_ray_unavailable(
+                owner,
+                "dark-only FVB correction needs at least two repeats; "
+                "collect more repeats or load an illuminated FVB reference",
+            )
+            return
+    values = raw_values
+    if owner.cosmic_ray_read_mode == "image" and values.ndim >= 3:
+        values = values.reshape((-1,) + values.shape[-2:])
+    elif owner.cosmic_ray_read_mode != "image" and values.ndim >= 2:
+        values = values.reshape(-1, values.shape[-1])
+    try:
+        compatible, reason = calibration.compatibility(
+            values,
+            exposure_ms=owner.cosmic_ray_exposure_ms,
+            read_mode=owner.cosmic_ray_read_mode,
+        )
+    except Exception as error:
+        _set_cosmic_ray_unavailable(
+            owner,
+            "could not validate the calibration "
+            f"({type(error).__name__}: {error})",
+        )
+        return
+    if not compatible:
+        _set_cosmic_ray_unavailable(
+            owner, reason or "the calibration is incompatible with these data"
+        )
+        return
+    owner._cosmic_ray_error = None
+    owner.cosmic_ray_removal_check.setEnabled(True)
+    tooltip = (
+        "Apply display-only RACER cosmic-ray removal. Raw acquired and saved "
+        "data remain unchanged."
+    )
+    if owner._cosmic_ray_fvb_repeat_guard:
+        tooltip += (
+            " Repeat-consensus protection preserves stable narrow spectral "
+            "features."
+        )
+    owner.cosmic_ray_removal_check.setToolTip(tooltip)
+    if not owner.cosmic_ray_removal_check.isChecked():
+        _set_cosmic_ray_status(owner)
+
+
+def _add_cosmic_ray_controls(
+    owner,
+    layout,
+    redraw,
+    values,
+    *,
+    calibration=None,
+    exposure_ms=None,
+    read_mode="fvb",
+    fvb_repeat_guard=False,
+):
+    """Add a default-off RACER control and initialize its correction cache."""
+    owner.cosmic_ray_calibration = calibration
+    owner.cosmic_ray_exposure_ms = exposure_ms
+    owner.cosmic_ray_read_mode = read_mode
+    owner._cosmic_ray_fvb_repeat_guard = bool(fvb_repeat_guard)
+    owner._cosmic_ray_values = np.asarray(values)
+    owner._cosmic_ray_data_revision = 0
+    owner._cosmic_ray_cache_key = None
+    owner._cosmic_ray_corrected_cache = None
+    owner._cosmic_ray_correction_stats = None
+    owner._cosmic_ray_error = None
+    owner._cosmic_ray_redraw = redraw
+    owner.cosmic_ray_removal_check = QCheckBox(
+        "Remove cosmic rays (RACER)"
+    )
+    owner.cosmic_ray_removal_check.setChecked(False)
+    owner.cosmic_ray_removal_check.toggled.connect(redraw)
+    layout.addWidget(owner.cosmic_ray_removal_check)
+    owner.cosmic_ray_status_label = QLabel()
+    owner.cosmic_ray_status_label.setWordWrap(True)
+    owner.cosmic_ray_status_label.setStyleSheet(
+        "color: #777; font-size: 11px;"
+    )
+    owner.cosmic_ray_status_label.hide()
+    layout.addWidget(owner.cosmic_ray_status_label)
+    _refresh_cosmic_ray_compatibility(owner)
+
+
+def _replace_cosmic_ray_values(owner, values):
+    """Replace live raw data and invalidate any cached RACER output."""
+    owner._cosmic_ray_values = np.asarray(values)
+    owner._cosmic_ray_data_revision += 1
+    owner._cosmic_ray_cache_key = None
+    owner._cosmic_ray_corrected_cache = None
+    owner._cosmic_ray_correction_stats = None
+    _refresh_cosmic_ray_compatibility(owner)
+
+
+def set_cosmic_ray_calibration(owner, calibration):
+    """Replace one open panel's calibration and refresh its display state."""
+
+    if not hasattr(owner, "cosmic_ray_removal_check"):
+        return False
+    was_checked = owner.cosmic_ray_removal_check.isChecked()
+    owner.cosmic_ray_calibration = calibration
+    owner._cosmic_ray_cache_key = None
+    owner._cosmic_ray_corrected_cache = None
+    owner._cosmic_ray_correction_stats = None
+    _refresh_cosmic_ray_compatibility(owner)
+    compatible = owner.cosmic_ray_removal_check.isEnabled()
+    if was_checked:
+        owner._cosmic_ray_redraw()
+    return compatible
+
+
+def _protect_repeat_consistent_fvb(owner, raw, corrected):
+    """Restore stable spectral features that dark-only RACER misclassified."""
+
+    raw = np.asarray(raw, dtype=float)
+    corrected = np.asarray(corrected, dtype=float)
+    if raw.ndim != 2 or raw.shape[0] < 2 or corrected.shape != raw.shape:
+        return corrected, 0
+    changed = corrected != raw
+    if not np.any(changed):
+        return corrected, 0
+
+    removal = np.abs(raw - corrected)
+    calibration = owner.cosmic_ray_calibration
+    dark_sigma = getattr(calibration, "fvb_dark_sigma_adu", None)
+    if dark_sigma is None:
+        dark_sigma = np.full(raw.shape[1], 0.5, dtype=float)
+    else:
+        dark_sigma = np.asarray(dark_sigma, dtype=float)
+        if dark_sigma.shape != (raw.shape[1],):
+            dark_sigma = np.full(raw.shape[1], 0.5, dtype=float)
+    dark_sigma = np.maximum(
+        np.where(np.isfinite(dark_sigma), dark_sigma, 0.5), 0.5
+    )
+    dark_tolerance = 6.0 * dark_sigma[None, :]
+
+    if raw.shape[0] == 2:
+        peer_distance = np.abs(raw - raw[::-1])
+        restore = changed & (
+            peer_distance <= np.maximum(dark_tolerance, 0.5 * removal)
+        )
+    else:
+        peer_median = np.median(raw, axis=0)
+        peer_distance = np.abs(raw - peer_median[None, :])
+        repeat_sigma = 1.4826 * np.median(peer_distance, axis=0)
+        repeat_sigma = np.where(np.isfinite(repeat_sigma), repeat_sigma, 0.0)
+        noise_tolerance = 6.0 * np.maximum(
+            repeat_sigma[None, :], dark_sigma[None, :]
+        )
+        removal_tolerance = np.maximum(dark_tolerance, 0.5 * removal)
+        restore = (
+            changed
+            & (peer_distance <= noise_tolerance)
+            & (peer_distance <= removal_tolerance)
+        )
+
+    restored = int(np.count_nonzero(restore))
+    if restored == 0:
+        return corrected, 0
+    protected = np.array(corrected, copy=True)
+    protected[restore] = raw[restore]
+    return protected, restored
+
+
+def _show_cosmic_ray_summary(owner):
+    """Show how much the cached correction actually changed."""
+
+    stats = owner._cosmic_ray_correction_stats
+    if stats is None:
+        _set_cosmic_ray_status(owner)
+        return
+    changed, measurements, restored = stats
+    noun = "frame" if owner.cosmic_ray_read_mode == "image" else "spectrum"
+    noun += "s" if measurements != 1 else ""
+    if changed:
+        value_noun = "value" if changed == 1 else "values"
+        text = (
+            f"RACER corrected {changed:,} detector {value_noun} across "
+            f"{measurements:,} {noun}."
+        )
+    else:
+        text = f"RACER ran on {measurements:,} {noun}; no values changed."
+    if restored:
+        text += (
+            f" Preserved {restored:,} repeat-consistent spectral values."
+        )
+    _set_cosmic_ray_status(owner, text)
+
+
+def _correct_cosmic_ray_measurements(owner, values):
+    """Correct each raw spectrum or detector frame independently."""
+    raw = np.asarray(values)
+    calibration = owner.cosmic_ray_calibration
+    if owner.cosmic_ray_read_mode == "image":
+        if raw.ndim < 2:
+            raise ValueError("detector data must contain two-dimensional frames")
+        measurement_shape = raw.shape[-2:]
+        leading_shape = raw.shape[:-2]
+    else:
+        if raw.ndim < 1:
+            raise ValueError("spectral data must contain one-dimensional traces")
+        measurement_shape = raw.shape[-1:]
+        leading_shape = raw.shape[:-1]
+
+    measurements = raw.reshape((-1,) + measurement_shape)
+    corrected = []
+    for measurement in measurements:
+        result = np.asarray(
+            calibration.correct(np.array(measurement, copy=True))
+        )
+        if result.shape != measurement.shape:
+            raise ValueError(
+                "corrected data shape does not match the raw measurement "
+                f"({result.shape} != {measurement.shape})"
+            )
+        corrected.append(result)
+    if not corrected:
+        owner._cosmic_ray_correction_stats = (0, 0, 0)
+        return np.array(raw, copy=True)
+    result = np.stack(corrected).reshape(leading_shape + measurement_shape)
+    restored = 0
+    if (
+        owner.cosmic_ray_read_mode == "fvb"
+        and owner._cosmic_ray_fvb_repeat_guard
+        and _is_dark_only_fvb(calibration)
+        and result.ndim == 2
+    ):
+        result, restored = _protect_repeat_consistent_fvb(owner, raw, result)
+    changed = int(np.count_nonzero(np.asarray(result) != raw))
+    owner._cosmic_ray_correction_stats = (
+        changed,
+        int(measurements.shape[0]),
+        restored,
+    )
+    return result
+
+
+def _cosmic_ray_values_for_plot(owner):
+    """Return raw or cached corrected values, disabling RACER on failure."""
+    raw = owner._cosmic_ray_values
+    checkbox = owner.cosmic_ray_removal_check
+    if not checkbox.isChecked() or not checkbox.isEnabled():
+        if checkbox.isEnabled():
+            _set_cosmic_ray_status(owner)
+        return raw
+    key = (id(owner.cosmic_ray_calibration), owner._cosmic_ray_data_revision)
+    if owner._cosmic_ray_cache_key == key:
+        _show_cosmic_ray_summary(owner)
+        return owner._cosmic_ray_corrected_cache
+    try:
+        corrected = _correct_cosmic_ray_measurements(owner, raw)
+    except Exception as error:
+        _set_cosmic_ray_unavailable(
+            owner, f"correction failed ({type(error).__name__}: {error})"
+        )
+        return raw
+    owner._cosmic_ray_cache_key = key
+    owner._cosmic_ray_corrected_cache = corrected
+    _show_cosmic_ray_summary(owner)
+    return corrected
+
+
+def _add_processing_section(
+    owner,
+    layout,
+    redraw,
+    spectral_length,
+    *,
+    cosmic_ray_calibration=None,
+    cosmic_ray_values=None,
+    exposure_ms=None,
+    read_mode="fvb",
+    fvb_repeat_guard=False,
+):
     """Add shared collapsible baseline and smoothing controls."""
     owner._processing_available = True
     owner.processing_toggle = QToolButton()
@@ -109,6 +493,18 @@ def _add_processing_section(owner, layout, redraw, spectral_length):
     processing_layout = QVBoxLayout(owner.processing_panel)
     processing_layout.setContentsMargins(6, 0, 6, 4)
     processing_layout.setSpacing(4)
+    _add_cosmic_ray_controls(
+        owner,
+        processing_layout,
+        redraw,
+        np.empty((0, spectral_length))
+        if cosmic_ray_values is None
+        else cosmic_ray_values,
+        calibration=cosmic_ray_calibration,
+        exposure_ms=exposure_ms,
+        read_mode=read_mode,
+        fvb_repeat_guard=fvb_repeat_guard,
+    )
     _add_baseline_controls(
         owner, processing_layout, redraw, spectral_length
     )
@@ -446,6 +842,8 @@ class CalibrationPlotWindow(QWidget):
         ds,
         title="Calibration result",
         spectral_calibration=None,
+        cosmic_ray_calibration=None,
+        exposure_ms=None,
     ):
         super().__init__()
         self.setWindowTitle(title)
@@ -494,6 +892,20 @@ class CalibrationPlotWindow(QWidget):
                     self.white_background_check,
                 ],
             ],
+        )
+        spectral_length = (
+            0
+            if self.raw_spectra is None or self.raw_spectra.ndim == 0
+            else self.raw_spectra.shape[-1]
+        )
+        _add_processing_section(
+            self,
+            layout,
+            self._redraw_spectrum,
+            spectral_length,
+            cosmic_ray_calibration=cosmic_ray_calibration,
+            cosmic_ray_values=self.raw_spectra,
+            exposure_ms=exposure_ms,
         )
 
         self.fig = Figure(figsize=(10, 5), constrained_layout=True)
@@ -606,7 +1018,8 @@ class CalibrationPlotWindow(QWidget):
             return None
         if index < 0 or index >= self.raw_spectra.shape[0]:
             return None
-        spectrum = np.asarray(self.raw_spectra[index], dtype=float)
+        spectra = _cosmic_ray_values_for_plot(self)
+        spectrum = np.asarray(spectra[index], dtype=float)
         if spectrum.ndim == 0 or spectrum.size == 0:
             return None
         if spectrum.ndim == 1:
@@ -618,7 +1031,8 @@ class CalibrationPlotWindow(QWidget):
             result = filter_mean(repeats)
         if result.ndim != 1 or not np.isfinite(result).any():
             return None
-        return result
+        result = _subtract_baseline_for_plot(self, result)
+        return _smooth_for_plot(self, result)
 
     def _select_initial_point(self):
         for index in self._plotted_indices:
@@ -770,11 +1184,14 @@ class DetectorImageWindow(QWidget):
         frames,
         title="Detector image",
         spectral_calibration=None,
+        cosmic_ray_calibration=None,
+        exposure_ms=None,
     ):
         super().__init__()
         self.setWindowTitle(title)
         self.resize(800, 550)
-        self.image = self._mean_detector_image(frames)
+        self.raw_frames = np.array(frames, copy=True)
+        self.image = self._mean_detector_image(self.raw_frames)
         self.spectral_calibration = spectral_calibration
         self._show_spectrum = False
         self._fixed_y_limits = None
@@ -794,6 +1211,10 @@ class DetectorImageWindow(QWidget):
             "Switch between the detector image and its selected-row sum"
         )
         self.toggle_btn.clicked.connect(self._toggle_view)
+        _make_repeat_controls(self, self._on_repeat_changed)
+        _configure_repeat_controls(
+            self, self._detector_repeat_count(), reset=True
+        )
         rows_label = QLabel("Rows")
         rows_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.start_row_input = QSpinBox()
@@ -824,6 +1245,7 @@ class DetectorImageWindow(QWidget):
             "View",
             [
                 [self.view_mode_label, self.toggle_btn],
+                [self.repeat_controls],
                 [
                     rows_label,
                     self.start_row_input,
@@ -838,11 +1260,17 @@ class DetectorImageWindow(QWidget):
             ],
         )
         _add_processing_section(
-            self, layout, self._redraw, self.image.shape[1]
+            self,
+            layout,
+            self._redraw,
+            self.image.shape[1],
+            cosmic_ray_calibration=cosmic_ray_calibration,
+            cosmic_ray_values=self.raw_frames,
+            exposure_ms=exposure_ms,
+            read_mode="image",
         )
         self.baseline_subtraction_check.hide()
         self.smoothing_check.hide()
-        _set_processing_available(self, False)
 
         self.fig = Figure(figsize=(8, 5))
         _configure_matplotlib_figure(self.fig)
@@ -869,15 +1297,25 @@ class DetectorImageWindow(QWidget):
             "detector image must have shape (y, x) or (repeats, y, x)"
         )
 
+    def _detector_repeat_count(self):
+        return 1 if self.raw_frames.ndim == 2 else self.raw_frames.shape[0]
+
+    def _display_detector_image(self):
+        frames = np.asarray(_cosmic_ray_values_for_plot(self))
+        if frames.ndim == 2:
+            return frames
+        repeat = self.repeat_slider.value()
+        if repeat > 0:
+            return frames[repeat - 1]
+        return np.mean(frames, axis=0)
+
+    def _on_repeat_changed(self, _repeat):
+        self._redraw()
+
     def _toggle_view(self):
         self._show_spectrum = not self._show_spectrum
         self.toggle_btn.setText(
             "Show image" if self._show_spectrum else "Show spectrum"
-        )
-        self.view_mode_label.setText(
-            "Current view: row-sum spectrum"
-            if self._show_spectrum
-            else "Current view: detector image"
         )
         self.show_wavenumber_check.setVisible(self._show_spectrum)
         self.fix_y_scale_check.setVisible(self._show_spectrum)
@@ -890,7 +1328,6 @@ class DetectorImageWindow(QWidget):
         self.smoothing_window_controls.setVisible(
             self._show_spectrum and self.smoothing_check.isChecked()
         )
-        _set_processing_available(self, self._show_spectrum)
         self._redraw()
 
     def _on_fix_y_scale_toggled(self, checked):
@@ -919,7 +1356,12 @@ class DetectorImageWindow(QWidget):
             self.start_row_input.value() == 0
             and self.end_row_input.value() == old_last_row
         )
-        self.image = self._mean_detector_image(frames)
+        self.raw_frames = np.array(frames, copy=True)
+        self.image = self._mean_detector_image(self.raw_frames)
+        _configure_repeat_controls(
+            self, self._detector_repeat_count(), reset=True
+        )
+        _replace_cosmic_ray_values(self, self.raw_frames)
         _configure_baseline_length(self, self.image.shape[1])
         _configure_smoothing_length(self, self.image.shape[1])
         last_row = self.image.shape[0] - 1
@@ -940,9 +1382,24 @@ class DetectorImageWindow(QWidget):
 
     def _redraw(self, _checked=None):
         self.ax.clear()
+        display_image = self._display_detector_image()
+        repeat_count = self._detector_repeat_count()
+        repeat = self.repeat_slider.value()
+        if repeat_count > 1:
+            repeat_description = (
+                f"repeat {repeat} of {repeat_count}" if repeat else "mean"
+            )
+        else:
+            repeat_description = "single acquisition"
+        view_description = (
+            "row-sum spectrum" if self._show_spectrum else "detector image"
+        )
+        self.view_mode_label.setText(
+            f"Current view: {view_description} · {repeat_description}"
+        )
         if self._show_spectrum:
             spectrum = sum_detector_rows(
-                self.image,
+                display_image,
                 self.start_row_input.value(),
                 self.end_row_input.value(),
             )
@@ -956,8 +1413,13 @@ class DetectorImageWindow(QWidget):
                 self.show_wavenumber_check.isChecked(),
             )
             self.ax.set_ylabel("Summed intensity (a.u.)")
+            repeat_title = (
+                f"Repeat {repeat} of {repeat_count}"
+                if repeat
+                else "Mean"
+            )
             self.ax.set_title(
-                "Row-sum spectrum · rows "
+                f"{repeat_title} row-sum spectrum · rows "
                 f"{self.start_row_input.value()}–{self.end_row_input.value()}"
             )
             if self._fixed_y_limits is not None:
@@ -966,14 +1428,19 @@ class DetectorImageWindow(QWidget):
                 self._colorbar.ax.set_visible(False)
         else:
             image_artist = self.ax.imshow(
-                self.image,
+                display_image,
                 cmap="gray",
                 aspect="auto",
                 origin="lower",
             )
             self.ax.set_xlabel("Detector X pixel")
             self.ax.set_ylabel("Detector Y pixel")
-            self.ax.set_title("Detector image")
+            if repeat:
+                self.ax.set_title(
+                    f"Detector image · repeat {repeat} of {repeat_count}"
+                )
+            else:
+                self.ax.set_title("Mean detector image")
             if self._colorbar is None:
                 self._colorbar = self.fig.colorbar(
                     image_artist, ax=self.ax, label="Intensity (a.u.)"
@@ -994,6 +1461,8 @@ class SpectrumWindow(QWidget):
         spectral_calibration=None,
         calibration_changed=None,
         spectral_bias=None,
+        cosmic_ray_calibration=None,
+        exposure_ms=None,
     ):
         super().__init__()
         self.setWindowTitle(title)
@@ -1023,6 +1492,8 @@ class SpectrumWindow(QWidget):
             "Switch between the mean spectrum and every acquired trace"
         )
         self.toggle_btn.clicked.connect(self._toggle)
+        _make_repeat_controls(self, self._on_repeat_changed)
+        _configure_repeat_controls(self, self.spec.shape[0], reset=True)
         self.show_wavenumber_check = _make_wavenumber_axis_checkbox(
             spectral_calibration, self._redraw
         )
@@ -1036,8 +1507,9 @@ class SpectrumWindow(QWidget):
         _make_white_background_checkbox(self)
         self.remove_spectral_bias_check = QCheckBox("Remove spectral bias")
         self.remove_spectral_bias_check.setToolTip(
-            "Subtract filter_mean(dark noise) in this plot only. The raw "
-            "spectra remain unchanged."
+            "Subtract the filter_mean(dark noise) detector pedestal after "
+            "RACER in this plot only. This does not identify cosmic rays, "
+            "and the raw spectra remain unchanged."
         )
         self.remove_spectral_bias_check.toggled.connect(self._redraw)
         self.remove_spectral_bias_check.setVisible(
@@ -1053,6 +1525,7 @@ class SpectrumWindow(QWidget):
             "View",
             [
                 [self.view_mode_label],
+                [self.repeat_controls],
                 [
                     self.fix_y_scale_check,
                     self.show_wavenumber_check,
@@ -1066,7 +1539,14 @@ class SpectrumWindow(QWidget):
             ],
         )
         _add_processing_section(
-            self, layout, self._redraw, self.spec.shape[-1]
+            self,
+            layout,
+            self._redraw,
+            self.spec.shape[-1],
+            cosmic_ray_calibration=cosmic_ray_calibration,
+            cosmic_ray_values=self.spec,
+            exposure_ms=exposure_ms,
+            fvb_repeat_guard=True,
         )
 
         self.calibration_controls = QWidget()
@@ -1141,16 +1621,19 @@ class SpectrumWindow(QWidget):
 
     def _display_spectra(self):
         """Return raw or bias-corrected data for this window's plot only."""
+        spectra = _cosmic_ray_values_for_plot(self)
         if (
             self.spectral_bias is not None
             and self.remove_spectral_bias_check.isChecked()
         ):
-            return subtract_spectral_bias(self.spec, self.spectral_bias)
-        return self.spec
+            return subtract_spectral_bias(spectra, self.spectral_bias)
+        return spectra
 
     def update_spectrum(self, spec, *, title=None):
         """Replace plotted data, for example after each live exposure."""
         self.spec = self._normalize_spectra(spec)
+        _configure_repeat_controls(self, self.spec.shape[0], reset=True)
+        _replace_cosmic_ray_values(self, self.spec)
         _configure_baseline_length(self, self.spec.shape[-1])
         _configure_smoothing_length(self, self.spec.shape[-1])
         if title is not None:
@@ -1165,23 +1648,46 @@ class SpectrumWindow(QWidget):
             self._redraw()
 
     def _toggle(self):
+        self.repeat_slider.blockSignals(True)
+        self.repeat_input.blockSignals(True)
+        try:
+            self.repeat_slider.setValue(0)
+            self.repeat_input.setValue(0)
+        finally:
+            self.repeat_slider.blockSignals(False)
+            self.repeat_input.blockSignals(False)
         self._show_mean = not self._show_mean
         self.toggle_btn.setText(
             "Show all" if self._show_mean else "Show mean"
         )
-        self.view_mode_label.setText(
-            "Current view: mean spectrum"
-            if self._show_mean
-            else "Current view: all traces"
-        )
+        self._redraw()
+
+    def _on_repeat_changed(self, repeat):
+        if repeat > 0 and not self._show_mean:
+            self._show_mean = True
+            self.toggle_btn.setText("Show all")
         self._redraw()
 
     def _redraw(self):
         import matplotlib.cm as cm
         self.ax.clear()
         display_spectra = self._display_spectra()
+        repeat = self.repeat_slider.value()
+        repeat_count = display_spectra.shape[0]
         lines = []
-        if self._show_mean:
+        if repeat > 0:
+            selected_spectrum = display_spectra[repeat - 1]
+            selected_spectrum = _subtract_baseline_for_plot(
+                self, selected_spectrum
+            )
+            lines.extend(
+                self.ax.plot(_smooth_for_plot(self, selected_spectrum))
+            )
+            title = f"Repeat {repeat} of {repeat_count}"
+            self.view_mode_label.setText(
+                f"Current view: repeat {repeat} of {repeat_count}"
+            )
+        elif self._show_mean:
             mean_spectrum = filter_mean(display_spectra)
             mean_spectrum = _subtract_baseline_for_plot(
                 self, mean_spectrum
@@ -1189,6 +1695,8 @@ class SpectrumWindow(QWidget):
             lines.extend(
                 self.ax.plot(_smooth_for_plot(self, mean_spectrum))
             )
+            title = "Mean spectrum"
+            self.view_mode_label.setText("Current view: mean spectrum")
         else:
             n = display_spectra.shape[0]
             colors = cm.viridis(np.linspace(0, 1, n))
@@ -1204,6 +1712,8 @@ class SpectrumWindow(QWidget):
                         linewidth=0.8,
                     )
                 )
+            title = "All traces"
+            self.view_mode_label.setText("Current view: all traces")
         _set_spectral_line_axis(
             self.ax,
             lines,
@@ -1211,7 +1721,6 @@ class SpectrumWindow(QWidget):
             self.show_wavenumber_check.isChecked(),
         )
         self.ax.set_ylabel("Intensity (a.u.)")
-        title = "Mean spectrum" if self._show_mean else "All traces"
         if self.remove_spectral_bias_check.isChecked():
             title = f"{title} · bias corrected"
         if self.baseline_subtraction_check.isChecked():
@@ -1232,6 +1741,7 @@ class SpectrumWindow(QWidget):
         self._calibration_pixels = []
         self._known_shifts = []
         self._show_mean = True
+        _configure_repeat_controls(self, self.spec.shape[0], reset=True)
         self.toggle_btn.setText("Show all")
         self.view_mode_label.setText("Current view: mean spectrum")
         self.toggle_btn.setEnabled(False)
@@ -1422,6 +1932,7 @@ class SpectrumWindow(QWidget):
         self._calibrating = False
         self._pending_pixel = None
         self.calibration_controls.hide()
+        _configure_repeat_controls(self, self.spec.shape[0])
         self.toggle_btn.setEnabled(True)
         self.calibration_btn.setEnabled(True)
         self.show_wavenumber_check.setEnabled(
@@ -1443,6 +1954,8 @@ class ReferenceSpectraWindow(QWidget):
     def __init__(
         self, all_raman, zs, title="Reference spectra",
         spectral_calibration=None,
+        cosmic_ray_calibration=None,
+        exposure_ms=None,
     ):
         super().__init__()
         self.setWindowTitle(title)
@@ -1457,8 +1970,9 @@ class ReferenceSpectraWindow(QWidget):
         from matplotlib.colors import Normalize
         layout = _panel_layout(self)
         self.spectral_calibration = spectral_calibration
+        self._raw_reference_spectra = np.array(all_raman, copy=True)
         self._reference_spectra = np.asarray(
-            [filter_mean(repeats) for repeats in all_raman]
+            [filter_mean(repeats) for repeats in self._raw_reference_spectra]
         )
         self.show_wavenumber_check = _make_wavenumber_axis_checkbox(
             spectral_calibration, self._update_spectral_axis
@@ -1474,6 +1988,9 @@ class ReferenceSpectraWindow(QWidget):
             layout,
             self._redraw_spectra,
             self._reference_spectra.shape[-1],
+            cosmic_ray_calibration=cosmic_ray_calibration,
+            cosmic_ray_values=self._raw_reference_spectra,
+            exposure_ms=exposure_ms,
         )
         self.fig = Figure(figsize=(8, 5.5))
         _configure_matplotlib_figure(self.fig)
@@ -1510,8 +2027,12 @@ class ReferenceSpectraWindow(QWidget):
         )
 
     def _redraw_spectra(self):
+        raw_spectra = _cosmic_ray_values_for_plot(self)
+        spectra = np.asarray(
+            [filter_mean(repeats) for repeats in raw_spectra]
+        )
         spectra = _subtract_baseline_for_plot(
-            self, self._reference_spectra
+            self, spectra
         )
         spectra = _smooth_for_plot(self, spectra)
         for line, spectrum in zip(self._spectral_lines, spectra):
@@ -1544,7 +2065,12 @@ class GridScanPlotWindow(QWidget):
     FIXED = ["BF", "end_BF"]
 
     def __init__(
-        self, ds, title="Grid scan result", spectral_calibration=None
+        self,
+        ds,
+        title="Grid scan result",
+        spectral_calibration=None,
+        cosmic_ray_calibration=None,
+        exposure_ms=None,
     ):
         super().__init__()
         self.setWindowTitle(title)
@@ -1554,6 +2080,8 @@ class GridScanPlotWindow(QWidget):
         self._scat = None
         self._hl = None
         self.spectral_calibration = spectral_calibration
+        self._pending_cosmic_ray_calibration = cosmic_ray_calibration
+        self._pending_cosmic_ray_exposure_ms = exposure_ms
         import matplotlib
         matplotlib.use("QtAgg")
         from matplotlib.figure import Figure
@@ -1610,6 +2138,9 @@ class GridScanPlotWindow(QWidget):
             rows,
             self._on_spectral_axis_changed,
             self._specs.shape[-1],
+            cosmic_ray_calibration=self._pending_cosmic_ray_calibration,
+            cosmic_ray_values=self._specs,
+            exposure_ms=self._pending_cosmic_ray_exposure_ms,
         )
         self.band_map_controls = BandMapControls(self)
         rows.insertWidget(1, self.band_map_controls)
@@ -1647,6 +2178,13 @@ class GridScanPlotWindow(QWidget):
             return self._specs[zi]
         return self._specs
 
+    def _current_display_specs_2d(self):
+        """Return display spectra while keeping band maps on raw data."""
+        spectra = _cosmic_ray_values_for_plot(self)
+        if self._has_zscan:
+            return spectra[self._z_slider.value()]
+        return spectra
+
     def _toggle_mode(self):
         self._show_average = not self._show_average
         self._mode_btn.setText(
@@ -1680,7 +2218,7 @@ class GridScanPlotWindow(QWidget):
         self.canvas.draw_idle()
 
     def _draw_spec(self):
-        specs2d = self._current_specs_2d()
+        specs2d = self._current_display_specs_2d()
         if specs2d is None or len(specs2d) == 0:
             return
         if self._show_average:
@@ -1853,13 +2391,22 @@ class DatasetViewerWindow(QWidget):
     Qt sliders for t/p/z."""
 
     def __init__(
-        self, df, da, title="Dataset viewer", spectral_calibration=None
+        self,
+        df,
+        da,
+        title="Dataset viewer",
+        spectral_calibration=None,
+        cosmic_ray_calibration=None,
+        exposure_ms=None,
     ):
         super().__init__()
         self.setWindowTitle(title)
         self.resize(1200, 650)
         self.df = df
         self.da = da
+        self._raw_dataset_spectra = np.array(
+            df.iloc[:, :-3].to_numpy(), copy=True
+        )
         self.spectral_calibration = spectral_calibration
         self.bf = da.sel(c=0).values  # (t, p, z, y, x)
         self._pt_selected = 0
@@ -1928,6 +2475,9 @@ class DatasetViewerWindow(QWidget):
             main_layout,
             self._on_smoothing_changed,
             max(0, int(df.shape[1]) - 3),
+            cosmic_ray_calibration=cosmic_ray_calibration,
+            cosmic_ray_values=self._raw_dataset_spectra,
+            exposure_ms=exposure_ms,
         )
         # --- Figure ---
         self.fig = Figure(figsize=(12, 5))
@@ -1969,7 +2519,7 @@ class DatasetViewerWindow(QWidget):
         )
         # Spectrum line
         try:
-            spec0 = df.loc[t0, p0, z0, 0].values[:-3]
+            spec0 = self._dataset_spectrum((t0, p0, z0, 0))
         except KeyError:
             spec0 = np.zeros(100)
         colors = self._pt_colors(max(n, 1))
@@ -2015,6 +2565,16 @@ class DatasetViewerWindow(QWidget):
         z = int(self.z_vals[zi])
         return t, p, z, ti, pi, zi
 
+    def _dataset_spectrum(self, key):
+        """Return one raw or corrected spectrum by its DataFrame index."""
+        location = self.df.index.get_loc(key)
+        if not isinstance(location, (int, np.integer)):
+            matches = np.flatnonzero(np.asarray(location))
+            if len(matches) != 1:
+                raise KeyError(key)
+            location = int(matches[0])
+        return _cosmic_ray_values_for_plot(self)[int(location)]
+
     def _on_slider(self, _=None):
         t, p, z, ti, pi, zi = self._current_tpz()
         # Update image
@@ -2057,7 +2617,7 @@ class DatasetViewerWindow(QWidget):
         t, p, z, _, _, _ = self._current_tpz()
         pt = self._pt_selected
         try:
-            y = self.df.loc[t, p, z, pt].values[:-3]
+            y = self._dataset_spectrum((t, p, z, pt))
             n = len(self.df.loc[t, p, z])
         except KeyError:
             return

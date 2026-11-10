@@ -69,8 +69,10 @@ pip install git+https://github.com/JasonYu1/napari-raman-widget.git
 
 This installs the declared dependencies automatically, including the
 project-specific [`raman-control`](https://github.com/JasonYu1/raman-control)
-and [`raman-mda-engine`](https://github.com/JasonYu1/raman-mda-engine) packages
-from their public GitHub repositories.
+and [`raman-mda-engine`](https://github.com/JasonYu1/raman-mda-engine) packages,
+plus the pinned
+[`racer-raman`](https://github.com/JasonYu1/racer-raman) cosmic-ray removal
+implementation, from their public GitHub repositories.
 
 For development, clone the repository and install it in editable mode:
 
@@ -148,10 +150,122 @@ that result. **Plots** also restores a minimized floating workspace.
 Closing a live spectrum tab requests a stop after the current exposure;
 hiding or floating the workspace lets acquisition continue.
 
-Each spectrum has compact display controls and an expandable **Processing**
-section for baseline subtraction and smoothing. These settings change the
-display only; acquired data stays unchanged. Dataset navigation separates
-time, position, and Z from the spectral processing controls.
+Each spectral result has compact display controls and an expandable
+**Processing** section for RACER cosmic-ray removal, baseline subtraction,
+and smoothing. These settings change the display only; acquired and saved
+data stay unchanged. Dataset navigation separates time, position, and Z from
+the spectral processing controls. Repeated FVB spectra and detector-image
+collections also provide a repeat slider: **Mean** preserves the aggregate
+view, while positions `1…N` display an individual acquired spectrum or frame.
+For detector images, the selected repeat applies to both the image and its
+row-sum spectrum view.
+
+**Remove cosmic rays (RACER)** is off by default and remains disabled until a
+matching session calibration is loaded from **Loading → Load RACER
+calibration…**. Choose a closed-shutter Zarr stack and a separate illuminated
+open-reference Zarr stack when desired. For FVB/RACER-1D, cancelling the
+second file chooser uses the closed-shutter variance alone. RACER-2D requires
+the illuminated reference. When both stores are used, collect them with the
+same exposure, detector readout, binning, gain, region of interest, and detector
+geometry as the measurements.
+RACER-1D is available for full-vertical-binning spectra and RACER-2D for
+detector images; single-track correction is not enabled because that readout is
+not currently validated by RACER. The loaded calibration is held in memory for
+this session and can be cleared without changing the existing dark-noise
+selection.
+
+The **Closed shutter** and **Open reference** path fields are remembered when
+you browse for a Zarr directory or finish editing a path. On reopening either
+widget, the paths are restored and the calibration stays unloaded. Click
+**Load RACER calibration…** to load those files without selecting them again.
+Use each field's browse button to change files; an empty open-reference field
+selects dark-only variance for FVB. **Clear** unloads the active calibration
+while keeping the remembered paths. Missing or incompatible files are reported
+only when you explicitly load them.
+
+Use **Loading → Advanced calibration settings…** to change RACER's fit
+parameters before loading calibration files. Separate tabs cover FVB dark
+calibration, FVB reference variance, and Image calibration, including the
+**Trace half-width (rows)**. Values start at the installed RACER defaults;
+**Save settings** remembers your values in local app preferences and restores
+them when either widget opens again. **Restore Defaults → Save settings**
+remembers the reset. Changes take effect on the next calibration load, so reload
+an active calibration after changing them. Exposure, detector gain, and
+saturation continue to come from the stores.
+
+For FVB/RACER-1D, the illuminated open-reference spectra are **not** used as a
+2-D optical row profile. They measure the per-column illuminated master and
+variance at the reference's signal level, which helps avoid mistaking ordinary
+fluctuations for particle events. This is not a fitted variance-versus-intensity
+curve: the reference should be stable and representative of the count levels in
+the samples being corrected. RACER-2D additionally uses its open-reference
+images to fit the optical row profile. If no open reference is selected for
+RACER-1D, the widget fits RACER with the closed-shutter stack as both inputs so
+the fixed variance comes only from the dark acquisition. This avoids
+transferring a reference sample's peak-specific variance, but it also omits
+signal-dependent shot noise and can over-flag bright sample features. The
+Spectrum view therefore enables dark-only FVB correction only when at least two
+same-point repeats are available, and restores narrow features that agree with
+the repeat consensus while retaining one-off particle corrections. A single
+FVB spectrum still requires a genuine illuminated FVB reference because one
+narrow peak cannot be distinguished safely from one cosmic event.
+For detector images, RACER's optical-trace correction is complemented by a
+conservative dark-calibrated cleanup for compact off-trace events; broad
+off-trace structures are left unchanged.
+The generic Dataset viewer remains disabled for RACER because imported datasets
+do not currently carry the exposure and detector-signature evidence needed for
+safe matching.
+
+RACER corrects each raw trace or detector frame before repeat averaging. The
+display pipeline then applies optional dark-noise bias subtraction, baseline
+subtraction, and smoothing. A calibration is never inferred from the data
+being corrected, and incompatible exposure or detector geometry leaves the
+checkbox disabled. The Processing section reports how many detector values
+were actually changed and how many repeat-consistent FVB values were preserved.
+See
+[racer-raman](https://github.com/JasonYu1/racer-raman) for calibration guidance.
+
+To collect and use a calibration end to end:
+
+1. Select **FVB** or **Image**, set the exposure and repeat count, physically
+   close the shutter or block excitation, and click **Collect dark noise**. The
+   hardware workflow closes its configured excitation `Fluoshutter`, but that
+   does not prove that the detector sees a fully dark optical path; physically
+   verify that excitation and ambient light are blocked. Demo mode has no
+   physical shutter.
+2. FVB collection writes two files with the same generated stem in the current
+   working directory: a `.npy` file selected for the existing mean-bias
+   subtraction and a `.zarr` closed-shutter stack for RACER. Image collection
+   writes the RACER `.zarr` stack and opens an image result, but does not replace
+   the selected spectral-bias `.npy` file. Single-track remains `.npy` bias-only
+   because RACER does not validate that readout mode.
+3. Optionally for FVB, reopen the shutter, place a stable representative open
+   reference, keep exposure, readout, binning, gain, and region of interest
+   unchanged, and use a finite **Collect spectra at selected point** acquisition
+   with **Save as** filled in. This creates the separate open-reference `.zarr`
+   stack. This step is required for Image/RACER-2D.
+4. In **Loading**, click **Load RACER calibration…**, choose the generated
+   closed-shutter Zarr first, then either choose the illuminated reference or
+   cancel the second chooser to use dark-only variance for FVB. Acquire the
+   matching sample data, open **Processing**, and check **Remove cosmic rays
+   (RACER)**.
+
+RACER requires at least three calibration frames, but that is an algorithmic
+minimum rather than a useful acquisition target. As a practical starting point,
+the upstream measured-data examples use 1,000 closed-shutter frames for both
+readouts, 1,000 open-reference spectra for FVB, and 100 open-reference frames
+for Image. Use enough frames to sample real particle events and detector noise;
+calibration quality is more important than fitting from the minimum count.
+Both generated stores include the detector shape/readout signature, ADU units,
+and the RACER default detector assumptions (`0.7 e-/ADU`, saturation at
+`65535 ADU`) so mismatched pairs can be rejected. These gain values are marked
+as assumptions in the metadata; verify them for the connected detector before
+using the correction for quantitative work.
+
+Packaging note: the pinned RACER revision currently has no `LICENSE` or
+`COPYING` file and declares no package license. Obtain explicit upstream
+licensing terms before redistributing a release that installs or bundles that
+dependency.
 
 In **Acquire > Run Raman MDA**, **Advanced** starts collapsed and holds
 autofocus search ranges/points, autofocus and imaging positions,
@@ -194,6 +308,8 @@ The optional AI chat has its own **Assistant** tab.
 Dark noise starts as **None** whenever a widget opens, including when an older
 defaults file contains a dark-noise path. Select or collect a dark-noise file
 to use it for the current session, or click **Clear** to return to None.
+This optional mean-bias subtraction is separate from RACER: a dark-noise
+`.npy` file by itself is not a RACER calibration and is never treated as one.
 
 ### Spatial mapping inside an ROI
 
@@ -317,10 +433,11 @@ Z offset. An axial background scan measures the configured evenly spaced Z
 positions around the initial Z, with the chosen repeats at each position; it
 does not run an additional fine scan or automatically choose a focus.
 
-**Laser aiming calibration, grid scans, and axial background scans** run as
-background jobs in both the hardware and demo widgets. A task strip below the
-controls shows actual completed work, the current stage, elapsed time, **Stop**,
-and **Log**. The corresponding log also shows progress and a Stop control.
+**Dark-noise collections, finite selected-point collections, laser aiming
+calibration, grid scans, and axial background scans** run as background jobs in
+both the hardware and demo widgets. A task strip below the controls shows
+actual completed work, the current stage, elapsed time, **Stop**, and **Log**.
+The corresponding log also shows progress and a Stop control.
 Progress advances when a measured batch or processing stage finishes; it does
 not simulate detector progress during an exposure. Conflicting widget controls
 are unavailable until the job finishes.
@@ -329,6 +446,8 @@ are unavailable until the job finishes.
 hardware step or acquisition batch to finish before cleanup; a long exposure
 or repeated-spectrum batch can take time. Keep the application open while it
 shows that a stop is pending. Hiding a log does not stop acquisition.
+An interrupted dark-noise or selected-point collection is discarded rather
+than saved or plotted as if all requested repeats completed.
 
 When a requested stop completes normally, grid and axial scans save any
 completed measurements to the previewed output path. These datasets carry
@@ -527,8 +646,9 @@ a confirmation dialog first; read-only queries run automatically.
   start it.
 - List open plots with stable IDs; show, hide, dock, or float the workspace.
 - Change supported plot controls: white/transparent background, Y-scale lock,
-  pixel/wavenumber axis, display-only smoothing and baseline subtraction,
-  and plot-specific view/navigation settings. Unsupported settings are rejected.
+  pixel/wavenumber axis, display-only RACER cosmic-ray removal, smoothing and
+  baseline subtraction, and plot-specific view/navigation settings.
+  Unsupported settings are rejected.
 - Load or clear optional wavenumber calibration, optionally attaching a loaded
   model to one explicitly selected existing plot. Loading never automatically
   opts a pixel plot into wavenumbers. Clear dark noise, collect new dark spectra
@@ -596,6 +716,10 @@ confirmation dialog (not recommended on live hardware).
 - `napari_raman_widget/chat_panel.py` - built-in LLM-backed assistant that
   drives the panel's actions.
 - `napari_raman_widget/plot_windows.py` - dock-ready Matplotlib plot panels.
+- `napari_raman_widget/cosmic_ray_removal.py` - validated RACER calibration
+  loading and display-only correction adapters.
+- `napari_raman_widget/racer_ui.py` - session calibration controls shared by
+  the hardware and demonstration widgets.
 - `napari_raman_widget/plot_workspace.py` - shared, tabbed Napari plot dock.
 - `napari_raman_widget/log_window.py` - streaming stdout log window.
 - `napari_raman_widget/scan_preview.py` - immutable scan plans and confirmation

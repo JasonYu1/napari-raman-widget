@@ -13,7 +13,9 @@ from scipy.sparse import diags
 __all__ = [
     "asls_baseline",
     "filter_mean",
+    "racer_detector_signature",
     "save_collection_record",
+    "save_dark_noise_artifacts",
     "smooth_spectra",
     "spectral_bias_from_dark_noise",
     "subtract_spectral_bias",
@@ -175,6 +177,204 @@ def save_collection_record(
     )
     dataset.to_zarr(store_path, mode="w", consolidated=True)
     return store_path
+
+
+def racer_detector_signature(
+    collector: object,
+    data: np.ndarray,
+    read_mode: str,
+    exposure_ms: float | None = None,
+    *,
+    include_acquisition_timing: bool = True,
+) -> dict:
+    """Describe the fixed detector settings used by RACER acquisitions."""
+    read_mode = str(read_mode).lower()
+    detector_data = np.asarray(data)
+    if read_mode == "image":
+        if detector_data.ndim < 2:
+            raise ValueError("image data must include detector Y and X axes")
+        detector_shape = [
+            int(detector_data.shape[-2]),
+            int(detector_data.shape[-1]),
+        ]
+        detector_y_stop: int | None = int(detector_data.shape[-2])
+        detector_y_bin: int | str = 1
+    elif read_mode == "fvb":
+        if detector_data.ndim < 1:
+            raise ValueError("FVB data must include a detector X axis")
+        detector_shape = [int(detector_data.shape[-1])]
+        detector_y_stop = None
+        detector_rows = getattr(collector, "detector_rows", None)
+        if detector_rows is not None:
+            try:
+                detector_y_stop = int(detector_rows)
+            except (TypeError, ValueError):
+                detector_y_stop = None
+        if detector_y_stop is None:
+            sdk = getattr(collector, "_sdk", None)
+            if sdk is not None and hasattr(sdk, "GetDetector"):
+                try:
+                    detector_result = sdk.GetDetector()
+                    if len(detector_result) >= 3:
+                        detector_y_stop = int(detector_result[2])
+                except Exception:
+                    detector_y_stop = None
+        detector_y_bin = "full"
+    else:
+        raise ValueError("RACER detector signatures support FVB or image")
+
+    collector_type = type(collector)
+    sdk = getattr(collector, "_sdk", None)
+
+    def sdk_result(method_name, *arguments):
+        """Return one best-effort Andor SDK value after its status code."""
+        if sdk is None or not hasattr(sdk, method_name):
+            return None
+        try:
+            result = getattr(sdk, method_name)(*arguments)
+        except Exception:
+            return None
+        if not isinstance(result, (tuple, list)) or len(result) < 2:
+            return None
+        return result[1] if len(result) == 2 else tuple(result[1:])
+
+    camera_serial = sdk_result("GetCameraSerialNumber")
+    bit_depth = sdk_result("GetBitDepth", 0)
+    preamp_gain = sdk_result("GetPreAmpGain", 0)
+    horizontal_shift_speed = sdk_result("GetHSSpeed", 0, 0, 2)
+    vertical_shift_speed = sdk_result("GetVSSpeed", 0)
+    acquisition_timings = (
+        sdk_result("GetAcquisitionTimings")
+        if include_acquisition_timing
+        else None
+    )
+    actual_exposure_ms = None
+    if acquisition_timings is not None:
+        timings = (
+            acquisition_timings
+            if isinstance(acquisition_timings, tuple)
+            else (acquisition_timings,)
+        )
+        if timings:
+            try:
+                actual_exposure_ms = round(float(timings[0]) * 1000.0, 6)
+            except (TypeError, ValueError):
+                actual_exposure_ms = None
+
+    return {
+        "schema_version": 2,
+        "collector_type": (
+            f"{collector_type.__module__}.{collector_type.__qualname__}"
+        ),
+        "camera_serial": (
+            None if camera_serial is None else str(camera_serial)
+        ),
+        "camera_identity_source": (
+            "andor_sdk" if camera_serial is not None else "unavailable"
+        ),
+        "read_mode": read_mode,
+        "detector_shape": detector_shape,
+        "detector_x_start": 0,
+        "detector_x_stop_exclusive": int(detector_data.shape[-1]),
+        "detector_x_bin": 1,
+        "detector_y_start": 0,
+        "detector_y_stop_exclusive": detector_y_stop,
+        "detector_y_bin": detector_y_bin,
+        "baseline_clamp": 0,
+        "ad_channel_index": 0,
+        "bit_depth": None if bit_depth is None else int(bit_depth),
+        "preamp_gain_index": 0,
+        "preamp_gain": (
+            None if preamp_gain is None else float(preamp_gain)
+        ),
+        "horizontal_shift_speed_index": 2,
+        "horizontal_shift_speed": (
+            None
+            if horizontal_shift_speed is None
+            else float(horizontal_shift_speed)
+        ),
+        "vertical_shift_speed_index": 0,
+        "vertical_shift_speed": (
+            None
+            if vertical_shift_speed is None
+            else float(vertical_shift_speed)
+        ),
+        "number_accumulations": 1,
+        "output_amplifier_index": 0,
+        "em_gain_mode": 0,
+        "requested_exposure_ms": (
+            None if exposure_ms is None else float(exposure_ms)
+        ),
+        "actual_exposure_ms": actual_exposure_ms,
+        "gain_source": "racer_default_assumption",
+    }
+
+
+def save_dark_noise_artifacts(
+    filename: str | Path,
+    data: np.ndarray,
+    *,
+    collector: object,
+    read_mode: str,
+    exposure_ms: float,
+    metadata: dict | None = None,
+) -> tuple[Path | None, Path | None]:
+    """Save dark data for bias subtraction and/or RACER calibration.
+
+    FVB acquisitions produce both the existing ``.npy`` bias file and a
+    RACER-compatible closed-shutter Zarr store. Image acquisitions produce
+    only the Zarr store because row-wise bias subtraction is not defined for
+    that view. Single-track remains bias-only because RACER does not validate
+    that readout mode.
+    """
+    read_mode = str(read_mode).lower()
+    if read_mode not in {"fvb", "image", "single_track"}:
+        raise ValueError(
+            "read_mode must be 'fvb', 'image', or 'single_track'"
+        )
+
+    dark_data = np.asarray(data)
+    expected_dimensions = 3 if read_mode == "image" else 2
+    if dark_data.ndim != expected_dimensions or dark_data.shape[0] == 0:
+        expected = (
+            "(repeats, detector_y, detector_x)"
+            if read_mode == "image"
+            else "(repeats, detector_x)"
+        )
+        raise ValueError(f"{read_mode} dark data must have shape {expected}")
+
+    requested_path = Path(filename)
+    npy_path = requested_path.with_suffix(".npy")
+    saved_npy: Path | None = None
+    if read_mode in {"fvb", "single_track"}:
+        np.save(npy_path, dark_data, allow_pickle=False)
+        saved_npy = npy_path
+
+    racer_store: Path | None = None
+    if read_mode in {"fvb", "image"}:
+        saved_metadata = dict(metadata or {})
+        saved_metadata.update(
+            record_type="racer_closed_shutter_calibration",
+            format_version=1,
+            racer_role="closed_shutter",
+            units="ADU",
+            gain_e_per_adu=0.7,
+            saturation_adu=65535.0,
+            gain_source="racer_default_assumption",
+            racer_detector_signature=racer_detector_signature(
+                collector, dark_data, read_mode, exposure_ms
+            ),
+            read_mode=read_mode,
+            exposure_ms=float(exposure_ms),
+            repeats=int(dark_data.shape[0]),
+        )
+        racer_store = save_collection_record(
+            npy_path,
+            dark_data,
+            saved_metadata,
+        )
+
+    return saved_npy, racer_store
 
 
 def filter_mean(

@@ -97,6 +97,24 @@ def _dataset_viewer_data():
     return frame, images
 
 
+class _FakeRacerCalibration:
+    def __init__(self):
+        self.correct_calls = 0
+
+    def compatibility(self, values, *, exposure_ms=None, read_mode=None):
+        return True, ""
+
+    def correct(self, values):
+        self.correct_calls += 1
+        return np.asarray(values, dtype=float) - 1.0
+
+
+class _FailingRacerCalibration(_FakeRacerCalibration):
+    def correct(self, values):
+        self.correct_calls += 1
+        raise RuntimeError("synthetic correction failure")
+
+
 class AssistantPlotToolTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -208,8 +226,31 @@ class AssistantPlotToolTests(unittest.TestCase):
         self.assertEqual(panel.baseline_lambda_input.value(), 1e5)
         self.assertFalse(panel._show_mean)
         self.assertEqual(state["values"]["spectrum_view"], "all")
+        self.assertEqual(state["values"]["repeat_index"], 0)
         self.assertTrue(state["spectral_calibration_available"])
         self.assertNotIn("selected_dataset_point_index", state["supported_controls"])
+
+        repeat_state = json.loads(
+            self.call(
+                "configure_plot",
+                panel_id=panel._plot_panel_id,
+                repeat_index=2,
+            )
+        )
+        self.assertEqual(panel.repeat_slider.value(), 2)
+        self.assertTrue(panel._show_mean)
+        self.assertEqual(repeat_state["values"]["repeat_index"], 2)
+
+        aggregate_state = json.loads(
+            self.call(
+                "configure_plot",
+                panel_id=panel._plot_panel_id,
+                spectrum_view="all",
+            )
+        )
+        self.assertEqual(panel.repeat_slider.value(), 0)
+        self.assertFalse(panel._show_mean)
+        self.assertEqual(aggregate_state["values"]["repeat_index"], 0)
 
     def test_missing_calibration_fails_before_other_mutations(self):
         panel = show_plot(self.owner, SpectrumWindow(np.arange(11.0)))
@@ -225,6 +266,75 @@ class AssistantPlotToolTests(unittest.TestCase):
         self.assertFalse(panel.white_background_check.isChecked())
         self.assertFalse(panel.show_wavenumber_check.isChecked())
 
+    def test_cosmic_ray_removal_uses_the_real_plot_control(self):
+        racer = _FakeRacerCalibration()
+        panel = show_plot(
+            self.owner,
+            SpectrumWindow(
+                np.arange(11.0),
+                cosmic_ray_calibration=racer,
+                exposure_ms=1000.0,
+            ),
+        )
+
+        initial = get_plot_state(self.owner)[0]
+        self.assertFalse(initial["values"]["cosmic_ray_removal"])
+        self.assertTrue(initial["enabled"]["cosmic_ray_removal"])
+
+        configured = json.loads(
+            self.call(
+                "configure_plot",
+                panel_id=panel._plot_panel_id,
+                cosmic_ray_removal=True,
+            )
+        )
+
+        self.assertTrue(panel.cosmic_ray_removal_check.isChecked())
+        self.assertTrue(configured["values"]["cosmic_ray_removal"])
+        self.assertEqual(racer.correct_calls, 1)
+
+    def test_cosmic_ray_removal_rejects_a_plot_without_calibration(self):
+        panel = show_plot(self.owner, SpectrumWindow(np.arange(11.0)))
+
+        with self.assertRaisesRegex(ValueError, "unavailable"):
+            self.call(
+                "configure_plot",
+                panel_id=panel._plot_panel_id,
+                white_background=True,
+                cosmic_ray_removal=True,
+            )
+
+        self.assertFalse(panel.white_background_check.isChecked())
+        self.assertFalse(panel.cosmic_ray_removal_check.isChecked())
+
+    def test_cosmic_ray_correction_failure_is_reported_before_other_changes(self):
+        racer = _FailingRacerCalibration()
+        panel = show_plot(
+            self.owner,
+            SpectrumWindow(
+                np.arange(11.0),
+                cosmic_ray_calibration=racer,
+                exposure_ms=1000.0,
+            ),
+        )
+
+        with self.assertRaisesRegex(
+            ValueError, "synthetic correction failure"
+        ):
+            self.call(
+                "configure_plot",
+                panel_id=panel._plot_panel_id,
+                cosmic_ray_removal=True,
+                white_background=True,
+            )
+
+        self.assertEqual(racer.correct_calls, 1)
+        self.assertFalse(panel.cosmic_ray_removal_check.isChecked())
+        self.assertFalse(panel.cosmic_ray_removal_check.isEnabled())
+        self.assertFalse(panel.white_background_check.isChecked())
+        state = get_plot_state(self.owner)[0]
+        self.assertIn("synthetic correction failure", state["cosmic_ray_error"])
+
     def test_detector_can_switch_view_and_configure_processing_atomically(self):
         calibration = PixelToWavenumberCalibration(
             [0.0, 10.0], [100.0, 200.0], degree=1
@@ -232,7 +342,7 @@ class AssistantPlotToolTests(unittest.TestCase):
         panel = show_plot(
             self.owner,
             DetectorImageWindow(
-                np.ones((1, 4, 11)),
+                np.ones((2, 4, 11)),
                 spectral_calibration=calibration,
             ),
         )
@@ -252,6 +362,7 @@ class AssistantPlotToolTests(unittest.TestCase):
             detector_view="spectrum",
             detector_start_row=1,
             detector_end_row=2,
+            repeat_index=2,
             smoothing=True,
             smoothing_window=7,
             fix_y_scale=True,
@@ -261,12 +372,14 @@ class AssistantPlotToolTests(unittest.TestCase):
         self.assertTrue(panel._show_spectrum)
         self.assertEqual(panel.start_row_input.value(), 1)
         self.assertEqual(panel.end_row_input.value(), 2)
+        self.assertEqual(panel.repeat_slider.value(), 2)
         self.assertTrue(panel.smoothing_check.isChecked())
         self.assertEqual(panel.smoothing_window_input.value(), 7)
         self.assertTrue(panel.fix_y_scale_check.isChecked())
         self.assertTrue(panel.show_wavenumber_check.isChecked())
         after = get_plot_state(self.owner)[0]
         self.assertTrue(after["enabled"]["smoothing"])
+        self.assertEqual(after["values"]["repeat_index"], 2)
 
     def test_short_detector_rejects_processing_before_switching_view(self):
         panel = show_plot(

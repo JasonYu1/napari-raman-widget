@@ -1,0 +1,52 @@
+{
+    "collection_elapsed_seconds": 32445.7701581,
+    "collection_finished_at": "2026-11-10T08:36:52.176836-05:00",
+    "collection_started_at": "2026-11-09T23:36:06.406662-05:00",
+    "data_dtype": "int32",
+    "data_shape": [
+        30000,
+        2000
+    ],
+    "data_variable": "signal",
+    "exposure_ms": 1000.0,
+    "format_version": 1,
+    "gain_e_per_adu": 0.7,
+    "gain_source": "racer_default_assumption",
+    "racer_detector_signature": {
+        "actual_exposure_ms": 1000.01,
+        "ad_channel_index": 0,
+        "baseline_clamp": 0,
+        "bit_depth": 16,
+        "camera_identity_source": "andor_sdk",
+        "camera_serial": "32125",
+        "collector_type": "raman_control.andor.AndorSpectraCollector",
+        "detector_shape": [
+            2000
+        ],
+        "detector_x_bin": 1,
+        "detector_x_start": 0,
+        "detector_x_stop_exclusive": 2000,
+        "detector_y_bin": "full",
+        "detector_y_start": 0,
+        "detector_y_stop_exclusive": 256,
+        "em_gain_mode": 0,
+        "gain_source": "racer_default_assumption",
+        "horizontal_shift_speed": 0.033,
+        "horizontal_shift_speed_index": 2,
+        "number_accumulations": 1,
+        "output_amplifier_index": 0,
+        "preamp_gain": 1.0,
+        "preamp_gain_index": 0,
+        "read_mode": "fvb",
+        "requested_exposure_ms": 1000.0,
+        "schema_version": 2,
+        "vertical_shift_speed": 16.25,
+        "vertical_shift_speed_index": 0
+    },
+    "racer_role": "closed_shutter",
+    "read_mode": "fvb",
+    "record_type": "racer_closed_shutter_calibration",
+    "repeats": 30000,
+    "saturation_adu": 65535.0,
+    "units": "ADU"
+}

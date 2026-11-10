@@ -175,7 +175,62 @@ class WidgetSeparationTests(unittest.TestCase):
                 self.assertIn("def collect_dark_noise", source)
                 self.assertIn("spectral_bias_from_dark_noise", source)
                 self.assertIn("spectral_bias=spectral_bias", source)
+                dark_start = source.index("    def collect_dark_noise(self):")
+                dark_end = source.index(
+                    "    def _update_collect_live_fields", dark_start
+                )
+                dark_source = source[dark_start:dark_end]
+                self.assertIn("save_dark_noise_artifacts(", dark_source)
+                self.assertIn(
+                    "if not self._acquisition_jobs.available():",
+                    dark_source,
+                )
+                self.assertIn(
+                    "def operation(progress, cancelled):", dark_source
+                )
+                self.assertIn("collect_repeated_spectra(", dark_source)
+                self.assertIn("check_cancelled(cancelled)", dark_source)
+                self.assertIn("def complete(result):", dark_source)
+                self.assertIn("self._acquisition_jobs.start(", dark_source)
+                collector_method = (
+                    "collector.collect_spectra_pts"
+                    if filename == "hardware_widget.py"
+                    else "collector.collect_spectra_image_points"
+                )
+                self.assertIn(collector_method, dark_source)
+                self.assertNotIn("np.zeros((repeats, 2)", dark_source)
+                self.assertLess(
+                    dark_source.index("collect_repeated_spectra("),
+                    dark_source.index("save_dark_noise_artifacts("),
+                )
+                self.assertIn('if read_mode == "image":', dark_source)
+                self.assertIn("DetectorImageWindow(", dark_source)
+                self.assertIn("RACER closed-shutter", dark_source)
                 self.assertNotIn("subtract_spectral_bias", source)
+                disconnect_start = source.index("    def disconnect(self):")
+                disconnect_end = source.index(
+                    "    # -------- raman collection --------", disconnect_start
+                )
+                self.assertIn(
+                    "clear_racer_calibration(self)",
+                    source[disconnect_start:disconnect_end],
+                )
+                finite_start = source.index("    def collect_raman(self):")
+                finite_end = source.index(
+                    "    def _start_live_raman", finite_start
+                )
+                finite_source = source[finite_start:finite_end]
+                self.assertIn(
+                    '"racer_role": "open_reference_candidate"', finite_source
+                )
+                self.assertIn(
+                    "racer_detector_signature(", finite_source
+                )
+                self.assertIn(
+                    'if read_mode in {"fvb", "image"}', finite_source
+                )
+                self.assertIn("collect_repeated_spectra(", finite_source)
+                self.assertIn("self._acquisition_jobs.start(", finite_source)
                 self.assertIn(
                     'f"dark_noise_{exposure:g}ms_{uuid.uuid4()}.npy"',
                     source,
@@ -191,8 +246,13 @@ class WidgetSeparationTests(unittest.TestCase):
                 )
                 loading_section = source.index("LOADING SECTION")
                 collect_section = source.index("COLLECT SPECTRUM SECTION")
+                racer_loader = source.index(
+                    "add_racer_calibration_controls(self, loading_layout)"
+                )
                 self.assertLess(loading_section, dark_loader)
                 self.assertLess(dark_loader, collect_section)
+                self.assertLess(loading_section, racer_loader)
+                self.assertLess(racer_loader, collect_section)
                 self.assertLess(collect_button, dark_button)
 
     def test_every_spectral_plot_window_has_shared_processing_controls(self) -> None:

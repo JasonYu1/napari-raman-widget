@@ -12,7 +12,7 @@
 \newcommand{\ui}[1]{\textbf{#1}}
 \newcommand{\code}[1]{\texttt{#1}}
 \newcommand{\fieldtable}{\begin{longtable}{@{}>{\raggedright\arraybackslash}p{0.25\textwidth}>{\raggedright\arraybackslash}p{0.18\textwidth}>{\raggedright\arraybackslash}p{0.50\textwidth}@{}}\toprule\textbf{Control} & \textbf{Default / allowed} & \textbf{Meaning and use}\\\midrule\endhead}
-\newcommand{\endfieldtable}{\bottomrule\end{longtable}}
+\newcommand{\finishfieldtable}{\bottomrule\end{longtable}}
 
 \title{\textbf{napari-raman-widget}\\\Large Detailed User and Architecture Guide}
 \author{Raman Microscopy Software Documentation}
@@ -102,7 +102,7 @@ connection and applies the displayed wavelength to the spectrometer.\\
 Grating & populated after connection & Lists the spectrometer gratings using 1-based
 indices. \ui{Update grating} moves the turret and reports groove density and center
 wavelength. Wait for motion to finish before acquiring.\\
-\endfieldtable
+\finishfieldtable
 
 \ui{Connect hardware} unloads old devices, loads the CFG, opens the
 napari-micromanager dock, creates the spectrum collector/DAQ, loads both models,
@@ -137,18 +137,20 @@ one point in this layer makes the intended target clear.
 
 \fieldtable
 Exposure (ms) & 1000; 1--1,000,000 & Integration time used by the spectrum collector.\\
-N (repeats, at least 2) & 2; 2--1000 & Number of identical copies of the transformed
-galvo coordinate used for acquisition. The minimum of two is enforced.\\
+N (repeats, at least 2) & 3; 2--1000 & Number of identical copies of the transformed
+galvo coordinate used for acquisition. The minimum of two is enforced; RACER
+calibration requires at least three.\\
 Read mode & FVB & FVB preserves the standard spectrum acquisition. Single-track
 uses configurable center and height detector rows (defaults 185 and 140). Image
 returns the full two-dimensional detector frame.\\
 Save as & blank = display only & Optional base filename. Detector data,
 acquisition settings, and timing are saved together in one xarray
 \code{.zarr} dataset under the active working directory.\\
-\endfieldtable
+\finishfieldtable
 
-\ui{Collect spectra at last point} restarts the galvo, transforms the point,
-collects N spectra, optionally saves the NumPy array, and opens a spectrum plot.
+\ui{Collect spectra at selected point} restarts the galvo, transforms the first
+point in the last Points layer, collects N detector measurements, optionally saves
+one Zarr dataset, and opens the matching spectrum or detector-image result.
 
 \section*{Saved output}
 When \ui{Save as} contains a name, spectra are saved as
@@ -156,6 +158,54 @@ When \ui{Save as} contains a name, spectra are saved as
 start and end timestamps and the measured elapsed time in seconds, along with
 the detector mode and acquisition settings. With a blank name, the data are
 displayed without creating files.
+
+\section*{Dark noise and RACER calibration}
+Dark-noise mean-bias subtraction and RACER cosmic-ray removal are independent.
+\ui{Collect dark noise} uses the current exposure, repeat count, and read mode.
+In hardware mode the configured excitation Fluoshutter is closed before capture,
+but this does not prove that the detector sees a fully dark optical path. Physically
+verify that excitation and ambient light are blocked. Demo mode has no physical
+shutter.
+
+For FVB, the run saves a \code{.npy} stack for the existing mean-bias subtraction
+and a separate \code{.zarr} closed-shutter stack for RACER; the new \code{.npy}
+file becomes the session bias. Image mode saves the RACER Zarr stack and leaves the
+spectral-bias selection unchanged. Single-track saves only the \code{.npy} bias
+stack because RACER does not currently validate that readout.
+
+To prepare a RACER calibration:
+\begin{enumerate}
+  \item With the detector optical path dark, collect at least three dark frames in
+        FVB or Image mode. Many more frames are recommended so real detector noise
+        and particle events are represented.
+  \item Reopen the shutter, use a stable open reference, keep exposure, readout,
+        binning, gain, detector ROI, geometry, and detector settings unchanged,
+        then run a finite \ui{Collect spectra at selected point} acquisition with
+        \ui{Save as} filled in. This creates the separate open-reference Zarr stack.
+  \item With Collect Raman still set to that read mode, click
+        \ui{Load RACER calibration\ldots}; choose the closed-shutter Zarr first and
+        the open-reference Zarr second.
+\end{enumerate}
+The two stores and the connected detector must match. A mismatch rejects the load
+instead of silently applying an unsuitable model. Generated stores mark
+\code{0.7 e-/ADU} and \code{65,535 ADU} as RACER default assumptions, not measured
+detector constants. Verify that they are appropriate for the detector before
+quantitative use. The fitted model exists only for the current session; loading or
+clearing it does not change the selected dark-noise \code{.npy} bias.
+
+\section*{Cosmic-ray removal in result windows}
+Each spectral result panel provides \ui{Remove cosmic rays (RACER)} in
+\ui{Processing}. It is off by default and stays disabled unless the loaded session
+calibration matches the result's exposure, FVB/Image readout, detector coordinates,
+shape, and detector signature. Results without sufficient acquisition metadata,
+including generic imported Dataset views, remain disabled.
+
+When checked, RACER corrects each raw trace or detector frame before repeat
+averaging; optional dark-bias subtraction, baseline subtraction, and smoothing
+follow. This processing changes only the display: acquired arrays and saved datasets
+remain unchanged. A correction error automatically unchecks and disables the control
+and returns the plot to raw data. Loading or clearing a calibration updates compatible
+already-open results as well as future results.
 
 \section*{Options at a glance}
 \begin{longtable}{@{}p{0.31\textwidth}p{0.63\textwidth}@{}}
@@ -165,6 +215,12 @@ N (repeats) & Spectra acquired at the same transformed point.\\
 Read mode & FVB spectrum, single-track spectrum, or 2-D detector image.\\
 Save as & Optional base name for one xarray/Zarr dataset; blank disables saving.\\
 Collect spectra & Transforms the point, acquires spectra, and displays them.\\
+Collect dark noise & Acquires a physically dark stack using the current exposure,
+repeats, and read mode; saves bias and/or RACER artifacts as described above.\\
+Load RACER calibration & Fits a session-only model from matching closed-shutter and
+open-reference Zarr stacks.\\
+Clear (RACER) & Removes RACER from open and future results; the independent
+dark-noise bias remains selected.\\
 \bottomrule\end{longtable}
 
 \chapter{Laser Aiming Calibration and Recalibration}
@@ -182,7 +238,7 @@ calibration responses.\\
 Recalibration & off & Reveals the controls for correcting the current calibration.\\
 Model name & blank & Base filename for the corrected transformer. The save routine
 writes \code{<name>.json}, loads it immediately, and updates the Loading path.\\
-\endfieldtable
+\finishfieldtable
 
 \ui{Run calibration} uses the active transformer and stores the resulting dataset
 in memory. It opens a log and calibration plot. Recalibration uses the most recent
@@ -226,7 +282,7 @@ N (spectra per z) & 5; 1--1000 & Replicate spectra at each axial position.\\
 Search range (um) & 10; 0.1--1000 & Half-range around the starting Z; displayed
 coordinates span negative range to positive range. Verify objective clearance.\\
 Search pts & 20; 2--500 & Number of axial samples across the full search interval.\\
-\endfieldtable
+\finishfieldtable
 
 \ui{Collect reference spectra} performs the autofocus/background scan, moves the
 stage to the selected focus Z, plots all spectra, and writes
@@ -270,7 +326,7 @@ Z steps & 10; 2--500 & Evenly spaced planes across the full Z range.\\
 Extra channel & none; 1--1,000,000 ms & \ui{+ Add channel} adds a Micro-Manager
 channel and exposure row; \ui{x} removes it. Duplicate channels are ignored. BF is
 excluded here because BF is always acquired before and after the scan.\\
-\endfieldtable
+\finishfieldtable
 
 At start the widget snaps BF at 10 ms and one image for each extra channel. It then
 switches to RM, opens \code{Fluoshutter}, collects the Raman grid, closes the shutter,
@@ -316,7 +372,7 @@ Repeats (points per position) & 2; 2--1000 & Identical points at each stage posi
 minimum two is required by the DAQ.\\
 Skip BF pre-scan & on & Uses blank placeholder images to establish dimensions. Turn
 off when real per-position BF images are needed for setup.\\
-\endfieldtable
+\finishfieldtable
 
 \ui{Generate grid} stops live mode, prepares the napari-micromanager MDA sequence,
 builds the stage grid, and prepares \code{sources}, \code{autofocus\_p}, and
@@ -352,7 +408,7 @@ to help inspect the permitted region before selection.\\
 Click to center & toggle button & Arms a one-shot viewer click that moves the stage
 so the clicked feature reaches Center Y/X. Requires a loaded Vandermonde model and
 connected hardware; use cautiously because it commands stage motion.\\
-\endfieldtable
+\finishfieldtable
 
 \section{Selection controls}
 \fieldtable
@@ -374,7 +430,7 @@ Cellpose model & installed models; defaults to cyto2 if available & Segmentation
 used to identify candidate cells.\\
 Exclude rectangular trap pillars & off & Removes segmented labels matching the
 calibrated trap-pillar geometry before creating cell targets.\\
-\endfieldtable
+\finishfieldtable
 
 \ui{Run automated selection} prepares the external MDA widget, performs Cellpose-based
 selection, creates source layers and a new sequence, and stores them for Raman MDA.
@@ -456,7 +512,7 @@ requested. Ensure every index exists; e.g. with two Z values, valid indices are 
 Extra fluorescence channel & none; default row exposure 10 ms & \ui{+ Add channel}
 adds any Micro-Manager channel (including BF); \ui{x} removes it. Duplicate channel
 names are ignored. Added channels inherit the first sequence channel as a template.\\
-\endfieldtable
+\finishfieldtable
 
 The acquisition uses axis order \code{t,p,c,z}, assigns the selection's aiming-source
 layers, replaces the time and Z plans, adds unique fluorescence channels, and writes
@@ -485,7 +541,7 @@ asks for the final location.\\
 Fit \& save model & button & Centers image and stage coordinates, reports degree 1--3
 RMSE where possible, fits the selected degree, and saves JSON. The saved path is also
 copied into Loading's Vandermonde field for immediate center-cell use.\\
-\endfieldtable
+\finishfieldtable
 
 \section*{Saved output}
 The Raman acquisition is saved under
@@ -534,6 +590,8 @@ Fit \& save model & Fits, reports residuals, saves, and activates the model.\\
   \item Verify the CFG, Raman transformer, optional Vandermonde model, and output folder.
   \item Connect; confirm the status, wavelength, grating, and available channels.
   \item Verify the intended layer is last before point or shape operations.
+  \item Before dark collection, physically block excitation; before RACER loading,
+        verify that the dark, open-reference, sample, and detector settings match.
   \item For MDA work, configure the napari-micromanager MDA widget and run exactly one
         selection-producing workflow. Finish manual clicks before continuing.
   \item Check all physical motion ranges, point counts, Z planes, loops, and exposures.
@@ -543,6 +601,8 @@ Fit \& save model & Fits, reports residuals, saves, and activates the model.\\
 \begin{longtable}{@{}p{0.32\textwidth}p{0.62\textwidth}@{}}
 \toprule\textbf{Workflow} & \textbf{Output}\\\midrule
 Point spectrum & Optional \code{<name>.zarr} dataset with timing metadata; plot window.\\
+Dark / RACER calibration & FVB: \code{.npy} bias plus \code{.zarr} closed-shutter
+stack; Image: Zarr only; single-track: bias only.\\
 Calibration & In-memory dataset and plot; recalibration saves \code{<model>.json}.\\
 Axial background scan & \code{reference/<name>\_<uuid>.zarr}.\\
 Spatial mapping & \code{grid\_scan\_data\_*.zarr} or \code{grid\_scan\_z\_*.zarr}.\\
