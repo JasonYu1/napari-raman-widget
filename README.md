@@ -1,6 +1,7 @@
 # napari-raman-widget
 
 [![CI](https://github.com/JasonYu1/napari-raman-widget/actions/workflows/ci.yml/badge.svg)](https://github.com/JasonYu1/napari-raman-widget/actions/workflows/ci.yml)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24090647.svg)](https://doi.org/10.5281/zenodo.24090647)
 
 A napari dock widget for controlling the Raman microscopy rig.
 
@@ -872,6 +873,18 @@ assistant reports that it is unavailable when the Anthropic SDK or API key is
 missing.
 
 </details>
+
+## Citing
+
+If you use `napari-raman-widget` in your research, please cite it via Zenodo.
+The concept DOI [10.5281/zenodo.24090647](https://doi.org/10.5281/zenodo.24090647)
+always resolves to the latest archived version; cite a specific version's DOI
+(for example [10.5281/zenodo.24090648](https://doi.org/10.5281/zenodo.24090648))
+when exact reproducibility matters.
+
+> Yu, Jason. *napari-raman-widget: an integrated Raman microscopy control
+> environment built inside napari.* Zenodo.
+> https://doi.org/10.5281/zenodo.24090647
 
 ## License
 
