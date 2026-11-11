@@ -15,6 +15,8 @@ optional Assistant tab. Its collapsible sections cover:
 
 - Loading Micro-Manager config and transformer model
 - Collecting Raman spectra at clicked points
+- Removing cosmic rays from FVB spectra and 2D detector images with
+  [RACER](#cosmic-ray-removal-racer)
 - Running laser aiming calibration
 - Manual recalibration via point selector
 - Collecting reference spectra across an axial Z range
@@ -47,7 +49,10 @@ collection, laser aiming calibration, axial background scanning, spatial
 mapping, stage-grid generation, automated cell selection, Raman MDA, dataset
 generation, and pixel-to-stage calibration.
 
-## Supporting your hardware
+<a id="supporting-your-hardware"></a>
+
+<details>
+<summary>Supporting your hardware</summary>
 
 > **For most users, adapting the platform to different microscope hardware
 > requires changes only in
@@ -58,6 +63,8 @@ generation, and pixel-to-stage calibration.
 > [`raman-mda-engine`](https://github.com/JasonYu1/raman-mda-engine) use the
 > existing `raman-control` interface and should not require hardware-specific
 > changes.
+
+</details>
 
 ## Install
 
@@ -78,6 +85,9 @@ The RACER dependency is installed as `racer-raman[io]` and imported as
 RACER's storage support uses Zarr 2, so Xarray is constrained to versions before
 2026.4, which still support the Zarr 2 Python library.
 
+<details>
+<summary>Development installation</summary>
+
 For development, clone the repository and install it in editable mode:
 
 ```bash
@@ -86,12 +96,19 @@ cd napari-raman-widget
 pip install -e .
 ```
 
+</details>
+
+<details>
+<summary>Optional AI assistant dependency</summary>
+
 The AI assistant is optional. To enable it, also install the Anthropic SDK
 and set an API key (see [AI assistant](#ai-assistant-chat-panel)):
 
 ```bash
 pip install anthropic
 ```
+
+</details>
 
 ## Run
 
@@ -111,7 +128,20 @@ The demo launcher connects automatically and does not require a Micro-Manager
 configuration or coordinate-transform model.
 On Windows, you can also double-click `launch_demo_napari.bat`.
 
-### Changing the output folder
+## Usage guide
+
+Expand a topic for instructions, settings, and workflow details.
+
+The control sidebar groups loading and calibration under **Setup**, stage-grid
+and cell tools under **Selection**, measurement workflows under **Acquire**,
+and dataset generation under **Analysis**. Pixel-to-stage calibration is inside
+**Selection → Generate stage grid**.
+The optional AI chat has its own **Assistant** tab.
+
+<a id="changing-the-output-folder"></a>
+
+<details>
+<summary>Changing the output folder</summary>
 
 In **Setup > Loading**, type or browse to an output folder, then click
 **Apply folder**. The entered path is a draft until applied; **Active folder**
@@ -128,7 +158,12 @@ not moved, and absolute output paths are unchanged. Existing relative input
 file selections are converted to absolute paths when the files exist, so they
 continue to refer to the same files after a folder change.
 
-### Arranging plots and controls
+</details>
+
+<a id="arranging-plots-and-controls"></a>
+
+<details>
+<summary>Arranging plots and controls</summary>
 
 Plots and logs initially open in a native **Raman Plots** tab alongside their
 Raman controls in the same Napari dock area. Demo results similarly use
@@ -164,6 +199,27 @@ view, while positions `1…N` display an individual acquired spectrum or frame.
 For detector images, the selected repeat applies to both the image and its
 row-sum spectrum view.
 
+Plot backgrounds are transparent by default so they blend into Napari's theme.
+Check **White background** on a plot for an opaque white canvas; uncheck it
+to restore transparency. Axes and labels adjust for readability.
+
+The compact display row groups **Fix Y scale** (where available), **Show
+wavenumber**, and **White background**. Spectra always start in pixels.
+Wavenumber calibration is optional and is never loaded automatically from
+saved defaults: select a calibration JSON in Setup, then opt in with **Show
+wavenumber** on a new plot. The checkbox is disabled without a calibration.
+
+Laser aiming calibration has a progress bar and stage readout in its log.
+In the calibration result, click a calibration point to inspect its stored
+spectrum alongside the image; this does not acquire new data.
+
+</details>
+
+<a id="cosmic-ray-removal-racer"></a>
+
+<details>
+<summary>Cosmic-ray removal (RACER)</summary>
+
 **Remove cosmic rays (RACER)** is off by default and remains disabled until a
 matching session calibration is loaded from **Loading → Load RACER
 calibration…**. Choose a closed-shutter Zarr stack and a separate illuminated
@@ -178,56 +234,8 @@ not currently validated by RACER. The loaded calibration is held in memory for
 this session and can be cleared without changing the existing dark-noise
 selection.
 
-The **Closed shutter** and **Open reference** path fields are remembered when
-you browse for a Zarr directory or finish editing a path. On reopening either
-widget, the paths are restored and the calibration stays unloaded. Click
-**Load RACER calibration…** to load those files without selecting them again.
-Use each field's browse button to change files; an empty open-reference field
-selects dark-only variance for FVB. **Clear** unloads the active calibration
-while keeping the remembered paths. Missing or incompatible files are reported
-only when you explicitly load them.
-
-Use **Loading → Advanced calibration settings…** to change RACER's fit
-parameters before loading calibration files. Separate tabs cover FVB dark
-calibration, FVB reference variance, and Image calibration, including the
-**Trace half-width (rows)**. Values start at the installed RACER defaults;
-**Save settings** remembers your values in local app preferences and restores
-them when either widget opens again. **Restore Defaults → Save settings**
-remembers the reset. Changes take effect on the next calibration load, so reload
-an active calibration after changing them. Exposure, detector gain, and
-saturation continue to come from the stores.
-
-For FVB/RACER-1D, the illuminated open-reference spectra are **not** used as a
-2-D optical row profile. They measure the per-column illuminated master and
-variance at the reference's signal level, which helps avoid mistaking ordinary
-fluctuations for particle events. This is not a fitted variance-versus-intensity
-curve: the reference should be stable and representative of the count levels in
-the samples being corrected. RACER-2D additionally uses its open-reference
-images to fit the optical row profile. If no open reference is selected for
-RACER-1D, the widget fits RACER with the closed-shutter stack as both inputs so
-the fixed variance comes only from the dark acquisition. This avoids
-transferring a reference sample's peak-specific variance, but it also omits
-signal-dependent shot noise and can over-flag bright sample features. The
-Spectrum view therefore enables dark-only FVB correction only when at least two
-same-point repeats are available, and restores narrow features that agree with
-the repeat consensus while retaining one-off particle corrections. A single
-FVB spectrum still requires a genuine illuminated FVB reference because one
-narrow peak cannot be distinguished safely from one cosmic event.
-For detector images, RACER's optical-trace correction is complemented by a
-conservative dark-calibrated cleanup for compact off-trace events; broad
-off-trace structures are left unchanged.
-The generic Dataset viewer remains disabled for RACER because imported datasets
-do not currently carry the exposure and detector-signature evidence needed for
-safe matching.
-
-RACER corrects each raw trace or detector frame before repeat averaging. The
-display pipeline then applies optional dark-noise bias subtraction, baseline
-subtraction, and smoothing. A calibration is never inferred from the data
-being corrected, and incompatible exposure or detector geometry leaves the
-checkbox disabled. The Processing section reports how many detector values
-were actually changed and how many repeat-consistent FVB values were preserved.
-See
-[racer-raman](https://github.com/JasonYu1/racer-raman) for calibration guidance.
+<details>
+<summary>Collecting calibration data</summary>
 
 To collect and use a calibration end to end:
 
@@ -266,46 +274,83 @@ and the RACER default detector assumptions (`0.7 e-/ADU`, saturation at
 as assumptions in the metadata; verify them for the connected detector before
 using the correction for quantitative work.
 
+</details>
+
+<details>
+<summary>Loading and remembering reference files</summary>
+
+The **Closed shutter** and **Open reference** path fields are remembered when
+you browse for a Zarr directory or finish editing a path. On reopening either
+widget, the paths are restored and the calibration stays unloaded. Click
+**Load RACER calibration…** to load those files without selecting them again.
+Use each field's browse button to change files; an empty open-reference field
+selects dark-only variance for FVB. **Clear** unloads the active calibration
+while keeping the remembered paths. Missing or incompatible files are reported
+only when you explicitly load them.
+
+</details>
+
+<details>
+<summary>Advanced calibration settings</summary>
+
+Use **Loading → Advanced calibration settings…** to change RACER's fit
+parameters before loading calibration files. Separate tabs cover FVB dark
+calibration, FVB reference variance, and Image calibration, including the
+**Trace half-width (rows)**. Values start at the installed RACER defaults;
+**Save settings** remembers your values in local app preferences and restores
+them when either widget opens again. **Restore Defaults → Save settings**
+remembers the reset. Changes take effect on the next calibration load, so reload
+an active calibration after changing them. Exposure, detector gain, and
+saturation continue to come from the stores.
+
+</details>
+
+<details>
+<summary>Reference variance and correction behavior</summary>
+
+For FVB/RACER-1D, the illuminated open-reference spectra are **not** used as a
+2-D optical row profile. They measure the per-column illuminated master and
+variance at the reference's signal level, which helps avoid mistaking ordinary
+fluctuations for particle events. This is not a fitted variance-versus-intensity
+curve: the reference should be stable and representative of the count levels in
+the samples being corrected. RACER-2D additionally uses its open-reference
+images to fit the optical row profile. If no open reference is selected for
+RACER-1D, the widget fits RACER with the closed-shutter stack as both inputs so
+the fixed variance comes only from the dark acquisition. This avoids
+transferring a reference sample's peak-specific variance, but it also omits
+signal-dependent shot noise and can over-flag bright sample features. The
+Spectrum view therefore enables dark-only FVB correction only when at least two
+same-point repeats are available, and restores narrow features that agree with
+the repeat consensus while retaining one-off particle corrections. A single
+FVB spectrum still requires a genuine illuminated FVB reference because one
+narrow peak cannot be distinguished safely from one cosmic event.
+For detector images, RACER's optical-trace correction is complemented by a
+conservative dark-calibrated cleanup for compact off-trace events; broad
+off-trace structures are left unchanged.
+The generic Dataset viewer remains disabled for RACER because imported datasets
+do not currently carry the exposure and detector-signature evidence needed for
+safe matching.
+
+RACER corrects each raw trace or detector frame before repeat averaging. The
+display pipeline then applies optional dark-noise bias subtraction, baseline
+subtraction, and smoothing. A calibration is never inferred from the data
+being corrected, and incompatible exposure or detector geometry leaves the
+checkbox disabled. The Processing section reports how many detector values
+were actually changed and how many repeat-consistent FVB values were preserved.
+See
+[racer-raman](https://github.com/JasonYu1/racer-raman) for calibration guidance.
+
+</details>
+
 The pinned RACER dependency includes an
 [MIT license](https://github.com/JasonYu1/racer-raman/blob/a640a53362880fb3010bafa7d735c8a9851830ec/LICENSE).
 
-In **Acquire > Run Raman MDA**, **Advanced** starts collapsed and holds
-autofocus search ranges/points, autofocus and imaging positions,
-segment-and-track options, and the refocus/segmentation cadence. Collapsing
-it preserves settings. Output, Raman glass offset, exposure, loops, interval,
-Z settings, extra channels, and Run/Stop remain outside Advanced.
+</details>
 
-**Run Raman MDA** opens a pre-run review before creating output or starting
-hardware. It shows prepared stage positions, current cell/target counts,
-Raman pattern collections, time points, exposure, Z planes, and the resolved
-output folder. **Start acquisition** is disabled when setup is missing,
-settings are invalid, or another acquisition/live mode is running.
-**Back to settings** is the default and keeps your settings without starting.
-The duration is a lower bound from current cell Raman exposures and scheduled
-intervals, not a predicted completion time: imaging, autofocus, tracking,
-motion, readout, and saving add time. Non-empty output folders and intervals
-shorter than the Raman exposure workload are flagged. The confirmed review
-is also copied to the MDA log.
+<a id="dark-noise-bias-subtraction"></a>
 
-Plot backgrounds are transparent by default so they blend into Napari's theme.
-Check **White background** on a plot for an opaque white canvas; uncheck it
-to restore transparency. Axes and labels adjust for readability.
-
-The compact display row groups **Fix Y scale** (where available), **Show
-wavenumber**, and **White background**. Spectra always start in pixels.
-Wavenumber calibration is optional and is never loaded automatically from
-saved defaults: select a calibration JSON in Setup, then opt in with **Show
-wavenumber** on a new plot. The checkbox is disabled without a calibration.
-
-Laser aiming calibration has a progress bar and stage readout in its log.
-In the calibration result, click a calibration point to inspect its stored
-spectrum alongside the image; this does not acquire new data.
-
-The control sidebar groups loading and calibration under **Setup**, stage-grid
-and cell tools under **Selection**, measurement workflows under **Acquire**,
-and dataset generation under **Analysis**. Pixel-to-stage calibration is inside
-**Selection → Generate stage grid**.
-The optional AI chat has its own **Assistant** tab.
+<details>
+<summary>Dark-noise bias subtraction</summary>
 
 Dark noise starts as **None** whenever a widget opens, including when an older
 defaults file contains a dark-noise path. Select or collect a dark-noise file
@@ -313,7 +358,12 @@ to use it for the current session, or click **Clear** to return to None.
 This optional mean-bias subtraction is separate from RACER: a dark-noise
 `.npy` file by itself is not a RACER calibration and is never treated as one.
 
-### Spatial mapping inside an ROI
+</details>
+
+<a id="spatial-mapping-inside-an-roi"></a>
+
+<details>
+<summary>Spatial mapping inside an ROI</summary>
 
 Spatial mapping always samples **inside the actual closed ROI**, not its
 bounding box. Use a rectangle, ellipse, or polygon in the active Shapes layer;
@@ -380,7 +430,12 @@ Metadata also records `sampling_mode`, actual `points_per_z`, the target
 automatically calculated spacing), plus planned/completed spectrum counts.
 This preserves the selected region and sampling settings with the data.
 
-### Raman band and ratio maps
+</details>
+
+<a id="raman-band-and-ratio-maps"></a>
+
+<details>
+<summary>Raman band and ratio maps</summary>
 
 Open a spatial scan result and expand **Raman map**. Select **Band A area**
 and set its lower and upper spectral bounds, or choose **Band A / B ratio**
@@ -411,7 +466,37 @@ a ratio denominator at or below 10⁻¹², appear gray and are counted in the ma
 status. Mapping does not acquire data or change the saved spectra, and a band
 map alone does not identify a chemical species.
 
-### Reviewing and stopping acquisitions
+</details>
+
+<a id="raman-mda-settings-and-pre-run-review"></a>
+
+<details>
+<summary>Raman MDA settings and pre-run review</summary>
+
+In **Acquire > Run Raman MDA**, **Advanced** starts collapsed and holds
+autofocus search ranges/points, autofocus and imaging positions,
+segment-and-track options, and the refocus/segmentation cadence. Collapsing
+it preserves settings. Output, Raman glass offset, exposure, loops, interval,
+Z settings, extra channels, and Run/Stop remain outside Advanced.
+
+**Run Raman MDA** opens a pre-run review before creating output or starting
+hardware. It shows prepared stage positions, current cell/target counts,
+Raman pattern collections, time points, exposure, Z planes, and the resolved
+output folder. **Start acquisition** is disabled when setup is missing,
+settings are invalid, or another acquisition/live mode is running.
+**Back to settings** is the default and keeps your settings without starting.
+The duration is a lower bound from current cell Raman exposures and scheduled
+intervals, not a predicted completion time: imaging, autofocus, tracking,
+motion, readout, and saving add time. Non-empty output folders and intervals
+shorter than the Raman exposure workload are flagged. The confirmed review
+is also copied to the MDA log.
+
+</details>
+
+<a id="reviewing-and-stopping-acquisitions"></a>
+
+<details>
+<summary>Reviewing and stopping acquisitions</summary>
 
 Before a **grid scan** or **axial background scan**, a review dialog shows the
 selected ROI or point, sampling settings, target versus actual points per Z plane, Z
@@ -470,7 +555,14 @@ output is unchanged.
 Selection/refinement workflows and Raman MDA are not part of this task strip;
 MDA and live spectrum collection retain their existing stop controls.
 
-### One-click launcher (Windows)
+</details>
+
+## Configuration and help
+
+<a id="one-click-launcher-windows"></a>
+
+<details>
+<summary>One-click launcher (Windows)</summary>
 
 A `launch_napari.bat` script is included for convenience. Double-click it to:
 
@@ -493,7 +585,12 @@ You can also pin the launcher to the taskbar or Start menu:
 3. Optionally click Change Icon to give it a recognizable icon.
 4. Right-click the shortcut -> Pin to taskbar (or drag it to the desktop).
 
-### Hardware defaults file
+</details>
+
+<a id="hardware-defaults-file"></a>
+
+<details>
+<summary>Hardware defaults file</summary>
 
 To prefill machine-specific configuration, model, wavelength, and selection
 fields whenever the hardware widget opens:
@@ -507,7 +604,12 @@ The local defaults filename is ignored by Git. Relative paths inside it are
 resolved relative to the defaults file. To keep the file elsewhere, set the
 `NAPARI_RAMAN_DEFAULTS` environment variable to its full path before launch.
 
-### Slack alerts for Raman MDA failures
+</details>
+
+<a id="slack-alerts-for-raman-mda-failures"></a>
+
+<details>
+<summary>Slack alerts for Raman MDA failures</summary>
 
 Slack alerts are optional and are disabled when no webhook is configured.
 Set an incoming-webhook URL in the environment before launching napari:
@@ -549,7 +651,12 @@ configuration is not convenient, and `send_slack_message(...)` sends a manual
 message. Webhook/network failures are logged but never replace the original
 microscope exception.
 
-## Inline help and manual
+</details>
+
+<a id="inline-help-and-manual"></a>
+
+<details>
+<summary>Inline help and manual</summary>
 
 Two forms of built-in documentation ship with the panel:
 
@@ -565,7 +672,29 @@ Two forms of built-in documentation ship with the panel:
   prepared first, and what output is produced. The manual's LaTeX source is
   kept alongside it so it can be regenerated.
 
+</details>
+
 ## AI assistant (chat panel)
+
+The optional **Assistant** tab controls existing widget actions through chat.
+
+<details>
+<summary>Setup</summary>
+
+1. `pip install anthropic`
+2. Set an Anthropic API key in the environment **before** launching napari,
+   e.g. on Windows: `setx ANTHROPIC_API_KEY "sk-ant-..."` (open a new
+   terminal afterwards), or per-session `$env:ANTHROPIC_API_KEY = "sk-ant-..."`.
+3. Set `MODEL` at the top of `chat_panel.py` to a model your account can
+   access.
+
+The assistant is created automatically when `HardwareWidget` opens; no widget
+source changes are required.
+
+</details>
+
+<details>
+<summary>Console, commands, and capabilities</summary>
 
 The **Assistant** tab is a full-height, terminal-style console inside the
 widget. Type directly at the `> ` prompt below the conversation—there is no
@@ -573,53 +702,6 @@ separate typing box or Send button. **Enter** sends, **Shift+Enter** inserts
 a new line, and **Up/Down** recalls submitted requests. You can select and
 copy earlier output, but cannot accidentally edit it. Pasting multiple lines
 does not submit them; review the text and press Enter when ready.
-
-**Memory and local profiles:** Chat is private/in-memory by default and is lost
-when the widget closes. Check **Save history** above the console to opt in to
-local persistence; this saves the current conversation into a new profile.
-The choice is remembered, and the active saved profile resumes on the next
-launch. Use **History > New profile…** to name a separate conversation, and
-the profile selector to switch between them. Switching replaces the AI's
-conversation context, transcript, and command recall; it does not replay
-commands or restore hardware/plot settings. Profile changes and clearing are
-disabled while a request is running.
-
-Uncheck **Save history** (or select **Private session**) to start a fresh,
-unsaved conversation. Existing saved profiles are kept. Enabling saving from
-a private session always creates a new profile, so it cannot silently merge
-one customer's chat into another's. **History > Clear current history…**
-clears the active conversation, draft, and command recall, and deletes its
-saved chat after confirmation; other profiles are untouched. If saving is
-still enabled, future messages will be saved again.
-
-To remove a profile entirely, select it in the profile dropdown, choose
-**History > Delete profile…**, and confirm its name. This removes the profile
-from the list and deletes its local saved chat, then clears the current chat,
-draft, and command recall and starts a fresh **Private session**. Other profiles
-are untouched. Deletion cannot be undone in the widget and cannot remove copies
-held by the API provider, backups, or other already-open Assistant sessions.
-The delete option is disabled during a request and when no saved profile is selected.
-If deletion is interrupted, a small non-chat deletion marker prevents that profile
-from loading or saving again, including after a restart. The Assistant shows a
-warning and lets you retry **Delete profile** to finish removing it.
-
-History files contain chat text and tool inputs/results in **unencrypted local
-JSON**, not secure customer accounts. On Windows they are under
-`%LOCALAPPDATA%/napari-raman-widget/assistant`; macOS uses
-`~/Library/Application Support/napari-raman-widget/assistant`, and Linux uses
-`$XDG_DATA_HOME/napari-raman-widget/assistant` (or
-`~/.local/share/napari-raman-widget/assistant`). Anyone with access to that OS
-account may read them. No API key is deliberately added to history, but text
-you type and tool output may contain sensitive information. Do not enter
-secrets or sensitive customer data. Resumed context is sent to the configured
-Anthropic API with your next request. Clearing local history cannot delete
-provider-side records or backups.
-
-Saved history retains at most 30 completed request/tool-loop groups
-and 500 visible events, with an additional file-size limit. It is not unlimited
-memory. Chats are saved after replies finish; an interrupted request may not
-be saved. Invalid or unwritable files produce a visible warning rather than
-silently overwriting saved history.
 
 This is an AI command interface, **not a system shell or Python terminal**.
 `napari_raman_widget/chat_panel.py` turns plain-English requests into the
@@ -675,17 +757,62 @@ does not mean acquisition has completed. Individual
 spectrum samples are returned only when explicitly requested, with a bounded
 output size; ordinary result queries return compact numeric summaries.
 
-**Setup:**
+</details>
 
-1. `pip install anthropic`
-2. Set an Anthropic API key in the environment **before** launching napari,
-   e.g. on Windows: `setx ANTHROPIC_API_KEY "sk-ant-..."` (open a new
-   terminal afterwards), or per-session `$env:ANTHROPIC_API_KEY = "sk-ant-..."`.
-3. Set `MODEL` at the top of `chat_panel.py` to a model your account can
-   access.
+<details>
+<summary>Saved history and local profiles</summary>
 
-The assistant is created automatically when `HardwareWidget` opens; no widget
-source changes are required.
+**Memory and local profiles:** Chat is private/in-memory by default and is lost
+when the widget closes. Check **Save history** above the console to opt in to
+local persistence; this saves the current conversation into a new profile.
+The choice is remembered, and the active saved profile resumes on the next
+launch. Use **History > New profile…** to name a separate conversation, and
+the profile selector to switch between them. Switching replaces the AI's
+conversation context, transcript, and command recall; it does not replay
+commands or restore hardware/plot settings. Profile changes and clearing are
+disabled while a request is running.
+
+Uncheck **Save history** (or select **Private session**) to start a fresh,
+unsaved conversation. Existing saved profiles are kept. Enabling saving from
+a private session always creates a new profile, so it cannot silently merge
+one customer's chat into another's. **History > Clear current history…**
+clears the active conversation, draft, and command recall, and deletes its
+saved chat after confirmation; other profiles are untouched. If saving is
+still enabled, future messages will be saved again.
+
+To remove a profile entirely, select it in the profile dropdown, choose
+**History > Delete profile…**, and confirm its name. This removes the profile
+from the list and deletes its local saved chat, then clears the current chat,
+draft, and command recall and starts a fresh **Private session**. Other profiles
+are untouched. Deletion cannot be undone in the widget and cannot remove copies
+held by the API provider, backups, or other already-open Assistant sessions.
+The delete option is disabled during a request and when no saved profile is selected.
+If deletion is interrupted, a small non-chat deletion marker prevents that profile
+from loading or saving again, including after a restart. The Assistant shows a
+warning and lets you retry **Delete profile** to finish removing it.
+
+History files contain chat text and tool inputs/results in **unencrypted local
+JSON**, not secure customer accounts. On Windows they are under
+`%LOCALAPPDATA%/napari-raman-widget/assistant`; macOS uses
+`~/Library/Application Support/napari-raman-widget/assistant`, and Linux uses
+`$XDG_DATA_HOME/napari-raman-widget/assistant` (or
+`~/.local/share/napari-raman-widget/assistant`). Anyone with access to that OS
+account may read them. No API key is deliberately added to history, but text
+you type and tool output may contain sensitive information. Do not enter
+secrets or sensitive customer data. Resumed context is sent to the configured
+Anthropic API with your next request. Clearing local history cannot delete
+provider-side records or backups.
+
+Saved history retains at most 30 completed request/tool-loop groups
+and 500 visible events, with an additional file-size limit. It is not unlimited
+memory. Chats are saved after replies finish; an interrupted request may not
+be saved. Invalid or unwritable files produce a visible warning rather than
+silently overwriting saved history.
+
+</details>
+
+<details>
+<summary>Developer integration</summary>
 
 Action schemas and capability descriptions come from `ACTIONS` in
 `chat_panel.py`, including the shared `assistant_*_tools.py` registries.
@@ -695,7 +822,12 @@ new UI features do not become Assistant tools automatically.
 Pass `ChatPanel(self, confirm=False)` to run recognized commands without the
 confirmation dialog (not recommended on live hardware).
 
+</details>
+
 ## Structure
+
+<details>
+<summary>Source files and responsibilities</summary>
 
 - `run_napari.py` - entry point; just launches napari with the widget.
 - `launch_napari.bat` - Windows one-click launcher (activates env + runs script).
@@ -738,6 +870,8 @@ Hardware control, calibration, point selection, acquisition workflows, and
 spectral processing are included under `napari_raman_widget`. The optional
 assistant reports that it is unavailable when the Anthropic SDK or API key is
 missing.
+
+</details>
 
 ## License
 
