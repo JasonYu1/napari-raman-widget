@@ -1,6 +1,6 @@
 """Session-scoped RACER-Raman calibration and correction helpers.
 
-The optional :mod:`cosmic_ray_bayes` dependency is imported only when a
+The optional :mod:`racer_raman` dependency is imported only when a
 calibration is loaded.  A loaded calibration owns one fitted upstream
 calibrator and can therefore be shared by plot windows without refitting on
 every redraw.
@@ -182,18 +182,18 @@ def _import_racer() -> Any:
     """Import RACER-Raman with an actionable optional-dependency error."""
 
     try:
-        module = importlib.import_module("cosmic_ray_bayes")
+        module = importlib.import_module("racer_raman")
     except ModuleNotFoundError as error:
-        if error.name == "cosmic_ray_bayes":
+        if error.name == "racer_raman":
             raise ImportError(
                 "RACER-Raman is not installed. Install it with "
-                "`pip install \"cosmic-ray-bayes[io] @ "
+                "`pip install \"racer-raman[io] @ "
                 "git+https://github.com/JasonYu1/racer-raman.git@"
-                "364f201736567416989eb5b2a55ae34fa7b250ff\"`."
+                "a640a53362880fb3010bafa7d735c8a9851830ec\"`."
             ) from error
         raise ImportError(
             "RACER-Raman could not be imported because its dependency "
-            f"{error.name!r} is missing. Reinstall cosmic-ray-bayes and its "
+            f"{error.name!r} is missing. Reinstall racer-raman and its "
             "dependencies."
         ) from error
 
@@ -206,7 +206,7 @@ def _import_racer() -> Any:
     missing = [name for name in required if not hasattr(module, name)]
     if missing:
         raise ImportError(
-            "The installed cosmic-ray-bayes package is incompatible; missing "
+            "The installed racer-raman package is incompatible; missing "
             f"public API: {', '.join(missing)}."
         )
     return module

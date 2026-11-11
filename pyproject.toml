@@ -13,7 +13,7 @@ authors = [
 ]
 dependencies = [
     "cellpose>=3.1.1.3,<4",
-    "cosmic-ray-bayes[io] @ git+https://github.com/JasonYu1/racer-raman.git@364f201736567416989eb5b2a55ae34fa7b250ff",
+    "racer-raman[io] @ git+https://github.com/JasonYu1/racer-raman.git@a640a53362880fb3010bafa7d735c8a9851830ec",
     "matplotlib",
     "mda-simulator",
     "napari",

@@ -342,13 +342,13 @@ class CalibrationOptionsLoadingTests(unittest.TestCase):
         self.assertEqual(self.racer.calls, [])
 
     @unittest.skipUnless(
-        importlib.util.find_spec("cosmic_ray_bayes") is not None,
-        "cosmic-ray-bayes is not installed",
+        importlib.util.find_spec("racer_raman") is not None,
+        "racer-raman is not installed",
     )
     def test_custom_image_width_fits_with_real_racer_public_api(self):
-        import cosmic_ray_bayes
+        import racer_raman
 
-        self.racer = cosmic_ray_bayes
+        self.racer = racer_raman
         rng = np.random.default_rng(20261109)
         frames, rows, columns = 40, 32, 24
         dark = rng.normal(100.0, 2.0, (frames, rows, columns))

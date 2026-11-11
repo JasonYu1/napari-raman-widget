@@ -17,7 +17,7 @@ from napari_raman_widget.spectra import (
 )
 
 
-RACER_AVAILABLE = importlib.util.find_spec("cosmic_ray_bayes") is not None
+RACER_AVAILABLE = importlib.util.find_spec("racer_raman") is not None
 
 
 class _Collector:
@@ -26,7 +26,7 @@ class _Collector:
 
 @unittest.skipUnless(
     RACER_AVAILABLE,
-    "cosmic-ray-bayes is not installed in this test environment",
+    "racer-raman is not installed in this test environment",
 )
 class RacerUpstreamSmokeTests(unittest.TestCase):
     def test_generated_fvb_pair_fits_and_corrects_with_public_api(self) -> None:

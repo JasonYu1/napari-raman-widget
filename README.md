@@ -73,6 +73,8 @@ and [`raman-mda-engine`](https://github.com/JasonYu1/raman-mda-engine) packages,
 plus the pinned
 [`racer-raman`](https://github.com/JasonYu1/racer-raman) cosmic-ray removal
 implementation, from their public GitHub repositories.
+The RACER dependency is installed as `racer-raman[io]` and imported as
+`racer_raman`.
 
 For development, clone the repository and install it in editable mode:
 
@@ -262,10 +264,8 @@ and the RACER default detector assumptions (`0.7 e-/ADU`, saturation at
 as assumptions in the metadata; verify them for the connected detector before
 using the correction for quantitative work.
 
-Packaging note: the pinned RACER revision currently has no `LICENSE` or
-`COPYING` file and declares no package license. Obtain explicit upstream
-licensing terms before redistributing a release that installs or bundles that
-dependency.
+The pinned RACER dependency includes an
+[MIT license](https://github.com/JasonYu1/racer-raman/blob/a640a53362880fb3010bafa7d735c8a9851830ec/LICENSE).
 
 In **Acquire > Run Raman MDA**, **Advanced** starts collapsed and holds
 autofocus search ranges/points, autofocus and imaging positions,

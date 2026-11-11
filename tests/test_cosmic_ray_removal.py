@@ -17,7 +17,7 @@ from napari_raman_widget.cosmic_ray_removal import (
 
 
 def _fake_racer(stores):
-    module = types.ModuleType("cosmic_ray_bayes")
+    module = types.ModuleType("racer_raman")
 
     def _table(experiment, specification):
         exposure = specification["exposure_ms"]
@@ -138,7 +138,7 @@ class RacerCalibrationTests(unittest.TestCase):
 
     def install_fake(self):
         fake = _fake_racer(self.stores)
-        return fake, patch.dict(sys.modules, {"cosmic_ray_bayes": fake})
+        return fake, patch.dict(sys.modules, {"racer_raman": fake})
 
     def test_image_cleanup_repairs_compact_off_trace_event_only(self):
         class IdentityImageCalibrator:
@@ -650,13 +650,14 @@ class RacerCalibrationTests(unittest.TestCase):
             "reference", read_mode="fvb", exposure_ms=10, columns=(0, 1)
         )
         missing = ModuleNotFoundError(
-            "No module named 'cosmic_ray_bayes'", name="cosmic_ray_bayes"
+            "No module named 'racer_raman'", name="racer_raman"
         )
 
-        with patch.object(importlib, "import_module", side_effect=missing):
+        with patch.object(importlib, "import_module", side_effect=missing) as import_module:
             with self.assertRaisesRegex(ImportError, "pip install") as raised:
                 load_racer_calibration(dark, reference)
-        self.assertIn("cosmic-ray-bayes", str(raised.exception))
+        import_module.assert_called_once_with("racer_raman")
+        self.assertIn("racer-raman", str(raised.exception))
 
 
 if __name__ == "__main__":

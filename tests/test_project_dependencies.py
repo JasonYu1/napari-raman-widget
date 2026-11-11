@@ -10,9 +10,9 @@ class ProjectDependencyTests(unittest.TestCase):
         project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
         self.assertIn(
-            '"cosmic-ray-bayes[io] @ '
+            '"racer-raman[io] @ '
             "git+https://github.com/JasonYu1/racer-raman.git@"
-            '364f201736567416989eb5b2a55ae34fa7b250ff"',
+            'a640a53362880fb3010bafa7d735c8a9851830ec"',
             project,
         )
         self.assertIn('"pandas>=2"', project)
