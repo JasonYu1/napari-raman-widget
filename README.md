@@ -75,6 +75,8 @@ plus the pinned
 implementation, from their public GitHub repositories.
 The RACER dependency is installed as `racer-raman[io]` and imported as
 `racer_raman`.
+RACER's storage support uses Zarr 2, so Xarray is constrained to versions before
+2026.4, which still support the Zarr 2 Python library.
 
 For development, clone the repository and install it in editable mode:
 

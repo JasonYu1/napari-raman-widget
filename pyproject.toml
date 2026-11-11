@@ -34,7 +34,8 @@ dependencies = [
     "torch<2.9; sys_platform == 'win32'",
     "tqdm",
     "useq-schema",
-    "xarray",
+    # Xarray 2026.4+ requires zarr-python 3; RACER's IO uses zarr-python 2.
+    "xarray<2026.4",
     "zarr>=2.15,<3",
 ]
 

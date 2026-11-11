@@ -228,7 +228,8 @@ class CalibrationOptionsLoadingTests(unittest.TestCase):
     def setUp(self):
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary_directory.cleanup)
-        self.root = Path(self.temporary_directory.name)
+        # The loader canonicalizes paths, including Windows runner 8.3 aliases.
+        self.root = Path(self.temporary_directory.name).resolve()
         self.dark_path = self.root / "dark.zarr"
         self.reference_path = self.root / "reference.zarr"
         self.dark_path.mkdir()

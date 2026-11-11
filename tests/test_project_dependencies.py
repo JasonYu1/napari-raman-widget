@@ -17,6 +17,7 @@ class ProjectDependencyTests(unittest.TestCase):
         )
         self.assertIn('"pandas>=2"', project)
         self.assertIn('"zarr>=2.15,<3"', project)
+        self.assertIn('"xarray<2026.4"', project)
 
     def test_raman_control_uses_the_requested_revision(self) -> None:
         project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")

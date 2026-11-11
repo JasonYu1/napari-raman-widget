@@ -156,8 +156,12 @@ class RacerRememberedPathsUiTests(unittest.TestCase):
                 racer_ui.show_racer_calibration_settings(owner)
             with patch.object(racer_ui, "load_racer_calibration") as fit:
                 reopened = self.owner()
-            self.assertEqual(reopened.racer_closed_shutter_path.text(), closed)
-            self.assertEqual(reopened.racer_open_reference_path.text(), opened)
+            self.assertEqual(
+                reopened.racer_closed_shutter_path.text(), str(Path(closed).resolve())
+            )
+            self.assertEqual(
+                reopened.racer_open_reference_path.text(), str(Path(opened).resolve())
+            )
             self.assertIsNone(reopened.racer_calibration)
             fit.assert_not_called()
             self.assertEqual(racer_preferences.load_calibration_options(settings_path), {

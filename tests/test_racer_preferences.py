@@ -143,11 +143,12 @@ class RacerPreferencesTests(unittest.TestCase):
             racer_preferences.save_calibration_paths(self.root / "dark.zarr", None)
             self.assertEqual(racer_preferences.load_calibration_options(), options)
             self.assertEqual(racer_preferences.load_calibration_paths(), {
-                "closed_shutter": str(self.root / "dark.zarr"), "open_reference": None,
+                "closed_shutter": str((self.root / "dark.zarr").resolve()),
+                "open_reference": None,
             })
             racer_preferences.save_calibration_options({})
             self.assertEqual(racer_preferences.load_calibration_paths()["closed_shutter"],
-                             str(self.root / "dark.zarr"))
+                             str((self.root / "dark.zarr").resolve()))
             self.assertEqual(set(self.path.parent.iterdir()), {self.path, expected_paths_file})
 
     def test_missing_remembered_files_document_creates_nothing(self):
@@ -164,8 +165,8 @@ class RacerPreferencesTests(unittest.TestCase):
                 destination = racer_preferences.save_calibration_paths(closed, opened, self.path)
                 self.assertEqual(destination, self.path.resolve())
                 self.assertEqual(racer_preferences.load_calibration_paths(self.path), {
-                    "closed_shutter": str(closed) if closed else None,
-                    "open_reference": str(opened) if opened else None,
+                    "closed_shutter": str(closed.resolve()) if closed else None,
+                    "open_reference": str(opened.resolve()) if opened else None,
                 })
         self.assertFalse(dark.exists())
         self.assertFalse(reference.exists())
@@ -182,10 +183,11 @@ class RacerPreferencesTests(unittest.TestCase):
         reference = self.root / "moved.zarr"
         original_open = Path.open
         opened = []
+        selected_stores = (dark.resolve(), reference.resolve())
 
         def tracked_open(path, *args, **kwargs):
             opened.append(path)
-            if path in (dark, reference):
+            if path in selected_stores:
                 raise AssertionError("must not open a selected store")
             return original_open(path, *args, **kwargs)
 
@@ -197,8 +199,8 @@ class RacerPreferencesTests(unittest.TestCase):
         ):
             racer_preferences.save_calibration_paths(dark, reference, self.path)
             restored = racer_preferences.load_calibration_paths(self.path)
-        self.assertEqual(opened, [self.path])
-        self.assertEqual(restored["closed_shutter"], str(dark))
+        self.assertEqual(opened, [self.path.resolve()])
+        self.assertEqual(restored["closed_shutter"], str(dark.resolve()))
 
     def test_invalid_remembered_files_fail_without_rewriting_document(self):
         self.path.parent.mkdir()
