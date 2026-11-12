@@ -154,6 +154,12 @@ class HardwareWidget(QWidget):
         loading_box = make_collapsible("Loading", expanded=True)
         self.loading_box = loading_box
         loading_layout = QVBoxLayout()
+        self.loading_settings_box = make_collapsible(
+            "Configuration and calibration", expanded=False
+        )
+        self.loading_settings_box.setLayout(loading_layout)
+        loading_shell_layout = QVBoxLayout()
+        loading_shell_layout.addWidget(self.loading_settings_box)
 
         self.hardware_config_controls = QWidget()
         hardware_config_layout = QVBoxLayout(self.hardware_config_controls)
@@ -274,11 +280,11 @@ class HardwareWidget(QWidget):
         self.disconnect_btn.clicked.connect(self.disconnect)
         self.reload_tf_btn.clicked.connect(self.reload_transformer)
 
-        loading_layout.addWidget(self.connect_btn)
-        loading_layout.addWidget(self.disconnect_btn)
         loading_layout.addWidget(self.reload_tf_btn)
+        loading_shell_layout.addWidget(self.connect_btn)
+        loading_shell_layout.addWidget(self.disconnect_btn)
 
-        loading_box.setLayout(loading_layout)
+        loading_box.setLayout(loading_shell_layout)
 
         # ================= COLLECT SPECTRUM SECTION =================
         raman_box = make_collapsible(
@@ -833,6 +839,16 @@ class HardwareWidget(QWidget):
         self.sel_suppress_pillars_check.setChecked(False)
         sel_layout.addWidget(self.sel_suppress_pillars_check)
 
+        self.sel_constrain_trenches_check = QCheckBox(
+            "Select cells only inside learned trapezoid trenches"
+        )
+        self.sel_constrain_trenches_check.setChecked(False)
+        self.sel_constrain_trenches_check.setToolTip(
+            "Fit one global rotation/translation of the learned trench "
+            "lattice and remove wall or outside labels before selecting cells."
+        )
+        sel_layout.addWidget(self.sel_constrain_trenches_check)
+
         self.run_selection_btn = QPushButton("Run automated selection")
         self.run_selection_btn.clicked.connect(self.run_automated_selection)
         sel_layout.addWidget(self.run_selection_btn)
@@ -981,6 +997,15 @@ class HardwareWidget(QWidget):
         )
         self.mda_suppress_pillars_check.setChecked(False)
         mda_advanced_layout.addWidget(self.mda_suppress_pillars_check)
+        self.mda_constrain_trenches_check = QCheckBox(
+            "Constrain cells to learned trapezoid trenches"
+        )
+        self.mda_constrain_trenches_check.setChecked(False)
+        self.mda_constrain_trenches_check.setToolTip(
+            "Keep each tracked cell inside its initially assigned trench and "
+            "reject unsafe center-of-mass jumps."
+        )
+        mda_advanced_layout.addWidget(self.mda_constrain_trenches_check)
         # Seg-track options (shown only when the box is checked)
         seg_ch_row = QHBoxLayout()
         self._seg_ch_label = QLabel("Segment channel:")
@@ -1329,6 +1354,10 @@ class HardwareWidget(QWidget):
             "selection_cellpose_model": self.sel_cellpose_combo,
             "mda_cellpose_model": self.mda_seg_model_combo,
         }
+        check_fields = {
+            "constrain_trench_selection": self.sel_constrain_trenches_check,
+            "constrain_trench_tracking": self.mda_constrain_trenches_check,
+        }
         for key, widget in path_fields.items():
             if key in values and values[key] is not None:
                 widget.setText(resolve_defaults_path(values[key], defaults_path))
@@ -1360,8 +1389,19 @@ class HardwareWidget(QWidget):
                     f"[hardware defaults] ignored unavailable {key}: "
                     f"{choice!r}"
                 )
+        for key, widget in check_fields.items():
+            if key not in values or values[key] is None:
+                continue
+            value = values[key]
+            if isinstance(value, bool):
+                widget.setChecked(value)
+            else:
+                print(
+                    f"[hardware defaults] ignored invalid {key}: "
+                    f"{value!r}"
+                )
         supported = set(path_fields) | set(text_fields) | set(number_fields)
-        supported |= set(combo_fields)
+        supported |= set(combo_fields) | set(check_fields)
         # Legacy files may contain correction/calibration paths, but both
         # are now optional and must be explicitly selected in each session.
         supported.add("dark_noise_file")
@@ -1602,6 +1642,7 @@ class HardwareWidget(QWidget):
         """Show/hide the segment-channel and rescale fields."""
         self.mda_auto_add_cells_check.setVisible(checked)
         self.mda_suppress_pillars_check.setVisible(checked)
+        self.mda_constrain_trenches_check.setVisible(checked)
         self._seg_ch_label.setVisible(checked)
         self.mda_seg_ch_combo.setVisible(checked)
         self._seg_scale_label.setVisible(checked)
@@ -2874,8 +2915,10 @@ class HardwareWidget(QWidget):
             self.racer_calibration_path_controls,
         )
         if running:
+            # Preserve each control's own state, even inside collapsed groups.
             self._live_control_states = [
-                (control, control.isEnabled()) for control in controls
+                (control, control.isEnabledTo(control.parentWidget()))
+                for control in controls
             ]
             for control, _enabled in self._live_control_states:
                 control.setEnabled(False)
@@ -3004,6 +3047,7 @@ class HardwareWidget(QWidget):
         vandermonde_model_path = self.sel_vdm_path.text().strip()
         cellpose_model = self.sel_cellpose_combo.currentText() or "cyto2"
         suppress_pillars = self.sel_suppress_pillars_check.isChecked()
+        constrain_trenches = self.sel_constrain_trenches_check.isChecked()
 
         if center_cell and not vandermonde_model_path:
             self.status.setText(
@@ -3058,10 +3102,11 @@ class HardwareWidget(QWidget):
                     stage_settle_time=5.0,
                     image_settle_time=1.0,
                     block_mda=False,
-                    show_masks=suppress_pillars,
+                    show_masks=suppress_pillars or constrain_trenches,
                     cellpose_upsample=1,
                     cell_point_refiner=None,
                     suppress_pillars=suppress_pillars,
+                    constrain_trenches=constrain_trenches,
                 )
             cell_point_count = sum(
                 len(source._points.data)
@@ -3083,7 +3128,10 @@ class HardwareWidget(QWidget):
                 "sources": sources,
                 "autofocus_p": autofocus_p,
                 "new_seq": new_seq,
+                "constrain_trenches": constrain_trenches,
             }
+            if constrain_trenches:
+                self.mda_constrain_trenches_check.setChecked(True)
             n_new = len(new_seq.stage_positions)
             log.append("\n--- selection complete ---\n")
             extra = (
@@ -3161,6 +3209,9 @@ class HardwareWidget(QWidget):
                     stage_settle_time=0.5,
                     segmentation_scale=int(self.refine_scale_input.value()),
                     suppress_pillars=self.sel_suppress_pillars_check.isChecked(),
+                    constrain_trenches=(
+                        self.sel_constrain_trenches_check.isChecked()
+                    ),
                 )
             log.append(
                 "\n--- refinement complete: "
@@ -3450,6 +3501,10 @@ class HardwareWidget(QWidget):
             segment_and_track
             and self.mda_suppress_pillars_check.isChecked()
         )
+        constrain_trench_tracking = (
+            segment_and_track
+            and self.mda_constrain_trenches_check.isChecked()
+        )
         batch = self.selection_results.get(
             "batch", self.sel_batch_combo.currentText() == "True"
         )
@@ -3543,6 +3598,7 @@ class HardwareWidget(QWidget):
                     autofocus_object=autofocus_object,
                     segment_and_track=segment_and_track,
                     auto_add_new_cells=auto_add_new_cells,
+                    constrain_trench_tracking=constrain_trench_tracking,
                     scale=seg_scale,
                     segment_channel=segment_channel,
                     cellpose_model=cellpose_model,
@@ -3634,6 +3690,8 @@ class HardwareWidget(QWidget):
                     f"segment_and_track={segment_and_track}, "
                     f"auto_add_new_cells={auto_add_new_cells}, "
                     f"suppress_pillars={suppress_pillars}, "
+                    "constrain_trench_tracking="
+                    f"{constrain_trench_tracking}, "
                     f"search_pts={search_pts}, fine_range={fine_search_range}, "
                     f"fine_pts={fine_search_pts}, refocus_every={refocus_every}, "
                     f"image=({img_x}x{img_y}), "
@@ -3646,7 +3704,9 @@ class HardwareWidget(QWidget):
                     "engine._auto_add_new_cells="
                     f"{getattr(engine, '_auto_add_new_cells', False)}, "
                     "engine._suppress_pillars="
-                    f"{getattr(engine, '_suppress_pillars', False)}"
+                    f"{getattr(engine, '_suppress_pillars', False)}, "
+                    "engine._constrain_trench_tracking="
+                    f"{getattr(engine, '_constrain_trench_tracking', False)}"
                 )
                 self._pause_core_guard_for_raman_mda()
                 self._raman_mda_thread = run_mda_with_notifications(

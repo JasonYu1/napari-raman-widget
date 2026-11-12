@@ -1,4 +1,4 @@
-"""Live point-layer compatibility for Raman segmentation and tracking.
+"""Raman engine safeguards and live point-layer compatibility.
 
 ``RamanEngine.update_aim`` reads a point layer, performs comparatively slow
 segmentation/tracking work, and later writes one result for every point it
@@ -12,6 +12,14 @@ private point-data proxy.  Its result is merged back into the live layer only
 for rows that are still identical to the rows in the original snapshot.
 Consequently, additions survive, deletions are not resurrected, and a manual
 move wins over an in-flight tracking result.
+
+The wrapper also rejects invalid autofocus results and focus changes more than
+four micrometers from the last accepted Z position.  Rejected results restore
+that previous position immediately.
+
+An opt-in trench guard registers one fixed learned trapezoid lattice, segments
+each target only inside its assigned trench, and holds the last safe target if
+geometry, wall clearance, cell area, or consecutive motion checks fail.
 """
 
 from __future__ import annotations
@@ -24,7 +32,12 @@ from typing import Any, Callable
 import numpy as np
 from qtpy.QtCore import QCoreApplication, QObject, QThread, Qt, Signal, Slot
 
+from .trench_tracking import TrenchConstraintTracker, TrenchTarget
+
 __all__ = ["make_live_cell_engine_type"]
+
+
+MAX_AUTOFOCUS_Z_SHIFT_UM = 4.0
 
 
 @dataclass
@@ -92,6 +105,15 @@ class _PointUpdateSession:
     layer: Any
     before: np.ndarray
     proxy: _PointDataProxy
+
+
+@dataclass(frozen=True)
+class _TrenchPointRow:
+    """One cell row whose proposed coordinate needs trench validation."""
+
+    session: _PointUpdateSession
+    row_index: int
+    token: tuple[int, int]
 
 
 @dataclass(frozen=True)
@@ -329,10 +351,9 @@ def _append_new_targets(
 def make_live_cell_engine_type(base_engine_type: type) -> type:
     """Return an instance-local live-cell wrapper for ``base_engine_type``.
 
-    The generated subclass accepts ``auto_add_new_cells`` in addition to the
-    base constructor's arguments.  Automatic discovery is performed by an
-    overridable post-update hook so its policy remains separate from the
-    concurrency-safe point merge implemented here.
+    The generated subclass accepts local cell-discovery and learned-trench
+    safeguards in addition to the base constructor's arguments.  Both are
+    applied before the concurrency-safe point merge reaches a live layer.
     """
 
     class LiveCellEngine(base_engine_type):
@@ -340,9 +361,25 @@ def make_live_cell_engine_type(base_engine_type: type) -> type:
             self,
             *args: Any,
             auto_add_new_cells: bool = False,
+            constrain_trench_tracking: bool = False,
+            trench_tracking_config: Any | None = None,
             **kwargs: Any,
         ) -> None:
             self._auto_add_new_cells = bool(auto_add_new_cells)
+            self._constrain_trench_tracking = bool(
+                constrain_trench_tracking
+            )
+            self._trench_tracker = None
+            if self._constrain_trench_tracking:
+                self._trench_tracker = (
+                    TrenchConstraintTracker()
+                    if trench_tracking_config is None
+                    else TrenchConstraintTracker(trench_tracking_config)
+                )
+            self._trench_live_targets: dict[
+                tuple[int, int], dict[tuple[int, int], np.ndarray]
+            ] = {}
+            self._next_trench_target_token = 0
             self._live_cell_lock = RLock()
             super().__init__(*args, **kwargs)
             # Widgets construct engines on the GUI thread, so this object's
@@ -352,6 +389,43 @@ def make_live_cell_engine_type(base_engine_type: type) -> type:
         @property
         def auto_add_new_cells(self) -> bool:
             return self._auto_add_new_cells
+
+        @property
+        def constrain_trench_tracking(self) -> bool:
+            return self._constrain_trench_tracking
+
+        def autofocus_w_raman(
+            self,
+            last_z: float,
+            *args: Any,
+            **kwargs: Any,
+        ) -> tuple[Any, Any, Any]:
+            """Reject invalid focus results or shifts over 4 um."""
+            initial_z, best_z, result = super().autofocus_w_raman(
+                last_z,
+                *args,
+                **kwargs,
+            )
+            shift = abs(float(best_z) - float(last_z))
+            finite_shift = bool(np.isfinite(shift))
+            if not finite_shift or shift > MAX_AUTOFOCUS_Z_SHIFT_UM:
+                self.try_set_ZPosition(last_z)
+                reason = (
+                    "focus shift is not finite"
+                    if not finite_shift
+                    else (
+                        f"shift of {shift:.3f} um exceeds "
+                        f"{MAX_AUTOFOCUS_Z_SHIFT_UM:.3f} um"
+                    )
+                )
+                print(
+                    "[autofocus safeguard] rejected "
+                    f"{float(best_z):.3f} um: {reason}; "
+                    f"restored previous Z {float(last_z):.3f} um"
+                )
+                best_z = last_z
+
+            return initial_z, best_z, result
 
         def _capture_point_sessions(self) -> list[_PointUpdateSession]:
             source_layers = [
@@ -378,6 +452,274 @@ def make_live_cell_engine_type(base_engine_type: type) -> type:
                     strict=True,
                 )
             ]
+
+        def _tokens_for_trench_points(
+            self,
+            source: Any,
+            position: int,
+            points_yx: np.ndarray,
+        ) -> list[tuple[int, int]]:
+            """Match current rows to stable target tokens by their live point."""
+
+            registry_key = (id(source), int(position))
+            previous = dict(self._trench_live_targets.get(registry_key, {}))
+            available = set(previous)
+            tokens: list[tuple[int, int]] = []
+            for point in np.asarray(points_yx, dtype=float):
+                matching_token = None
+                matching_distance = np.inf
+                if np.isfinite(point).all():
+                    for token in available:
+                        distance = float(
+                            np.linalg.norm(previous[token] - point)
+                        )
+                        if distance < matching_distance:
+                            matching_token = token
+                            matching_distance = distance
+                # A manual move intentionally starts a new target identity;
+                # row reordering and deletion still preserve exact matches.
+                if matching_token is None or matching_distance > 0.5:
+                    matching_token = (
+                        id(source),
+                        self._next_trench_target_token,
+                    )
+                    self._next_trench_target_token += 1
+                else:
+                    available.remove(matching_token)
+                tokens.append(matching_token)
+            return tokens
+
+        def _trench_point_rows(
+            self,
+            sessions: list[_PointUpdateSession],
+            position: int,
+        ) -> list[_TrenchPointRow]:
+            """Collect cell rows for one position, excluding background aims."""
+
+            rows: list[_TrenchPointRow] = []
+            for session in sessions:
+                if "cell" not in str(
+                    getattr(session.source, "name", "")
+                ).lower():
+                    continue
+                position_index = getattr(session.source, "_pos_idx", None)
+                if not isinstance(position_index, (int, np.integer)):
+                    continue
+                position_index = int(position_index)
+                before = np.asarray(session.before)
+                proposed = np.asarray(session.proxy.data)
+                if (
+                    before.ndim != 2
+                    or proposed.shape != before.shape
+                    or before.shape[1] < 2
+                    or position_index < 0
+                    or position_index >= before.shape[1]
+                ):
+                    continue
+                indices = np.flatnonzero(before[:, position_index] == position)
+                tokens = self._tokens_for_trench_points(
+                    session.source,
+                    position,
+                    before[indices, -2:],
+                )
+                rows.extend(
+                    _TrenchPointRow(session, int(row_index), token)
+                    for row_index, token in zip(indices, tokens, strict=True)
+                )
+            return rows
+
+        def _remember_trench_points(
+            self,
+            rows: list[_TrenchPointRow],
+            position: int,
+            points_yx: np.ndarray,
+        ) -> None:
+            by_source: dict[
+                int, dict[tuple[int, int], np.ndarray]
+            ] = {}
+            for row, point in zip(rows, points_yx, strict=True):
+                by_source.setdefault(id(row.session.source), {})[row.token] = (
+                    np.asarray(point, dtype=float).copy()
+                )
+            for source_id, points in by_source.items():
+                self._trench_live_targets[(source_id, int(position))] = points
+
+        def _safe_previous_labels(
+            self,
+            position: int,
+            previous_mask: np.ndarray | None,
+        ) -> np.ndarray | None:
+            current = getattr(self, "_last_segments", {}).get(position)
+            if current is None:
+                return None
+            current_array = np.asarray(current)
+            if current_array.ndim != 2:
+                return None
+            if previous_mask is not None:
+                previous = np.asarray(previous_mask)
+                if (
+                    previous.shape == current_array.shape
+                    and np.issubdtype(previous.dtype, np.integer)
+                ):
+                    return np.array(previous, copy=True)
+            return np.zeros(current_array.shape, dtype=np.uint16)
+
+        def _hold_trench_updates(
+            self,
+            *,
+            rows: list[_TrenchPointRow],
+            position: int,
+            previous_mask: np.ndarray | None,
+            error: Exception,
+        ) -> None:
+            """Fail closed if the learned-geometry guard itself errors."""
+
+            held_points = []
+            for row in rows:
+                point = np.asarray(
+                    row.session.before[row.row_index, -2:],
+                    dtype=float,
+                )
+                row.session.proxy.data[row.row_index, -2:] = point
+                held_points.append(point)
+            if held_points:
+                self._remember_trench_points(
+                    rows,
+                    position,
+                    np.asarray(held_points, dtype=float),
+                )
+            safe_labels = self._safe_previous_labels(position, previous_mask)
+            if safe_labels is not None:
+                self._last_segments[position] = safe_labels
+                if not isinstance(getattr(self, "_tracks", None), dict):
+                    self._tracks = {}
+                self._tracks[position] = np.stack(
+                    (safe_labels, safe_labels),
+                )
+            print(
+                "[trench safeguard] failed closed at "
+                f"p={position}: {type(error).__name__}: {error}"
+            )
+
+        def _apply_trench_constraints(
+            self,
+            *,
+            position: int,
+            event: Any,
+            image: np.ndarray,
+            sessions: list[_PointUpdateSession],
+            previous_mask: np.ndarray | None,
+        ) -> None:
+            """Replace base proposals with validated same-trench cell COMs."""
+
+            if not self._constrain_trench_tracking:
+                return
+            if self._trench_tracker is None:
+                raise RuntimeError("trench constraint tracker is unavailable")
+            rows = self._trench_point_rows(sessions, position)
+            has_cell_source = any(
+                "cell" in str(getattr(session.source, "name", "")).lower()
+                for session in sessions
+            )
+            if not rows and not has_cell_source:
+                return
+            targets = [
+                TrenchTarget(
+                    token=row.token,
+                    previous_yx=np.asarray(
+                        row.session.before[row.row_index, -2:],
+                        dtype=float,
+                    ).copy(),
+                    proposed_yx=np.asarray(
+                        row.session.proxy.data[row.row_index, -2:],
+                        dtype=float,
+                    ).copy(),
+                )
+                for row in rows
+            ]
+            current_labels = getattr(self, "_last_segments", {}).get(
+                position
+            )
+            time_index = int(event.index.get("t", 0))
+            try:
+                update = self._trench_tracker.update(
+                    position=int(position),
+                    time_index=time_index,
+                    image=np.asarray(image),
+                    targets=targets,
+                    current_labels=current_labels,
+                    label_scale=float(getattr(self, "_scale", 1.0)),
+                )
+                points = np.asarray(update.points_yx, dtype=float)
+                if points.shape != (len(rows), 2) or not np.isfinite(
+                    points
+                ).all():
+                    raise ValueError(
+                        "trench tracker returned invalid point coordinates"
+                    )
+                labels = np.asarray(update.labels)
+                if (
+                    labels.ndim != 2
+                    or not np.issubdtype(labels.dtype, np.integer)
+                    or np.any(labels < 0)
+                ):
+                    raise ValueError(
+                        "trench tracker returned an invalid label image"
+                    )
+            except Exception as error:
+                self._hold_trench_updates(
+                    rows=rows,
+                    position=position,
+                    previous_mask=previous_mask,
+                    error=error,
+                )
+                return
+
+            for row, point in zip(rows, points, strict=True):
+                row.session.proxy.data[row.row_index, -2:] = point
+            self._remember_trench_points(rows, position, points)
+            self._last_segments[position] = np.array(labels, copy=True)
+
+            if previous_mask is None or np.asarray(previous_mask).shape != labels.shape:
+                prior_labels = np.zeros_like(labels)
+            else:
+                prior_labels = np.asarray(previous_mask, dtype=labels.dtype)
+            # Mark this as an untracked, constrained pair.  Auto-add then uses
+            # its conservative label-ID-independent proximity fallback.
+            if not isinstance(getattr(self, "_tracks", None), dict):
+                self._tracks = {}
+            self._tracks[position] = np.stack((prior_labels, labels))
+
+            accepted = np.asarray(update.accepted, dtype=bool)
+            held = int(len(accepted) - np.count_nonzero(accepted))
+            if held or not bool(update.geometry_valid):
+                reasons = ", ".join(
+                    sorted(
+                        {
+                            str(reason)
+                            for reason, passed in zip(
+                                update.reasons,
+                                accepted,
+                                strict=True,
+                            )
+                            if not passed
+                        }
+                    )
+                )
+                print(
+                    "[trench safeguard] "
+                    f"p={position}, t={time_index}: held {held}/{len(rows)} "
+                    f"target(s); geometry={float(update.geometry_score):.3f}; "
+                    f"reasons={reasons or 'geometry'}"
+                )
+
+        def setup_sequence(self, *args: Any, **kwargs: Any) -> Any:
+            result = super().setup_sequence(*args, **kwargs)
+            if self._trench_tracker is not None:
+                self._trench_tracker.reset()
+            self._trench_live_targets.clear()
+            self._next_trench_target_token = 0
+            return result
 
         def _after_live_aim_update(
             self,
@@ -498,6 +840,13 @@ def make_live_cell_engine_type(base_engine_type: type) -> type:
                         session.source._points = session.layer
 
                 if succeeded:
+                    self._apply_trench_constraints(
+                        position=pos,
+                        event=event,
+                        image=img,
+                        sessions=sessions,
+                        previous_mask=previous_mask,
+                    )
                     self._live_layer_bridge.call(
                         lambda: [
                             _merge_tracked_rows(session)

@@ -1,5 +1,6 @@
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 
@@ -146,6 +147,176 @@ class _AutoAddBase:
 
     def record_raman(self, event):
         del event
+
+
+class _AutofocusBase:
+    def __init__(self, initial_z, best_z, result):
+        self.initial_z = initial_z
+        self.best_z = best_z
+        self.result = result
+        self.z_moves = []
+
+    def autofocus_w_raman(self, last_z, *args, **kwargs):
+        self.autofocus_call = (last_z, args, kwargs)
+        return self.initial_z, self.best_z, self.result
+
+    def try_set_ZPosition(self, position):
+        self.z_moves.append(position)
+
+
+class _FakeTrenchTracker:
+    def __init__(self, points_yx, labels):
+        self.points_yx = np.asarray(points_yx, dtype=float)
+        self.labels = np.asarray(labels, dtype=np.uint16)
+        self.call = None
+        self.reset_count = 0
+
+    def update(self, **kwargs):
+        self.call = kwargs
+        count = len(kwargs["targets"])
+        return SimpleNamespace(
+            points_yx=self.points_yx,
+            labels=self.labels,
+            accepted=np.ones(count, dtype=bool),
+            reasons=("accepted",) * count,
+            geometry_valid=True,
+            geometry_score=1.0,
+        )
+
+    def reset(self):
+        self.reset_count += 1
+
+
+class AutofocusSafeguardTests(unittest.TestCase):
+    def make_engine(self, *, initial_z=100.0, best_z=100.0):
+        result = object()
+        engine_type = make_live_cell_engine_type(_AutofocusBase)
+        engine = engine_type(initial_z, best_z, result)
+        return engine, result
+
+    def test_shift_over_four_um_restores_previous_z(self):
+        for best_z in (104.01, 95.99):
+            with self.subTest(best_z=best_z):
+                engine, result = self.make_engine(best_z=best_z)
+
+                initial_z, guarded_z, returned_result = engine.autofocus_w_raman(
+                    100.0,
+                    "point",
+                    time=1,
+                )
+
+                self.assertEqual(initial_z, 100.0)
+                self.assertEqual(guarded_z, 100.0)
+                self.assertIs(returned_result, result)
+                self.assertEqual(engine.z_moves, [100.0])
+                self.assertEqual(
+                    engine.autofocus_call,
+                    (100.0, ("point",), {"time": 1}),
+                )
+
+    def test_shift_of_exactly_four_um_is_accepted(self):
+        for best_z in (104.0, 96.0):
+            with self.subTest(best_z=best_z):
+                engine, result = self.make_engine(best_z=best_z)
+
+                initial_z, guarded_z, returned_result = (
+                    engine.autofocus_w_raman(100.0, "point")
+                )
+
+                self.assertEqual(initial_z, 100.0)
+                self.assertEqual(guarded_z, best_z)
+                self.assertIs(returned_result, result)
+                self.assertEqual(engine.z_moves, [])
+
+    def test_guard_compares_with_previous_z_not_scan_start(self):
+        engine, _ = self.make_engine(initial_z=105.0, best_z=100.0)
+
+        _, guarded_z, _ = engine.autofocus_w_raman(100.0, "point")
+
+        self.assertEqual(guarded_z, 100.0)
+        self.assertEqual(engine.z_moves, [])
+
+    def test_nonfinite_focus_result_restores_previous_z(self):
+        for best_z in (np.nan, np.inf, -np.inf):
+            with self.subTest(best_z=best_z):
+                engine, _ = self.make_engine(best_z=best_z)
+
+                _, guarded_z, _ = engine.autofocus_w_raman(100.0, "point")
+
+                self.assertEqual(guarded_z, 100.0)
+                self.assertEqual(engine.z_moves, [100.0])
+
+
+class TrenchTrackingIntegrationTests(unittest.TestCase):
+    def setUp(self):
+        self.original = np.asarray(
+            [
+                [0, 0, 0, 0, 10, 20],
+                [0, 0, 0, 0, 30, 40],
+            ],
+            dtype=float,
+        )
+        self.event = SimpleNamespace(index={"p": 0, "t": 1})
+
+    def test_safe_points_and_labels_replace_base_tracking_proposals(self):
+        layer = _Layer(self.original)
+        source = _PointSource(layer)
+        safe_labels = np.zeros((4, 4), dtype=np.uint16)
+        safe_labels[1:3, 1:3] = 7
+        tracker = _FakeTrenchTracker(
+            [[11, 21], [31, 41]],
+            safe_labels,
+        )
+        engine_type = make_live_cell_engine_type(_StaleUpdateBase)
+
+        with patch(
+            "napari_raman_widget.live_cell_tracking.TrenchConstraintTracker",
+            return_value=tracker,
+        ), patch(
+            "napari_raman_widget.new_cell_targets.find_new_cell_targets",
+            return_value=(
+                np.empty(0, dtype=np.int64),
+                np.empty((0, 2), dtype=float),
+            ),
+        ) as find_new:
+            engine = engine_type(
+                [source],
+                auto_add_new_cells=True,
+                constrain_trench_tracking=True,
+            )
+            engine.update_aim(0, self.event, np.zeros((4, 4)))
+
+        np.testing.assert_allclose(
+            layer.data[:, -2:],
+            [[11, 21], [31, 41]],
+        )
+        np.testing.assert_array_equal(engine._last_segments[0], safe_labels)
+        np.testing.assert_array_equal(find_new.call_args.args[1], safe_labels)
+        self.assertIsNotNone(tracker.call)
+        targets = tracker.call["targets"]
+        np.testing.assert_allclose(
+            [target.previous_yx for target in targets],
+            self.original[:, -2:],
+        )
+        np.testing.assert_allclose(
+            [target.proposed_yx for target in targets],
+            [[100, 200], [101, 201]],
+        )
+
+    def test_incompatible_geometry_holds_previous_points_and_safe_mask(self):
+        layer = _Layer(self.original)
+        source = _PointSource(layer)
+        engine_type = make_live_cell_engine_type(_StaleUpdateBase)
+        engine = engine_type(
+            [source],
+            constrain_trench_tracking=True,
+        )
+
+        engine.update_aim(0, self.event, np.zeros((4, 4)))
+
+        np.testing.assert_allclose(layer.data, self.original)
+        self.assertFalse(np.any(engine._last_segments[0]))
+        self.assertEqual(engine._tracks[0].shape, (2, 4, 4))
 
 
 class LiveCellTrackingTests(unittest.TestCase):

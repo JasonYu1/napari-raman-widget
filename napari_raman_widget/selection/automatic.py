@@ -15,6 +15,7 @@ from napari_raman_widget.calibration.models import (
     load_vandermonde_model,
 )
 from napari_raman_widget.engine_compat import make_pillar_shape_filter
+from napari_raman_widget.trench_tracking import filter_labels_to_trenches
 
 from .masks import get_n_most_centered_coms
 
@@ -74,6 +75,38 @@ def _add_point(
     )
 
 
+def _retain_same_label_refinements(
+    original_yx: np.ndarray,
+    refined_yx: np.ndarray,
+    labels: np.ndarray,
+) -> np.ndarray:
+    """Keep a refinement only when it remains in the same safe cell label."""
+
+    original = np.atleast_2d(np.asarray(original_yx, dtype=float))
+    refined = np.atleast_2d(np.asarray(refined_yx, dtype=float))
+    if refined.shape != original.shape:
+        raise ValueError("cell_point_refiner must preserve the cell point shape.")
+    mask = np.asarray(labels)
+    accepted = original.copy()
+    height, width = mask.shape
+    for index, (before, after) in enumerate(zip(original, refined, strict=True)):
+        before_pixel = np.rint(before).astype(int)
+        after_pixel = np.rint(after).astype(int)
+        before_inside = (
+            0 <= before_pixel[0] < height and 0 <= before_pixel[1] < width
+        )
+        after_inside = (
+            0 <= after_pixel[0] < height and 0 <= after_pixel[1] < width
+        )
+        if not before_inside or not after_inside:
+            continue
+        before_label = int(mask[tuple(before_pixel)])
+        after_label = int(mask[tuple(after_pixel)])
+        if before_label != 0 and after_label == before_label:
+            accepted[index] = after
+    return accepted
+
+
 def automated_point_selections(
     core: Any,
     viewer: Any,
@@ -96,6 +129,7 @@ def automated_point_selections(
     cellpose_upsample: int = 1,
     cell_point_refiner: Callable[[np.ndarray], np.ndarray] | None = None,
     suppress_pillars: bool = False,
+    constrain_trenches: bool = False,
 ):
     """Segment images and add automatically selected Raman targets.
 
@@ -142,6 +176,10 @@ def automated_point_selections(
     suppress_pillars
         When true, remove Cellpose labels whose rotated shape fits at least 75%
         of the measured 78 x 56 pixel pillar rectangle.
+    constrain_trenches
+        When true, fit one global rotation and translation of the learned
+        trapezoid lattice, then keep only cell-sized label components inside
+        wall-safe trench interiors.
 
     Returns
     -------
@@ -271,12 +309,37 @@ def automated_point_selections(
             )
         else:
             mask = raw_mask
+        trench_geometry_valid = True
+        if constrain_trenches:
+            trench_result = filter_labels_to_trenches(image, mask)
+            mask = trench_result.filtered_labels
+            trench_geometry_valid = trench_result.geometry_valid
+            if trench_geometry_valid:
+                print(
+                    "Trench geometry filter for automated selection at "
+                    f"position {position_index}: "
+                    f"score={trench_result.geometry_score:.3f}, "
+                    "one global rotation/translation, "
+                    "remaining_labels="
+                    f"{int(np.count_nonzero(np.unique(mask)))}"
+                )
+            else:
+                print(
+                    "Learned trench geometry was not recognized at "
+                    f"position {position_index} "
+                    f"(score={trench_result.geometry_score:.3f}); "
+                    "skipping this field without cell or autofocus targets."
+                )
         masks.append(mask)
         if show_masks:
             viewer.add_labels(
                 mask,
                 name=f"Cellpose mask p{position_index}",
             )
+
+        if not trench_geometry_valid:
+            selected_by_position.append(np.empty((0, 2), dtype=float))
+            continue
 
         if center_cell:
             requested_points = (
@@ -322,6 +385,12 @@ def automated_point_selections(
                 if refined_cells.shape != refined_points[cell_start:].shape:
                     raise ValueError(
                         "cell_point_refiner must preserve the cell point shape."
+                    )
+                if constrain_trenches:
+                    refined_cells = _retain_same_label_refinements(
+                        refined_points[cell_start:],
+                        refined_cells,
+                        mask,
                     )
                 refined_points[cell_start:] = refined_cells
             selected_points = refined_points

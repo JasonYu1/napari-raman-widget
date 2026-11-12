@@ -92,6 +92,31 @@ class WidgetSeparationTests(unittest.TestCase):
                     source,
                 )
 
+    def test_trench_tracking_constraint_is_wired_in_both_widgets(self) -> None:
+        for filename in ("hardware_widget.py", "demo_widget.py"):
+            with self.subTest(filename=filename):
+                source = (PACKAGE / filename).read_text(encoding="utf-8")
+                self.assertIn(
+                    "self.mda_constrain_trenches_check = QCheckBox(",
+                    source,
+                )
+                self.assertIn(
+                    "self.mda_constrain_trenches_check.setChecked(False)",
+                    source,
+                )
+                self.assertIn(
+                    "self.mda_constrain_trenches_check.setVisible(checked)",
+                    source,
+                )
+                self.assertIn(
+                    "and self.mda_constrain_trenches_check.isChecked()",
+                    source,
+                )
+                self.assertIn(
+                    "constrain_trench_tracking=constrain_trench_tracking",
+                    source,
+                )
+
     def test_selection_pillar_suppression_is_wired_in_both_widgets(self) -> None:
         for filename in ("hardware_widget.py", "demo_widget.py"):
             with self.subTest(filename=filename):
@@ -111,6 +136,37 @@ class WidgetSeparationTests(unittest.TestCase):
                 )
                 self.assertIn(
                     "suppress_pillars=suppress_pillars,",
+                    source,
+                )
+
+    def test_selection_trench_constraint_is_wired_in_both_widgets(self) -> None:
+        for filename in ("hardware_widget.py", "demo_widget.py"):
+            with self.subTest(filename=filename):
+                source = (PACKAGE / filename).read_text(encoding="utf-8")
+                self.assertIn(
+                    "self.sel_constrain_trenches_check = QCheckBox(",
+                    source,
+                )
+                self.assertIn(
+                    "self.sel_constrain_trenches_check.setChecked(False)",
+                    source,
+                )
+                self.assertIn(
+                    "constrain_trenches = "
+                    "self.sel_constrain_trenches_check.isChecked()",
+                    source,
+                )
+                self.assertIn(
+                    "constrain_trenches=constrain_trenches,",
+                    source,
+                )
+                self.assertIn(
+                    "self.mda_constrain_trenches_check.setChecked(True)",
+                    source,
+                )
+                self.assertIn(
+                    "constrain_trenches=(\n"
+                    "                        self.sel_constrain_trenches_check.isChecked()",
                     source,
                 )
 

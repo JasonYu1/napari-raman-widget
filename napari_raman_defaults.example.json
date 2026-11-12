@@ -3,6 +3,8 @@
   "transformer_model": "example_configs/models/example_coordinate_transform_model.json",
   "vandermonde_model": "example_configs/models/example_vandermonde_model.json",
   "tracking_config": "example_configs/tracking/particle_config.json",
+  "constrain_trench_selection": false,
+  "constrain_trench_tracking": false,
   "mda_output_directory": "data/run",
   "center_wavelength_nm": 785.0,
   "raman_exposure_ms": 1000.0,

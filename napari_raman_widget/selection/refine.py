@@ -12,6 +12,8 @@ from scipy.ndimage import center_of_mass
 from skimage.transform import rescale, resize
 from tqdm.auto import tqdm
 
+from napari_raman_widget.trench_tracking import filter_labels_to_trenches
+
 __all__ = [
     "refine_cell_source_points",
     "refine_points_to_label_centers",
@@ -169,6 +171,7 @@ def _acquire_mask(
     cellpose_upsample: int,
     segmenter: Callable[..., np.ndarray],
     pillar_shape_filter: Any | None = None,
+    constrain_trenches: bool = False,
 ) -> np.ndarray:
     core.snapImage()
     core.waitForSystem()
@@ -221,6 +224,14 @@ def _acquire_mask(
             image_shape=image.shape,
         )
         restored = shape_result.filtered_labels
+    if constrain_trenches:
+        trench_result = filter_labels_to_trenches(image, restored)
+        if not trench_result.geometry_valid:
+            raise RuntimeError(
+                "Learned trench geometry was not recognized during "
+                f"refinement (score={trench_result.geometry_score:.3f})"
+            )
+        restored = trench_result.filtered_labels
     return restored
 
 
@@ -243,6 +254,7 @@ def refine_cell_source_points(
     point_refiner: Callable[[np.ndarray], np.ndarray] | None = None,
     suppress_pillars: bool = False,
     pillar_shape_filter: Any | None = None,
+    constrain_trenches: bool = False,
 ) -> dict[str, int]:
     """Acquire each selected FOV and refine its cell-layer points in place.
 
@@ -338,6 +350,7 @@ def refine_cell_source_points(
                     cellpose_upsample=cellpose_upsample,
                     segmenter=segmenter,
                     pillar_shape_filter=pillar_shape_filter,
+                    constrain_trenches=constrain_trenches,
                 )
 
             rows = np.flatnonzero(position_indices == position_index)
@@ -347,12 +360,38 @@ def refine_cell_source_points(
                 max_distance=max_distance,
             )
             if point_refiner is not None and np.any(matched):
+                safe_refined = np.asarray(refined[matched], dtype=float).copy()
                 extra_refined = np.asarray(
-                    point_refiner(refined[matched]),
+                    point_refiner(safe_refined),
                     dtype=float,
                 )
-                if extra_refined.shape != refined[matched].shape:
+                if extra_refined.shape != safe_refined.shape:
                     raise ValueError("point_refiner must preserve point shape")
+                if constrain_trenches:
+                    mask = masks_by_xy[stage_xy]
+                    for index, (safe_point, candidate) in enumerate(
+                        zip(safe_refined, extra_refined, strict=True)
+                    ):
+                        safe_pixel = np.rint(safe_point).astype(int)
+                        candidate_pixel = np.rint(candidate).astype(int)
+                        safe_inside = (
+                            0 <= safe_pixel[0] < mask.shape[0]
+                            and 0 <= safe_pixel[1] < mask.shape[1]
+                        )
+                        candidate_inside = (
+                            0 <= candidate_pixel[0] < mask.shape[0]
+                            and 0 <= candidate_pixel[1] < mask.shape[1]
+                        )
+                        safe_label = (
+                            int(mask[tuple(safe_pixel)]) if safe_inside else 0
+                        )
+                        candidate_label = (
+                            int(mask[tuple(candidate_pixel)])
+                            if candidate_inside
+                            else 0
+                        )
+                        if safe_label == 0 or candidate_label != safe_label:
+                            extra_refined[index] = safe_point
                 refined[matched] = extra_refined
             updated[rows, -2:] = refined
             matched_total += int(np.count_nonzero(matched))

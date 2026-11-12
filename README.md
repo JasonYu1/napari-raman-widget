@@ -139,6 +139,11 @@ and dataset generation under **Analysis**. Pixel-to-stage calibration is inside
 **Selection → Generate stage grid**.
 The optional AI chat has its own **Assistant** tab.
 
+Inside **Loading**, expand **Configuration and calibration** for file paths,
+RACER calibration, the output folder, wavelength, grating, and **Reload
+transformer**. This nested section starts collapsed; **Connect hardware** and
+**Disconnect** remain directly available in Loading.
+
 <a id="changing-the-output-folder"></a>
 
 <details>
@@ -480,6 +485,21 @@ segment-and-track options, and the refocus/segmentation cadence. Collapsing
 it preserves settings. Output, Raman glass offset, exposure, loops, interval,
 Z settings, extra channels, and Run/Stop remain outside Advanced.
 
+During automated selection, enable **Select cells only inside learned
+trapezoid trenches** to globally register the learned device lattice before
+targets are created. Cellpose labels are clipped to wall-safe interiors and
+relabelled before their centers are calculated. A successful constrained
+selection also enables the matching live-tracking guard for the upcoming MDA.
+Any field whose trench registration is below the confidence threshold is
+skipped without cell targets; other valid fields in the selection continue.
+
+For the learned trench device, enable **Constrain cells to learned trapezoid
+trenches** with segment-and-track. The tracker then keeps each cell in its
+initial trench, requires a wall-safe center of mass, and holds the previous
+valid target when a consecutive update exceeds the configured safety limit.
+The option is off by default and is independent of rectangular-pillar
+suppression.
+
 **Run Raman MDA** opens a pre-run review before creating output or starting
 hardware. It shows prepared stage positions, current cell/target counts,
 Raman pattern collections, time points, exposure, Z planes, and the resolved
@@ -604,6 +624,8 @@ fields whenever the hardware widget opens:
 The local defaults filename is ignored by Git. Relative paths inside it are
 resolved relative to the defaults file. To keep the file elsewhere, set the
 `NAPARI_RAMAN_DEFAULTS` environment variable to its full path before launch.
+Set `constrain_trench_selection` and `constrain_trench_tracking` to `true`
+there to preselect the learned trapezoid-trench guards on this microscope.
 
 </details>
 

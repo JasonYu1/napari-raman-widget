@@ -217,6 +217,11 @@ WIDGET_PARAMS = [
         "sel_suppress_pillars_check",
         "check",
     ),
+    _wp(
+        "selection_constrain_trenches",
+        "sel_constrain_trenches_check",
+        "check",
+    ),
     _wp("refinement_scale", "refine_scale_input", "int"),
     # Raman MDA
     _wp("mda_output_dir", "mda_dir_input", "text"),
@@ -230,6 +235,11 @@ WIDGET_PARAMS = [
     _wp("segment_and_track", "mda_seg_track_check", "check"),
     _wp("auto_add_new_cells", "mda_auto_add_cells_check", "check"),
     _wp("suppress_pillars", "mda_suppress_pillars_check", "check"),
+    _wp(
+        "constrain_trench_tracking",
+        "mda_constrain_trenches_check",
+        "check",
+    ),
     _wp("segment_channel", "mda_seg_ch_combo", "combo"),
     _wp("segmentation_scale", "mda_seg_scale_input", "float"),
     _wp("tracking_cellpose_model", "mda_seg_model_combo", "combo"),
@@ -1300,6 +1310,11 @@ ACTIONS = [
                "Batch collection.", enum=_BATCH),
             _wp("cellpose_model", "sel_cellpose_combo", "combo"),
             _wp("suppress_pillars", "sel_suppress_pillars_check", "check"),
+            _wp(
+                "constrain_trenches",
+                "sel_constrain_trenches_check",
+                "check",
+            ),
             _wp("vandermonde_model", "sel_vdm_path", "text"),
         ],
         "description": (
@@ -1335,6 +1350,11 @@ ACTIONS = [
             _wp("refinement_scale", "refine_scale_input", "int"),
             _wp("cellpose_model", "sel_cellpose_combo", "combo"),
             _wp("segment_channel", "mda_seg_ch_combo", "combo"),
+            _wp(
+                "constrain_trenches",
+                "sel_constrain_trenches_check",
+                "check",
+            ),
         ],
         "description": (
             "Re-segment selected fields and move existing cell points to the "
@@ -1377,6 +1397,11 @@ ACTIONS = [
             _wp("segment_and_track", "mda_seg_track_check", "check"),
             _wp("auto_add_new_cells", "mda_auto_add_cells_check", "check"),
             _wp("suppress_pillars", "mda_suppress_pillars_check", "check"),
+            _wp(
+                "constrain_trench_tracking",
+                "mda_constrain_trenches_check",
+                "check",
+            ),
             _wp("segment_channel", "mda_seg_ch_combo", "combo"),
             _wp("segmentation_scale", "mda_seg_scale_input", "float"),
             _wp("cellpose_model", "mda_seg_model_combo", "combo"),

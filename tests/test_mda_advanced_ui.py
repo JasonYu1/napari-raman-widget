@@ -30,6 +30,7 @@ ADVANCED = (
 )
 TRACKING = (
     "mda_auto_add_cells_check", "mda_suppress_pillars_check",
+    "mda_constrain_trenches_check",
     "mda_seg_ch_combo", "mda_seg_scale_input", "mda_seg_model_combo",
     "mda_seg_crop_combo", "mda_track_cfg_input", "_seg_track_cfg_browse",
 )

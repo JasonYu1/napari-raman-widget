@@ -197,6 +197,7 @@ class ChatPanelTests(unittest.TestCase):
                 "center_cell",
                 "center_x",
                 "center_y",
+                "constrain_trenches",
                 "n_per_fov",
                 "n_x",
                 "pattern_size_px",
@@ -212,6 +213,11 @@ class ChatPanelTests(unittest.TestCase):
             "sel_suppress_pillars_check",
         )
         self.assertEqual(params["suppress_pillars"]["kind"], "check")
+        self.assertEqual(
+            params["constrain_trenches"]["attr"],
+            "sel_constrain_trenches_check",
+        )
+        self.assertEqual(params["constrain_trenches"]["kind"], "check")
 
     def test_settings_only_tool_configures_n_x_without_running_selection(self):
         params = {
@@ -271,6 +277,31 @@ class ChatPanelTests(unittest.TestCase):
             "boolean",
         )
 
+    def test_trench_constraint_is_a_boolean_mda_setting(self):
+        widget_params = {param["name"]: param for param in WIDGET_PARAMS}
+        constraint = widget_params["constrain_trench_tracking"]
+        self.assertEqual(
+            constraint["attr"],
+            "mda_constrain_trenches_check",
+        )
+        self.assertEqual(constraint["kind"], "check")
+
+        mda_params = {
+            param["name"]: param
+            for param in ACTIONS_BY_NAME["run_raman_mda"]["params"]
+        }
+        self.assertEqual(
+            mda_params["constrain_trench_tracking"]["attr"],
+            "mda_constrain_trenches_check",
+        )
+        mda_schema = {
+            tool["name"]: tool for tool in build_tools()
+        }["run_raman_mda"]["input_schema"]
+        self.assertEqual(
+            mda_schema["properties"]["constrain_trench_tracking"]["type"],
+            "boolean",
+        )
+
     def test_pillar_suppression_is_a_boolean_selection_setting(self):
         widget_params = {param["name"]: param for param in WIDGET_PARAMS}
         pillar = widget_params["selection_suppress_pillars"]
@@ -282,6 +313,23 @@ class ChatPanelTests(unittest.TestCase):
         }["run_automated_selection"]["input_schema"]
         self.assertEqual(
             selection_schema["properties"]["suppress_pillars"]["type"],
+            "boolean",
+        )
+
+    def test_trench_constraint_is_a_boolean_selection_setting(self):
+        widget_params = {param["name"]: param for param in WIDGET_PARAMS}
+        constraint = widget_params["selection_constrain_trenches"]
+        self.assertEqual(
+            constraint["attr"],
+            "sel_constrain_trenches_check",
+        )
+        self.assertEqual(constraint["kind"], "check")
+
+        selection_schema = {
+            tool["name"]: tool for tool in build_tools()
+        }["run_automated_selection"]["input_schema"]
+        self.assertEqual(
+            selection_schema["properties"]["constrain_trenches"]["type"],
             "boolean",
         )
 

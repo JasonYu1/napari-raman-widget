@@ -6,6 +6,7 @@ import unittest
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 
@@ -216,6 +217,88 @@ class SelectionRefineTests(unittest.TestCase):
         np.testing.assert_allclose(source._points.data[0, -2:], [6, 6])
         self.assertEqual(result["matched"], 0)
         self.assertEqual(result["moved"], 0)
+
+    def test_trench_refinement_rejects_extra_move_outside_safe_label(self) -> None:
+        source = _FakeSource(
+            np.array([[0, 0, 0, 0, 5, 5]], dtype=float)
+        )
+        sequence = SimpleNamespace(
+            stage_positions=[SimpleNamespace(x=10.0, y=20.0)]
+        )
+        core = _FakeCore()
+        raw = np.zeros(core.image_shape, dtype=np.int32)
+        raw[4:9, 4:9] = 7
+        safe = raw.copy()
+
+        def segmenter(image, **kwargs):
+            del image, kwargs
+            return raw
+
+        trench_result = SimpleNamespace(
+            filtered_labels=safe,
+            geometry_valid=True,
+            geometry_score=1.0,
+        )
+        with patch.object(
+            _REFINE,
+            "filter_labels_to_trenches",
+            return_value=trench_result,
+        ) as trench_filter:
+            result = refine_cell_source_points(
+                core,
+                source,
+                sequence,
+                center_yx=(6.0, 6.0),
+                radius=6.0,
+                stage_settle_time=0,
+                segmentation_scale=1,
+                segmenter=segmenter,
+                point_refiner=lambda points: np.zeros_like(points),
+                constrain_trenches=True,
+                show_progress=False,
+            )
+
+        np.testing.assert_allclose(source._points.data[0, -2:], [6, 6])
+        self.assertEqual(result["matched"], 1)
+        self.assertEqual(result["moved"], 1)
+        np.testing.assert_array_equal(
+            trench_filter.call_args.args[0],
+            np.zeros(core.image_shape, dtype=np.uint16),
+        )
+        np.testing.assert_array_equal(trench_filter.call_args.args[1], raw)
+
+    def test_trench_refinement_fails_closed_on_bad_geometry(self) -> None:
+        original = np.array([[0, 0, 0, 0, 6, 6]], dtype=float)
+        source = _FakeSource(original.copy())
+        sequence = SimpleNamespace(
+            stage_positions=[SimpleNamespace(x=10.0, y=20.0)]
+        )
+        core = _FakeCore()
+
+        with patch.object(
+            _REFINE,
+            "filter_labels_to_trenches",
+            return_value=SimpleNamespace(
+                filtered_labels=np.zeros(core.image_shape, dtype=np.uint32),
+                geometry_valid=False,
+                geometry_score=0.2,
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "not recognized"):
+                refine_cell_source_points(
+                    core,
+                    source,
+                    sequence,
+                    center_yx=(6.0, 6.0),
+                    radius=6.0,
+                    stage_settle_time=0,
+                    segmentation_scale=1,
+                    segmenter=lambda image, **kwargs: np.zeros_like(image),
+                    constrain_trenches=True,
+                    show_progress=False,
+                )
+
+        np.testing.assert_array_equal(source._points.data, original)
 
 
 if __name__ == "__main__":

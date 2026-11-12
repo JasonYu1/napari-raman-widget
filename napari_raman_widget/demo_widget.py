@@ -164,6 +164,12 @@ class DemoWidget(QWidget):
         loading_box = make_collapsible("Loading", expanded=True)
         self.loading_box = loading_box
         loading_layout = QVBoxLayout()
+        self.loading_settings_box = make_collapsible(
+            "Configuration and calibration", expanded=False
+        )
+        self.loading_settings_box.setLayout(loading_layout)
+        loading_shell_layout = QVBoxLayout()
+        loading_shell_layout.addWidget(self.loading_settings_box)
 
         # Compatibility fields used by shared workflow code. They are not
         # displayed and are never used to load physical devices.
@@ -215,7 +221,7 @@ class DemoWidget(QWidget):
             "Use simulated microscope, DAQ, and Raman hardware."
         )
         self.demo_mode_check.toggled.connect(self._update_connection_mode)
-        loading_layout.addWidget(self.demo_mode_check)
+        loading_shell_layout.addWidget(self.demo_mode_check)
         # Demo mode has its own DemoWidget and launch_demo_napari.py entry
         # point.  Keep this internal switch for that subclass, but do not show
         # it in the production hardware widget.
@@ -287,7 +293,7 @@ class DemoWidget(QWidget):
         self.demo_controls.setLayout(demo_controls_layout)
         self.demo_controls.setVisible(False)
         self.demo_controls.setEnabled(False)
-        loading_layout.addWidget(self.demo_controls)
+        loading_shell_layout.addWidget(self.demo_controls)
 
         self.demo_live_timer = QTimer(self)
         self.demo_live_timer.setInterval(150)
@@ -335,11 +341,11 @@ class DemoWidget(QWidget):
         self.disconnect_btn.clicked.connect(self.disconnect)
         self.reload_tf_btn.clicked.connect(self.reload_transformer)
 
-        loading_layout.addWidget(self.connect_btn)
-        loading_layout.addWidget(self.disconnect_btn)
         loading_layout.addWidget(self.reload_tf_btn)
+        loading_shell_layout.addWidget(self.connect_btn)
+        loading_shell_layout.addWidget(self.disconnect_btn)
 
-        loading_box.setLayout(loading_layout)
+        loading_box.setLayout(loading_shell_layout)
 
         # ================= COLLECT SPECTRUM SECTION =================
         raman_box = make_collapsible(
@@ -894,6 +900,16 @@ class DemoWidget(QWidget):
         self.sel_suppress_pillars_check.setChecked(False)
         sel_layout.addWidget(self.sel_suppress_pillars_check)
 
+        self.sel_constrain_trenches_check = QCheckBox(
+            "Select cells only inside learned trapezoid trenches"
+        )
+        self.sel_constrain_trenches_check.setChecked(False)
+        self.sel_constrain_trenches_check.setToolTip(
+            "Fit one global rotation/translation of the learned trench "
+            "lattice and remove wall or outside labels before selecting cells."
+        )
+        sel_layout.addWidget(self.sel_constrain_trenches_check)
+
         self.run_selection_btn = QPushButton("Run automated selection")
         self.run_selection_btn.clicked.connect(self.run_automated_selection)
         sel_layout.addWidget(self.run_selection_btn)
@@ -1042,6 +1058,15 @@ class DemoWidget(QWidget):
         )
         self.mda_suppress_pillars_check.setChecked(False)
         mda_advanced_layout.addWidget(self.mda_suppress_pillars_check)
+        self.mda_constrain_trenches_check = QCheckBox(
+            "Constrain cells to learned trapezoid trenches"
+        )
+        self.mda_constrain_trenches_check.setChecked(False)
+        self.mda_constrain_trenches_check.setToolTip(
+            "Keep each tracked cell inside its initially assigned trench and "
+            "reject unsafe center-of-mass jumps."
+        )
+        mda_advanced_layout.addWidget(self.mda_constrain_trenches_check)
         # Seg-track options (shown only when the box is checked)
         seg_ch_row = QHBoxLayout()
         self._seg_ch_label = QLabel("Segment channel:")
@@ -1687,6 +1712,7 @@ class DemoWidget(QWidget):
         """Show/hide the segment-channel and rescale fields."""
         self.mda_auto_add_cells_check.setVisible(checked)
         self.mda_suppress_pillars_check.setVisible(checked)
+        self.mda_constrain_trenches_check.setVisible(checked)
         self._seg_ch_label.setVisible(checked)
         self.mda_seg_ch_combo.setVisible(checked)
         self._seg_scale_label.setVisible(checked)
@@ -3007,8 +3033,10 @@ class DemoWidget(QWidget):
             self.racer_calibration_path_controls,
         )
         if running:
+            # Preserve each control's own state, even inside collapsed groups.
             self._live_control_states = [
-                (control, control.isEnabled()) for control in controls
+                (control, control.isEnabledTo(control.parentWidget()))
+                for control in controls
             ]
             for control, _enabled in self._live_control_states:
                 control.setEnabled(False)
@@ -3137,6 +3165,7 @@ class DemoWidget(QWidget):
         vandermonde_model_path = self.sel_vdm_path.text().strip()
         cellpose_model = self.sel_cellpose_combo.currentText() or "cyto2"
         suppress_pillars = self.sel_suppress_pillars_check.isChecked()
+        constrain_trenches = self.sel_constrain_trenches_check.isChecked()
 
         log = LogWindow(title="Automated selection log")
         self._show_plot(log)
@@ -3191,6 +3220,7 @@ class DemoWidget(QWidget):
                         self.demo_backend.world.snap_points_to_cell_centers
                     ),
                     suppress_pillars=suppress_pillars,
+                    constrain_trenches=constrain_trenches,
                 )
             cell_point_count = sum(
                 len(source._points.data)
@@ -3212,7 +3242,10 @@ class DemoWidget(QWidget):
                 "sources": sources,
                 "autofocus_p": autofocus_p,
                 "new_seq": new_seq,
+                "constrain_trenches": constrain_trenches,
             }
+            if constrain_trenches:
+                self.mda_constrain_trenches_check.setChecked(True)
             n_new = len(new_seq.stage_positions)
             log.append("\n--- selection complete ---\n")
             extra = (
@@ -3297,6 +3330,9 @@ class DemoWidget(QWidget):
                         else None
                     ),
                     suppress_pillars=self.sel_suppress_pillars_check.isChecked(),
+                    constrain_trenches=(
+                        self.sel_constrain_trenches_check.isChecked()
+                    ),
                 )
             log.append(
                 "\n--- refinement complete: "
@@ -3597,6 +3633,10 @@ class DemoWidget(QWidget):
             segment_and_track
             and self.mda_suppress_pillars_check.isChecked()
         )
+        constrain_trench_tracking = (
+            segment_and_track
+            and self.mda_constrain_trenches_check.isChecked()
+        )
         batch = self.selection_results.get(
             "batch", self.sel_batch_combo.currentText() == "True"
         )
@@ -3690,6 +3730,7 @@ class DemoWidget(QWidget):
                     autofocus_object=autofocus_object,
                     segment_and_track=segment_and_track,
                     auto_add_new_cells=auto_add_new_cells,
+                    constrain_trench_tracking=constrain_trench_tracking,
                     scale=seg_scale,
                     segment_channel=segment_channel,
                     cellpose_model=cellpose_model,
@@ -3773,6 +3814,8 @@ class DemoWidget(QWidget):
                     f"segment_and_track={segment_and_track}, "
                     f"auto_add_new_cells={auto_add_new_cells}, "
                     f"suppress_pillars={suppress_pillars}, "
+                    "constrain_trench_tracking="
+                    f"{constrain_trench_tracking}, "
                     f"search_pts={search_pts}, fine_range={fine_search_range}, "
                     f"fine_pts={fine_search_pts}, refocus_every={refocus_every}, "
                     f"image=({img_x}x{img_y}), "
@@ -3786,7 +3829,9 @@ class DemoWidget(QWidget):
                     "engine._auto_add_new_cells="
                     f"{getattr(engine, '_auto_add_new_cells', False)}, "
                     "engine._suppress_pillars="
-                    f"{getattr(engine, '_suppress_pillars', False)}"
+                    f"{getattr(engine, '_suppress_pillars', False)}, "
+                    "engine._constrain_trench_tracking="
+                    f"{getattr(engine, '_constrain_trench_tracking', False)}"
                 )
                 self.core.run_mda(final_seq)
 

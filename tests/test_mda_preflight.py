@@ -287,6 +287,7 @@ class MdaPreflightTests(unittest.TestCase):
         owner = self.owner
         values = dict(sel_sqsize_input=3, sel_sqn_input=2,
                       mda_suppress_pillars_check=False, mda_af_range_input=6,
+                      mda_constrain_trenches_check=False,
                       mda_search_pts_input=8, mda_fine_range_input=1.5,
                       mda_fine_pts_input=8, mda_seg_ch_combo="BF",
                       mda_seg_scale_input=2, mda_seg_model_combo="cyto2",
