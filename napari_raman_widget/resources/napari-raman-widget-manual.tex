@@ -430,6 +430,11 @@ Cellpose model & installed models; defaults to cyto2 if available & Segmentation
 used to identify candidate cells.\\
 Exclude rectangular trap pillars & off & Removes segmented labels matching the
 calibrated trap-pillar geometry before creating cell targets.\\
+Constrain cells to learned trapezoid trenches & off & Segments only registered,
+cap-safe trench pixels inside the circular selection region and partitions gaps
+between neighboring masks. The background point stays inside the circle but
+outside every registered trench; if the requested clearance is unavailable,
+the nearest valid outside-trench pixel is used. Invalid geometry fails closed.\\
 \finishfieldtable
 
 \ui{Run automated selection} prepares the external MDA widget, performs Cellpose-based
@@ -463,6 +468,9 @@ Background distance & Distance threshold for automated selection.\\
 Integrated batch collection & Selects batch or individual point handling.\\
 Cellpose model & Segmentation model used to detect cells.\\
 Exclude rectangular trap pillars & Rejects pillar-shaped segmentation labels.\\
+Constrain cells to learned trenches & Intersects registered, cap-aware trench
+inputs with the circle, closes inter-mask gaps, and places background outside
+the trenches with a non-failing clearance fallback.\\
 Run automated selection & Segments cells and prepares MDA selection results.\\
 Manual selection & Creates layers for hand-clicked cell selection.\\
 Center clicked cells & Converts non-batch clicks into centered positions.\\
@@ -486,6 +494,9 @@ selection autofocus list before applying overrides, so set this explicitly when
 using a substantially different autofocus override.\\
 Raman glass offset (um) & 5; -1000 to 1000 & Axial offset used for the Raman measurement.\\
 Autofocus search range & 6; 0.1--1000 & Coarse autofocus range; hidden if autofocus is None.\\
+Maximum autofocus Z jump (um) & 5.5; 0.1--1000 & Largest accepted focus
+change from the previous Z after the first time point. At t=0 any finite shift
+is allowed. Later larger shifts and all non-finite results restore the previous Z.\\
 Autofocus search pts & 8; 2--500 & Coarse autofocus sample count.\\
 Laser fine search range (+/- um) & 1.5; 0.1--1000 & Fine range shown only for laser autofocus.\\
 Laser fine search pts & 8; 2--500 & Fine laser-autofocus sample count.\\
@@ -495,10 +506,30 @@ interior target for each newly appearing tracked cell mask. Available only in
 non-batch mode. A manually added target on that mask prevents a duplicate.\\
 Exclude rectangular trap pillars & off & Removes pillar-shaped labels before tracking
 and automatic target creation.\\
+Maximum tracking movement (px) & 45; 0.1--10,000 & Maximum accepted movement per
+tracking update in full-resolution image pixels, for regular, pillar, and trench
+tracking. Larger jumps are rejected. Trench tracking compensates for registered
+device motion before applying the limit.\\
+Constrain cells to learned trapezoid trenches & off & Segments and tracks only the
+trench containing or nearest the selection circle's center. Its full registered
+interior replaces the circular crop; the first 2 flat-tip lengths remain a
+no-cell region. Other trenches do not contribute tracking updates or new targets;
+invalid geometry holds tracking and suppresses new targets. Local brightfield
+appearance and a reverse match establish cell identity instead of particle-label
+assignment. The connected Cellpose outline is kept without watershed refinement.
+After identifying the cell, its mask's center of mass becomes the Raman aim if
+that center is inside the cell and safe trench and satisfies the maximum tracking
+movement. The image feature used for identity stays independent of this centering.
+Missing masks, unsafe centers, and ambiguous updates retain the exact previous aim and do not
+replace the appearance reference. If no selected target has valid current cell
+labels, Raman uses the previous positions and sampling pattern instead of skipping
+the acquisition. Masks are not fabricated for this fallback. Saved tracking masks
+and aims include the safeguards, live edits, and any Raman-position fallback.\\
 Segment channel & BF initially & Micro-Manager channel used for segmentation.\\
 Image rescale factor & 2.0; 0.1--100 & Image scale used during segmentation.\\
 Cellpose model & installed models; cyto2 preferred & Model for time-series re-segmentation.\\
-Crop image around mask & True & Whether segmentation is cropped to the circular mask region.\\
+Crop image around mask & True & Whether segmentation is cropped to the circular mask
+region. Ignored and disabled while trench constraints are active.\\
 Tracking config (.json) & \code{particle\_config.json} & Particle-tracking configuration.\\
 Exposure per cell (ms) & 1000; 1--1,000,000 & Total exposure supplied while building
 the Raman sequence. In non-batch mode it is multiplied by the aiming-pattern multiplier.\\
@@ -559,14 +590,20 @@ Autofocus positions & Zero-based position indices that receive autofocus.\\
 Imaging positions & Zero-based position indices that receive imaging.\\
 Raman glass offset & Axial offset between glass focus and Raman measurement.\\
 Autofocus range / points & Extent and sampling count of the coarse focus search.\\
+Maximum autofocus Z jump & Rejection limit relative to the previous accepted Z;
+applies after the first time point and defaults to 5.5 micrometers.\\
 Laser fine range / points & Extent and sampling count of laser fine focus.\\
 Segment and track & Re-detects cells and updates aiming during the time series.\\
+Maximum tracking movement & Limits movement per tracking update in full-resolution
+pixels (default 45); trench tracking corrects for device drift first.\\
 Automatically add new cells & Adds one live cell-layer target for each new tracked mask.\\
 Exclude rectangular trap pillars & Rejects pillar-shaped labels before aiming updates.\\
+Constrain cells to learned trenches & Uses the circle center to select one trench,
+segments its full cap-safe interior, and restricts tracking to that trench.\\
 Segment channel & Image channel used for segmentation.\\
 Image rescale factor & Resampling factor supplied to segmentation.\\
 Cellpose model & Model used for repeated cell segmentation.\\
-Crop around mask & Restricts segmentation to the configured mask region.\\
+Crop around mask & Restricts non-trench segmentation to the configured circular region.\\
 Tracking config & JSON settings used for cell/particle tracking.\\
 Exposure per cell & Raman exposure budget assigned to each selected cell.\\
 Loops / interval & Number of time points and requested spacing between them.\\

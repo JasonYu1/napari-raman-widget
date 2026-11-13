@@ -25,11 +25,13 @@ STANDARD = (
 )
 ADVANCED = (
     "mda_afp_input", "mda_imgp_input", "mda_af_range_input",
+    "mda_af_reject_input",
     "mda_search_pts_input", "mda_fine_range_input", "mda_fine_pts_input",
     "mda_seg_track_check", "mda_refocus_input",
 )
 TRACKING = (
     "mda_auto_add_cells_check", "mda_suppress_pillars_check",
+    "mda_max_move_input",
     "mda_constrain_trenches_check",
     "mda_seg_ch_combo", "mda_seg_scale_input", "mda_seg_model_combo",
     "mda_seg_crop_combo", "mda_track_cfg_input", "_seg_track_cfg_browse",
@@ -49,6 +51,7 @@ def make_mda_owner(filename):
     methods = [node for node in ast.walk(ast.parse(source))
                if isinstance(node, ast.FunctionDef) and node.name in {
                    "_toggle_autofocus_fields", "_toggle_seg_track_fields",
+                   "_toggle_trench_crop_control",
                }]
     exec(compile(ast.Module(body=methods, type_ignores=[]), filename, "exec"),
          namespace)
@@ -95,6 +98,8 @@ class MdaAdvancedUiTests(unittest.TestCase):
                 advanced = owner.mda_advanced_box
                 self.assertEqual(advanced.title(), "Advanced")
                 self.assertFalse(advanced.isChecked())
+                self.assertEqual(owner.mda_af_reject_input.value(), 5.5)
+                self.assertEqual(owner.mda_max_move_input.value(), 45.0)
                 for name in STANDARD:
                     control = getattr(owner, name)
                     self.assertTrue(control.isVisible(), name)
@@ -119,10 +124,12 @@ class MdaAdvancedUiTests(unittest.TestCase):
                 for name in TRACKING:
                     self.assertFalse(getattr(owner, name).isVisible(), name)
                 owner.mda_af_range_input.setValue(12.5)
+                owner.mda_af_reject_input.setValue(7.25)
                 owner.mda_search_pts_input.setValue(15)
                 owner.mda_afp_input.setText("0, 3")
                 owner.mda_imgp_input.setText("2")
                 owner.mda_refocus_input.setValue(4)
+                owner.mda_max_move_input.setValue(27.5)
                 owner.mda_seg_track_check.setChecked(True)
                 for name in TRACKING:
                     self.assertTrue(getattr(owner, name).isVisible(), name)
@@ -131,10 +138,12 @@ class MdaAdvancedUiTests(unittest.TestCase):
                     self.assertFalse(getattr(owner, name).isVisible(), name)
                 advanced.setChecked(True)
                 self.assertEqual(owner.mda_af_range_input.value(), 12.5)
+                self.assertEqual(owner.mda_af_reject_input.value(), 7.25)
                 self.assertEqual(owner.mda_search_pts_input.value(), 15)
                 self.assertEqual(owner.mda_afp_input.text(), "0, 3")
                 self.assertEqual(owner.mda_imgp_input.text(), "2")
                 self.assertEqual(owner.mda_refocus_input.value(), 4)
+                self.assertEqual(owner.mda_max_move_input.value(), 27.5)
                 self.assertTrue(owner.mda_seg_track_check.isChecked())
                 for name in TRACKING:
                     self.assertTrue(getattr(owner, name).isVisible(), name)
@@ -147,11 +156,37 @@ class MdaAdvancedUiTests(unittest.TestCase):
                     owner.mda_advanced_box.setChecked(False)
                     owner.sel_af_combo.setCurrentText(method)
                     self.assertFalse(owner.mda_af_range_input.isVisible())
+                    self.assertFalse(owner.mda_af_reject_input.isVisible())
                     owner.mda_advanced_box.setChecked(True)
                     self.assertEqual(owner.mda_af_range_input.isVisible(),
                                      method != "None")
+                    self.assertEqual(owner.mda_af_reject_input.isVisible(),
+                                     method != "None")
                     self.assertEqual(owner.mda_fine_range_input.isVisible(),
                                      method == "laser")
+
+    def test_trench_mode_disables_circular_crop_control(self):
+        for filename in WIDGETS:
+            with self.subTest(filename=filename):
+                owner = self.owner(filename)
+                owner.mda_advanced_box.setChecked(True)
+                owner.mda_seg_track_check.setChecked(True)
+                self.assertTrue(owner.mda_seg_crop_combo.isEnabled())
+
+                owner.mda_constrain_trenches_check.setChecked(True)
+
+                self.assertTrue(owner.mda_max_move_input.isEnabled())
+                self.assertTrue(owner.mda_max_move_input.isVisible())
+                self.assertFalse(owner.mda_seg_crop_combo.isEnabled())
+                self.assertFalse(owner._seg_crop_label.isEnabled())
+                self.assertIn(
+                    "trench-shaped",
+                    owner.mda_seg_crop_combo.toolTip(),
+                )
+
+                owner.mda_constrain_trenches_check.setChecked(False)
+                self.assertTrue(owner.mda_seg_crop_combo.isEnabled())
+                self.assertTrue(owner._seg_crop_label.isEnabled())
 
 
 if __name__ == "__main__":

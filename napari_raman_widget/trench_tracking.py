@@ -28,10 +28,13 @@ from skimage.registration import phase_cross_correlation
 from skimage.segmentation import watershed
 from skimage.transform import probabilistic_hough_line
 
+from .cell_identity import CellReference, cell_reference, match_cell
+
 __all__ = [
     "DEFAULT_TRENCH_CONFIG",
     "ConstrainedTrenchTracker",
     "TrenchConstraintTracker",
+    "RegisteredTrenchGeometry",
     "TrenchPose",
     "TrenchSelectionResult",
     "TrenchTarget",
@@ -39,6 +42,8 @@ __all__ = [
     "TrenchTrackingConfig",
     "TrenchUpdate",
     "filter_labels_to_trenches",
+    "nearest_trench_index",
+    "registered_trench_geometry",
     "reference_lattice_vertices",
 ]
 
@@ -65,12 +70,26 @@ class TrenchTrackingConfig:
     # An ideal closed-outline reference scores about 0.54 on good run-35
     # images; the known bad p003 geometry fails registration.
     minimum_geometry_score: float = 0.45
-    maximum_step_px: float = 15.0
+    maximum_step_px: float = 45.0
+    # Identity comes from the brightfield image, not mutable Cellpose IDs or
+    # overlap with a mask that can split, merge, or disappear between frames.
+    track_cell_appearance: bool = True
     wall_clearance_px: int = 4
+    # The closed-end wall and its phase-contrast halo cannot contain a yeast
+    # cell.  Exclude a cap extending this many flat-tip lengths inward toward
+    # the trapezoid shoulder.  The learned short edge is 17 px, so the default
+    # no-cell depth is 34 full-resolution pixels.
+    tip_exclusion_depth_multiplier: float = 2.0
     minimum_cell_area_px: float = 300.0
-    maximum_cell_area_px: float = 2600.0
+    # Full Cellpose mother-cell outlines in run_40 exceed the old 2600 px
+    # cap. Areas are measured in full-resolution pixels at every scale.
+    maximum_cell_area_px: float = 4000.0
     minimum_area_ratio: float = 0.40
     maximum_area_ratio: float = 2.50
+    # Legacy overlap gate, used only with track_cell_appearance=False.
+    # The default image matcher permits real cell movement without requiring
+    # its old and new segmentation footprints to overlap.
+    minimum_identity_overlap: float = 0.25
     minimum_template_score: float = 0.30
     maximum_cell_radius_px: int = 27
     template_radius_px: int = 18
@@ -96,10 +115,14 @@ class TrenchTrackingConfig:
             raise ValueError("minimum_geometry_score must be in (0, 1]")
         if self.maximum_step_px <= 0 or self.wall_clearance_px < 0:
             raise ValueError("step and wall-clearance limits are invalid")
+        if self.tip_exclusion_depth_multiplier < 0:
+            raise ValueError("tip_exclusion_depth_multiplier cannot be negative")
         if not 0 < self.minimum_cell_area_px <= self.maximum_cell_area_px:
             raise ValueError("cell area bounds are invalid")
         if not 0 < self.minimum_area_ratio <= self.maximum_area_ratio:
             raise ValueError("cell area-ratio bounds are invalid")
+        if not 0 < self.minimum_identity_overlap <= 1:
+            raise ValueError("minimum_identity_overlap must be in (0, 1]")
 
 
 DEFAULT_TRENCH_CONFIG = TrenchTrackingConfig()
@@ -167,6 +190,25 @@ class TrenchPose:
 
 
 @dataclass(frozen=True)
+class RegisteredTrenchGeometry:
+    """Registered raw and cell-safe trench masks for one camera frame."""
+
+    trench_masks: tuple[np.ndarray, ...]
+    safe_masks: tuple[np.ndarray, ...]
+    geometry_valid: bool
+    geometry_score: float
+    pose: TrenchPose | None
+
+    @property
+    def safe_union(self) -> np.ndarray:
+        """Return the union of all cap-aware, wall-cleared trench interiors."""
+
+        if not self.safe_masks:
+            return np.zeros((0, 0), dtype=bool)
+        return np.logical_or.reduce(self.safe_masks)
+
+
+@dataclass(frozen=True)
 class TrenchTarget:
     """One proposed live point update; ``token`` must remain stable."""
 
@@ -230,6 +272,17 @@ class _TargetState:
     canonical_point_yx: np.ndarray
     previous_template: np.ndarray
     previous_area_px: float
+    canonical_cell_yx: np.ndarray
+
+
+@dataclass
+class _AppearanceState:
+    trench_index: int
+    # The image feature used for identity stays independent of mask centering.
+    canonical_point_yx: np.ndarray
+    reference: CellReference
+    canonical_aim_yx: np.ndarray
+    previous_area_px: float = 0.0
 
 
 @dataclass
@@ -237,6 +290,7 @@ class _PositionState:
     pose: TrenchPose | None = None
     response: np.ndarray | None = None
     targets: dict[Hashable, _TargetState] = field(default_factory=dict)
+    appearance_targets: dict[Hashable, _AppearanceState] = field(default_factory=dict)
 
 
 def _canonical_to_raw_patch(
@@ -429,6 +483,127 @@ def _polygon_mask(shape: tuple[int, int], vertices_yx: np.ndarray) -> np.ndarray
     return result
 
 
+def _pose_trench_masks(
+    pose: TrenchPose,
+    config: TrenchTrackingConfig,
+) -> tuple[tuple[np.ndarray, ...], tuple[np.ndarray, ...]]:
+    """Return raw and cap-aware safe masks for one registered lattice pose."""
+
+    shape = config.reference_image_shape_yx
+    vertices = pose.apply(reference_lattice_vertices(config), shape)
+    row_grid, column_grid = np.ogrid[: shape[0], : shape[1]]
+    trench_masks: list[np.ndarray] = []
+    safe_masks: list[np.ndarray] = []
+    for polygon_yx in vertices:
+        trench_mask = _polygon_mask(shape, polygon_yx)
+        safe = (
+            binary_erosion(
+                trench_mask,
+                footprint=disk(config.wall_clearance_px),
+            )
+            if config.wall_clearance_px
+            else trench_mask.copy()
+        )
+
+        tip_midpoint = (polygon_yx[0] + polygon_yx[5]) / 2.0
+        shoulder_midpoint = (polygon_yx[1] + polygon_yx[4]) / 2.0
+        inward_axis = shoulder_midpoint - tip_midpoint
+        axis_length = float(np.linalg.norm(inward_axis))
+        tip_length = float(np.linalg.norm(polygon_yx[5] - polygon_yx[0]))
+        if axis_length <= 0 or tip_length <= 0:
+            raise ValueError("trench tip and shoulder geometry must be non-degenerate")
+        inward_axis /= axis_length
+        exclusion_depth = config.tip_exclusion_depth_multiplier * tip_length
+        axial_depth = (
+            (row_grid - tip_midpoint[0]) * inward_axis[0]
+            + (column_grid - tip_midpoint[1]) * inward_axis[1]
+        )
+        safe &= axial_depth >= exclusion_depth
+        trench_masks.append(trench_mask)
+        safe_masks.append(safe)
+    return tuple(trench_masks), tuple(safe_masks)
+
+
+def registered_trench_geometry(
+    image: np.ndarray,
+    config: TrenchTrackingConfig = DEFAULT_TRENCH_CONFIG,
+    *,
+    pose_override: TrenchPose | None = None,
+) -> RegisteredTrenchGeometry:
+    """Register the fixed lattice and return cap-aware masks for ``image``.
+
+    Geometry failures are represented by ``geometry_valid=False`` and empty
+    mask tuples.  This lets Cellpose preprocessing and downstream filtering
+    share exactly the same fail-closed geometry decision.
+    """
+
+    frame = np.asarray(image)
+    if frame.ndim != 2:
+        raise ValueError("image must be two-dimensional")
+    if frame.shape != config.reference_image_shape_yx:
+        return RegisteredTrenchGeometry((), (), False, 0.0, None)
+
+    pose = pose_override
+    if pose is None:
+        try:
+            pose = _global_pose(_wall_response(frame), config)
+        except RuntimeError:
+            pose = None
+    geometry_valid = bool(
+        pose is not None
+        and np.isfinite(pose.score)
+        and pose.score >= config.minimum_geometry_score
+    )
+    if not geometry_valid or pose is None:
+        return RegisteredTrenchGeometry(
+            (),
+            (),
+            False,
+            0.0 if pose is None else float(pose.score),
+            pose,
+        )
+
+    trench_masks, safe_masks = _pose_trench_masks(pose, config)
+    return RegisteredTrenchGeometry(
+        trench_masks,
+        safe_masks,
+        True,
+        float(pose.score),
+        pose,
+    )
+
+
+def nearest_trench_index(
+    trench_masks: Sequence[np.ndarray],
+    center_yx: tuple[float, float] | np.ndarray,
+) -> int | None:
+    """Choose the containing trench, or the nearest interior across a wall.
+
+    Use raw trench interiors so a center in the excluded tip cap still selects
+    that trench. Circular radius and existing cell targets play no part.
+    """
+
+    center = _point(center_yx, "trench selection center")
+    pixel = np.rint(center).astype(int)
+    nearest = None
+    minimum_distance = np.inf
+    for index, mask in enumerate(trench_masks):
+        if (
+            0 <= pixel[0] < mask.shape[0]
+            and 0 <= pixel[1] < mask.shape[1]
+            and mask[tuple(pixel)]
+        ):
+            return index
+        coordinates = np.argwhere(mask)
+        if not len(coordinates):
+            continue
+        distance = float(np.min(np.sum((coordinates - center) ** 2, axis=1)))
+        if distance < minimum_distance:
+            nearest = index
+            minimum_distance = distance
+    return nearest
+
+
 @lru_cache(maxsize=None)
 def _reference_polygon_masks(config: TrenchTrackingConfig) -> tuple[np.ndarray, ...]:
     masks = tuple(
@@ -464,7 +639,8 @@ def _nearest_allowed(
 
 
 def _feature(image: np.ndarray) -> np.ndarray:
-    work = np.asarray(image, dtype=np.float32)
+    # Rejected updates must not progressively high-pass the stored template.
+    work = np.array(image, dtype=np.float32, copy=True)
     work -= ndi.gaussian_filter(work, sigma=7.0)
     scale = float(np.percentile(np.abs(work), 99.0))
     return np.clip(work / scale, -1.0, 1.0) if scale > 0 else work
@@ -580,6 +756,50 @@ def _sample_mask(mask: np.ndarray, output_shape: tuple[int, int]) -> np.ndarray:
     return np.asarray(mask[np.ix_(rows, columns)], dtype=bool)
 
 
+def _point_in_mask(point: np.ndarray, mask: np.ndarray) -> bool:
+    pixel = np.floor(point).astype(int)
+    return bool(
+        np.all(pixel >= 0)
+        and np.all(pixel < mask.shape)
+        and mask[tuple(pixel)]
+    )
+
+
+def _proposed_component(
+    labels: np.ndarray,
+    point: np.ndarray,
+    allowed: np.ndarray,
+) -> np.ndarray:
+    """Resolve a proposal to one connected cell, without snapping to a neighbor.
+
+    Label IDs may change at every frame. Coordinate conversion follows the
+    upstream tracker's floor convention, including non-integer image scaling.
+    Split components after clipping to the safe trench so an attached wall or
+    disconnected island cannot connect the target to another cell.
+    """
+
+    pixel = np.floor(point * np.asarray(labels.shape) / allowed.shape).astype(int)
+    empty = np.zeros(allowed.shape, dtype=bool)
+    if np.any(pixel < 0) or np.any(pixel >= labels.shape):
+        return empty
+    value = int(labels[tuple(pixel)])
+    if value == 0:
+        return empty
+    # Full-resolution pixels belong to their floor-indexed segmentation pixel.
+    ys = np.floor(
+        np.arange(allowed.shape[0]) * labels.shape[0] / allowed.shape[0]
+    ).astype(int)
+    xs = np.floor(
+        np.arange(allowed.shape[1]) * labels.shape[1] / allowed.shape[1]
+    ).astype(int)
+    foreground = (labels[np.ix_(ys, xs)] == value) & allowed
+    components, _ = ndi.label(foreground)
+    if not _point_in_mask(point, foreground):
+        return empty
+    component = components[tuple(np.floor(point).astype(int))]
+    return components == component
+
+
 def _safe_labels(
     image_shape: tuple[int, int],
     safe_union: np.ndarray,
@@ -635,9 +855,10 @@ def filter_labels_to_trenches(
 
     A single rotation and translation registers the complete fixed run-35
     lattice.  Every Cellpose label is intersected with the union of the
-    registered trapezoids eroded by ``wall_clearance_px``.  Connected
-    components are then relabeled independently and retained only when their
-    full-resolution area satisfies the configured cell bounds.
+    registered trapezoids eroded by ``wall_clearance_px`` and with the learned
+    closed-tip no-cell cap removed.  Connected components are then relabeled
+    independently and retained only when their full-resolution area satisfies
+    the configured cell bounds.
 
     Geometry failures are fail-closed: the returned label image and safe mask
     are empty, so no automated cell target can be selected from that frame.
@@ -663,41 +884,21 @@ def filter_labels_to_trenches(
             None,
         )
 
-    response = _wall_response(frame)
-    pose = pose_override
-    if pose is None:
-        try:
-            pose = _global_pose(response, config)
-        except RuntimeError:
-            pose = None
-    geometry_valid = bool(
-        pose is not None
-        and np.isfinite(pose.score)
-        and pose.score >= config.minimum_geometry_score
+    geometry = registered_trench_geometry(
+        frame,
+        config,
+        pose_override=pose_override,
     )
-    if not geometry_valid or pose is None:
+    if not geometry.geometry_valid or geometry.pose is None:
         return TrenchSelectionResult(
             empty_labels,
             empty_safe,
             False,
-            0.0 if pose is None else float(pose.score),
-            pose,
+            geometry.geometry_score,
+            geometry.pose,
         )
 
-    vertices = pose.apply(
-        reference_lattice_vertices(config),
-        config.reference_image_shape_yx,
-    )
-    safe_masks = []
-    for polygon_yx in vertices:
-        interior = _polygon_mask(config.reference_image_shape_yx, polygon_yx)
-        if config.wall_clearance_px:
-            interior = binary_erosion(
-                interior,
-                footprint=disk(config.wall_clearance_px),
-            )
-        safe_masks.append(interior)
-    safe_union = np.logical_or.reduce(safe_masks)
+    safe_union = geometry.safe_union
     filtered = _safe_labels(
         config.reference_image_shape_yx,
         safe_union,
@@ -710,8 +911,8 @@ def filter_labels_to_trenches(
         filtered,
         safe_at_label_scale,
         True,
-        float(pose.score),
-        pose,
+        geometry.geometry_score,
+        geometry.pose,
     )
 
 
@@ -764,9 +965,12 @@ class TrenchConstraintTracker:
         trench_index: int | None,
         template_score: float = 0.0,
     ) -> TrenchTargetResult:
+        # A rejected update must not move the microscope target, including
+        # when the proposed wall-registration correction is itself uncertain.
+        del point
         return TrenchTargetResult(
             token=target.token,
-            point_yx=np.asarray(point, dtype=float).copy(),
+            point_yx=np.asarray(target.previous_yx, dtype=float).copy(),
             accepted=False,
             reason=reason,
             trench_index=trench_index,
@@ -774,6 +978,100 @@ class TrenchConstraintTracker:
             area_px=0.0,
             template_score=template_score,
         )
+
+    def _appearance_update(
+        self, position_state, target, target_state, previous, predicted,
+        frame, allowed, trench_index, pose, base_labels,
+    ):
+        """Identify the cell from BF, then aim at its Cellpose centroid."""
+        score = 1.0
+        seed = previous.copy()
+        if target_state is not None:
+            match = match_cell(
+                target_state.reference, frame, predicted,
+                self.config.maximum_step_px,
+            )
+            score = match.score
+            if not match.accepted:
+                return self._held_result(
+                    target, previous, "cell_appearance", trench_index, score,
+                ), None
+            seed = match.point_yx
+        if not _point_in_mask(seed, allowed):
+            return self._held_result(
+                target, previous, "same_trench_interior", trench_index, score,
+            ), None
+        reference = cell_reference(frame, seed, self.config.maximum_step_px)
+        if reference is None:
+            return self._held_result(
+                target, previous, "template_bounds", trench_index, score,
+            ), None
+        if target_state is None:
+            # The selected first-frame anchor is trusted even if Cellpose
+            # misses it. Preserve its appearance so later frames can recover.
+            target_state = _AppearanceState(
+                trench_index, pose.inverse(seed, frame.shape), reference,
+                pose.inverse(previous, frame.shape),
+            )
+            position_state.appearance_targets[target.token] = target_state
+
+        # Cellpose already supplies the cell boundary. Re-segmenting it around
+        # the aim can cut a mother cell into an artificial seed-centered lobe.
+        # Keep its connected outline, clipped only to the safe trench. A
+        # missing mask must hold the previous aim, never invent a replacement
+        # mask or snap to a neighboring cell.
+        mask = _proposed_component(base_labels, seed, allowed)
+        if not np.any(mask):
+            return self._held_result(
+                target, previous, "missing_cellpose_mask", trench_index, score,
+            ), None
+        # Center the exact mask that will be emitted at Cellpose's resolution,
+        # so scaling and clipping cannot leave the displayed aim off-center.
+        # Pixel centers transform with the half-pixel offset, including for
+        # non-integer rescaling. Do not fill holes or reshape the outline.
+        sampled = _sample_mask(mask, base_labels.shape)
+        if not np.any(sampled):
+            return self._held_result(
+                target, previous, "missing_cellpose_mask", trench_index, score,
+            ), None
+        center = (
+            (np.asarray(ndi.center_of_mass(sampled)) + 0.5)
+            * np.asarray(frame.shape) / np.asarray(base_labels.shape) - 0.5
+        )
+        predicted_aim = pose.apply(target_state.canonical_aim_yx, frame.shape)
+        step = float(np.linalg.norm(center - predicted_aim))
+        area = float(np.count_nonzero(mask))
+        prior_area = target_state.previous_area_px
+        ratio = area / prior_area if prior_area else 1.0
+        gates = {
+            "same_cell": _point_in_mask(seed, mask),
+            # A concave mask's centroid can lie in a hole. Hold rather than
+            # projecting to an arbitrary boundary or switching cell labels.
+            "centroid_in_cell": _point_in_mask(center, mask)
+            and _point_in_mask(
+                center * np.asarray(base_labels.shape) / frame.shape, sampled,
+            ),
+            "same_trench_interior": _point_in_mask(center, allowed),
+            "cell_area": self.config.minimum_cell_area_px <= area
+            <= self.config.maximum_cell_area_px,
+            "area_continuity": self.config.minimum_area_ratio <= ratio
+            <= self.config.maximum_area_ratio,
+            "maximum_step": step <= self.config.maximum_step_px,
+        }
+        failed = [name for name, passed in gates.items() if not passed]
+        if failed:
+            return self._held_result(
+                target, previous, "+".join(failed), trench_index, score,
+            ), None
+        # Keep the reference on the matched image feature, not on the moving
+        # mask centroid. Commit both histories only after all final-aim checks.
+        position_state.appearance_targets[target.token] = _AppearanceState(
+            trench_index, pose.inverse(seed, frame.shape), reference,
+            pose.inverse(center, frame.shape), area,
+        )
+        return TrenchTargetResult(
+            target.token, center, True, "accepted", trench_index, step, area, score,
+        ), mask
 
     def update(
         self,
@@ -785,12 +1083,24 @@ class TrenchConstraintTracker:
         label_scale: float = 1.0,
         *,
         pose_override: TrenchPose | None = None,
+        trench_center_yx: tuple[float, float] | np.ndarray | None = None,
     ) -> TrenchUpdate:
         """Return safe point updates and a filtered current segmentation.
 
         ``label_scale`` is validated for compatibility with the engine API;
         exact full-resolution area conversion uses the observed image and mask
         shapes, so non-integer rescaling remains safe.
+
+        When ``trench_center_yx`` is provided, only the trench nearest that
+        point can contribute segmentation or point updates. Targets in other
+        trenches are held without running cell segmentation around them.
+
+        With current labels, brightfield appearance establishes identity using
+        a reciprocal local match. The connected Cellpose outline is retained
+        without watershed refinement; its centroid becomes the aim only if
+        it is inside the same cell and safe trench and within the movement
+        limit. Identity continues following its independent image feature.
+        Rejected updates hold the exact previous aim and trusted reference.
         """
 
         frame = np.asarray(image)
@@ -807,6 +1117,15 @@ class TrenchConstraintTracker:
                 _point(target.proposed_yx, "proposed_yx")
 
         expected_shape = self.config.reference_image_shape_yx
+        base_labels = None if current_labels is None else np.asarray(current_labels)
+        if base_labels is not None and (
+            base_labels.ndim != 2
+            or not np.issubdtype(base_labels.dtype, np.integer)
+            or np.any(base_labels < 0)
+        ):
+            raise ValueError(
+                "current_labels must be a two-dimensional nonnegative integer mask"
+            )
         output_shape = (
             frame.shape if current_labels is None else np.asarray(current_labels).shape
         )
@@ -827,10 +1146,15 @@ class TrenchConstraintTracker:
         position_state, pose, geometry_valid = self._pose(
             position, frame, pose_override
         )
+        use_appearance = self.config.track_cell_appearance and base_labels is not None
+        target_states = (
+            position_state.appearance_targets if use_appearance
+            else position_state.targets
+        )
         if not geometry_valid or pose is None:
             results = []
             for target, previous in zip(target_list, previous_points, strict=True):
-                target_state = position_state.targets.get(target.token)
+                target_state = target_states.get(target.token)
                 if target_state is None or position_state.pose is None:
                     held = previous
                     trench_index = None
@@ -856,26 +1180,24 @@ class TrenchConstraintTracker:
                 pose,
             )
 
-        vertices = pose.apply(reference_lattice_vertices(self.config), expected_shape)
-        trench_masks = [
-            _polygon_mask(expected_shape, polygon_yx) for polygon_yx in vertices
-        ]
-        safe_masks = [
-            binary_erosion(
-                trench_mask,
-                footprint=disk(self.config.wall_clearance_px),
-            )
-            if self.config.wall_clearance_px
-            else trench_mask.copy()
-            for trench_mask in trench_masks
-        ]
-        safe_union = np.logical_or.reduce(safe_masks)
+        trench_masks, safe_masks = _pose_trench_masks(pose, self.config)
+        selected_trench = (
+            None
+            if trench_center_yx is None
+            else nearest_trench_index(trench_masks, trench_center_yx)
+        )
+        if trench_center_yx is None:
+            safe_union = np.logical_or.reduce(safe_masks)
+        elif selected_trench is None:
+            safe_union = np.zeros(expected_shape, dtype=bool)
+        else:
+            safe_union = safe_masks[selected_trench]
         reference_masks = _reference_polygon_masks(self.config)
 
         results: list[TrenchTargetResult] = []
         accepted_masks: list[np.ndarray] = []
         for target, previous in zip(target_list, previous_points, strict=True):
-            target_state = position_state.targets.get(target.token)
+            target_state = target_states.get(target.token)
             if target_state is None:
                 canonical = pose.inverse(previous, expected_shape)
                 pixel = np.rint(canonical).astype(int)
@@ -902,8 +1224,84 @@ class TrenchConstraintTracker:
                 )
                 continue
 
+            if trench_center_yx is not None and trench_index != selected_trench:
+                results.append(
+                    self._held_result(
+                        target, previous, "outside_selected_trench", trench_index
+                    )
+                )
+                continue
+
             allowed = safe_masks[trench_index]
-            if target_state is None:
+            if use_appearance:
+                result, mask = self._appearance_update(
+                    position_state, target, target_state, previous, predicted,
+                    frame, allowed, trench_index, pose, base_labels,
+                )
+                results.append(result)
+                if mask is not None:
+                    accepted_masks.append(mask)
+                continue
+            matched_cell = None
+            prior_pixels = None
+            visible_pixels = None
+            if base_labels is not None:
+                # The particle tracker already chose a cell. Refine its
+                # interior, rather than starting a second unrestricted tracker.
+                anchor = (
+                    predicted
+                    if target.proposed_yx is None
+                    else np.asarray(target.proposed_yx, dtype=float)
+                )
+                # At initialization the user-selected cell is authoritative.
+                if target_state is None:
+                    anchor = previous
+                matched_cell = _proposed_component(base_labels, anchor, allowed)
+                if not np.any(matched_cell):
+                    results.append(
+                        self._held_result(
+                            target, predicted, "missing_proposed_cell", trench_index,
+                        )
+                    )
+                    continue
+                if target_state is not None:
+                    # Compare geometry, not numeric label IDs. Keep the last
+                    # accepted footprint across missed/ambiguous frames.
+                    prior_pixels = np.rint(pose.apply(
+                        target_state.canonical_cell_yx, expected_shape,
+                    )).astype(int)
+                    in_frame = np.all(
+                        (prior_pixels >= 0) & (prior_pixels < expected_shape), axis=1,
+                    )
+                    visible_pixels = prior_pixels[in_frame]
+                    overlap = np.count_nonzero(matched_cell[
+                        visible_pixels[:, 0], visible_pixels[:, 1],
+                    ]) / len(prior_pixels)
+                    # If the old cell is still segmented at its registered
+                    # location, an assignment to another cell is ambiguous.
+                    prior_cell = _proposed_component(base_labels, predicted, allowed)
+                    prior_radius = np.sqrt(target_state.previous_area_px / np.pi)
+                    identity_conflict = (
+                        overlap < self.config.minimum_identity_overlap
+                        or (
+                            np.any(prior_cell)
+                            and (
+                                not _point_in_mask(predicted, matched_cell)
+                                or np.linalg.norm(anchor - predicted) > prior_radius
+                            )
+                        )
+                    )
+                    if identity_conflict:
+                        results.append(
+                            self._held_result(
+                                target, predicted, "cell_identity", trench_index,
+                            )
+                        )
+                        continue
+                seed, template_valid = anchor.copy(), True
+                # No independent template search in this path.
+                template_score = 0.0
+            elif target_state is None:
                 seed, template_valid = _nearest_allowed(
                     predicted, allowed, self.config.maximum_seed_projection_px
                 )
@@ -927,7 +1325,12 @@ class TrenchConstraintTracker:
                 )
                 continue
 
-            cell_mask = _cell_watershed(frame, seed, allowed, self.config)
+            cell_mask = _cell_watershed(
+                frame,
+                seed,
+                allowed if matched_cell is None else matched_cell,
+                self.config,
+            )
             if not np.any(cell_mask):
                 results.append(
                     self._held_result(
@@ -976,6 +1379,26 @@ class TrenchConstraintTracker:
                     <= self.config.maximum_area_ratio
                 ),
             }
+            if matched_cell is not None:
+                # A merged/concave raw mask must not let refinement move the
+                # aim into a different lobe or put its COM outside the cell.
+                refinement_radius = np.sqrt(area / np.pi)
+                gates["same_cell"] = bool(
+                    _point_in_mask(seed, cell_mask)
+                    and _point_in_mask(center, cell_mask)
+                    and _point_in_mask(center, matched_cell)
+                    and np.linalg.norm(center - seed) <= refinement_radius
+                    and not np.any(cell_mask & ~matched_cell)
+                )
+                if prior_pixels is not None and visible_pixels is not None:
+                    # A merged Cellpose object may overlap the old cell even
+                    # when its refined sub-region belongs to a neighbor.
+                    retained = np.count_nonzero(cell_mask[
+                        visible_pixels[:, 0], visible_pixels[:, 1],
+                    ]) / len(prior_pixels)
+                    gates["cell_identity"] = (
+                        retained >= self.config.minimum_identity_overlap
+                    )
             failed = [name for name, passed in gates.items() if not passed]
             accepted = not failed
             if accepted:
@@ -998,10 +1421,11 @@ class TrenchConstraintTracker:
                         np.asarray(pose.inverse(point, expected_shape)),
                         template,
                         area,
+                        np.asarray(pose.inverse(np.argwhere(cell_mask), expected_shape)),
                     )
                     accepted_masks.append(cell_mask)
             if not accepted:
-                point = predicted.copy()
+                point = previous.copy()
             results.append(
                 TrenchTargetResult(
                     target.token,

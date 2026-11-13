@@ -75,6 +75,8 @@ class MdaPreflightTests(unittest.TestCase):
         values = dict(
             mda_dir_input=str(self.root / "new-run"), sel_batch_combo="False",
             sel_af_combo="None", mda_afp_input="", mda_imgp_input="",
+            mda_af_reject_input=5.5,
+            mda_max_move_input=45.0,
             mda_seg_track_check=False, mda_auto_add_cells_check=False,
             mda_refocus_input=1, mda_exp_input=1000, mda_loops_input=3,
             mda_interval_input=60, mda_raman_off_input=5,
@@ -97,6 +99,10 @@ class MdaPreflightTests(unittest.TestCase):
         # 3 anchors * 4 points * 2 Raman planes * 1 s = 24 s per loop.
         self.assertEqual(review.minimum_seconds, 144)
         self.assertIn("laser, 2 positions", rows["Autofocus"])
+        self.assertEqual(
+            rows["Maximum autofocus Z jump"],
+            "5.5 µm (after the first time point)",
+        )
         self.assertEqual(rows["Output folder"], str(self.root / "new-run"))
         self.assertIn("not a completion-time prediction", review.text)
 
@@ -145,11 +151,35 @@ class MdaPreflightTests(unittest.TestCase):
                 self.assertTrue(self.review().errors)
                 control.data = old
 
+    def test_invalid_autofocus_rejection_limit_is_blocking(self):
+        for value in (0, -1, float("nan"), float("inf")):
+            with self.subTest(value=value):
+                self.owner.mda_af_reject_input.data = value
+                self.assertIn(
+                    "Maximum autofocus Z jump",
+                    self.review().errors[0],
+                )
+
     def test_minimum_exposure_and_invalid_position_overrides(self):
         self.owner.mda_exp_input.data = 20
         self.owner.mda_afp_input.data = "0, 9"
         self.assertIn("73.8", self.review().text)
         self.assertIn("out of range", self.review().text)
+
+    def test_tracking_limit_is_reviewed_and_invalid_values_block_start(self):
+        self.owner.mda_seg_track_check.data = True
+        self.owner.mda_max_move_input.data = 27.5
+        self.assertIn(
+            "Maximum tracking movement: 27.5 px (full-resolution, per tracking update)",
+            self.review().text,
+        )
+        for value in (0, -1, float("nan"), float("inf")):
+            with self.subTest(value=value):
+                self.owner.mda_max_move_input.data = value
+                self.assertIn("Maximum tracking movement", self.review().text)
+                self.assertTrue(self.review().errors)
+        self.owner.mda_seg_track_check.data = False
+        self.assertFalse(self.review().errors)
 
     def test_empty_invalid_or_stale_cell_sources_are_blocking(self):
         for data in (np.empty((0, 6)), np.array([[0, 8, 0, 0, 1, 2]]),
@@ -287,7 +317,9 @@ class MdaPreflightTests(unittest.TestCase):
         owner = self.owner
         values = dict(sel_sqsize_input=3, sel_sqn_input=2,
                       mda_suppress_pillars_check=False, mda_af_range_input=6,
+                      mda_af_reject_input=5.5,
                       mda_constrain_trenches_check=False,
+                      mda_max_move_input=27.5,
                       mda_search_pts_input=8, mda_fine_range_input=1.5,
                       mda_fine_pts_input=8, mda_seg_ch_combo="BF",
                       mda_seg_scale_input=2, mda_seg_model_combo="cyto2",
@@ -348,7 +380,17 @@ class MdaPreflightTests(unittest.TestCase):
                 owner.core.register_mda_engine.assert_called_once_with(engine)
                 mkdir.assert_called_once()
                 self.assertIn("Stage positions: 2", log.append.call_args_list[0].args[0])
+                self.assertEqual(
+                    engine_type.call_args.kwargs[
+                        "maximum_autofocus_z_shift_um"
+                    ],
+                    5.5,
+                )
                 self.assertEqual(setup.call_args.kwargs["total_exposure"], 4000)
+                self.assertEqual(
+                    engine_type.call_args.kwargs["maximum_tracking_movement_px"],
+                    27.5,
+                )
                 if filename == "hardware_widget.py":
                     run.assert_called_once()
                 else:

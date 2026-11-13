@@ -40,6 +40,20 @@ class LogWindowProgressTests(unittest.TestCase):
     def tearDown(self):
         self.log.close()
 
+    def test_tracking_worker_message_reaches_log_panel(self):
+        from napari_raman_widget.live_cell_tracking import make_live_cell_engine_type
+
+        engine = make_live_cell_engine_type(object)(tracking_log=self.log.append)
+        message = '[tracking] p=2, t=7: cells point 1 updated; moved 5.00 px'
+        with patch('sys.stdout', io.StringIO()) as terminal:
+            worker = threading.Thread(target=engine._report_tracking, args=(message,))
+            worker.start()
+            worker.join(timeout=2)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(terminal.getvalue(), message + '\n')
+        self.app.processEvents()
+        self.assertIn(message, self.log.text.toPlainText())
+
     def test_progress_moves_from_preparing_through_real_counts(self):
         self.log.start_progress("Preparing calibration")
         self.assertEqual(self.log.progress_bar.minimum(), 0)

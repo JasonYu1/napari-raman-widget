@@ -12,7 +12,10 @@ from scipy.ndimage import center_of_mass
 from skimage.transform import rescale, resize
 from tqdm.auto import tqdm
 
-from napari_raman_widget.trench_tracking import filter_labels_to_trenches
+from napari_raman_widget.trench_tracking import (
+    filter_labels_to_trenches,
+    registered_trench_geometry,
+)
 
 __all__ = [
     "refine_cell_source_points",
@@ -176,6 +179,7 @@ def _acquire_mask(
     core.snapImage()
     core.waitForSystem()
     image = np.asarray(core.getImage())
+
     def scaled_segmenter(segment_image: np.ndarray, **kwargs: Any) -> np.ndarray:
         kwargs["scale"] = int(segmentation_scale)
         scaled_mask = np.asarray(segmenter(segment_image, **kwargs))
@@ -189,35 +193,68 @@ def _acquire_mask(
             anti_aliasing=False,
         ).astype(scaled_mask.dtype, copy=False)
 
-    # ``segment_single_img`` only masks the outside of its circle; it still
-    # sends the entire camera frame through Cellpose. Crop the actual array so
-    # a small refinement radius results in proportionally less inference work.
-    factor = max(1, int(cellpose_upsample))
-    center = np.asarray(center_yx, dtype=float)
-    crop_radius = max(float(radius), 1.0) + 4.0
-    y0 = max(0, int(np.floor(center[0] - crop_radius)))
-    y1 = min(image.shape[0], int(np.ceil(center[0] + crop_radius + 1)))
-    x0 = max(0, int(np.floor(center[1] - crop_radius)))
-    x1 = min(image.shape[1], int(np.ceil(center[1] + crop_radius + 1)))
-    crop = image[y0:y1, x0:x1]
-    if crop.size == 0:
-        raise ValueError("The refinement circle does not overlap the image")
+    trench_geometry = None
+    if constrain_trenches:
+        trench_geometry = registered_trench_geometry(image)
+        if not trench_geometry.geometry_valid:
+            raise RuntimeError(
+                "Learned trench geometry was not recognized during "
+                f"refinement (score={trench_geometry.geometry_score:.3f})"
+            )
+        safe_union = np.asarray(trench_geometry.safe_union, dtype=bool)
+        if safe_union.shape != image.shape or not np.any(safe_union):
+            raise RuntimeError(
+                "Learned trench geometry contains no safe refinement pixels"
+            )
+        # Trench mode replaces the circular ROI.  Keep the registered trench
+        # pixels unchanged and neutralize walls/gaps before Cellpose.
+        segment_image = image.astype(np.float32, copy=True)
+        segment_image[~safe_union] = float(np.median(image[safe_union]))
+        factor = max(1, int(cellpose_upsample))
+        enlarged = np.repeat(
+            np.repeat(segment_image, factor, axis=0),
+            factor,
+            axis=1,
+        )
+        enlarged_mask = scaled_segmenter(
+            enlarged,
+            cellpose_model=cellpose_model,
+            crop=False,
+            circle_center=None,
+            circle_radius=np.inf,
+        )
+        restored = enlarged_mask[::factor, ::factor]
+        restored = restored[: image.shape[0], : image.shape[1]]
+    else:
+        # ``segment_single_img`` only masks the outside of its circle; it still
+        # sends the entire camera frame through Cellpose. Crop the actual array
+        # so a small refinement radius results in proportionally less work.
+        factor = max(1, int(cellpose_upsample))
+        center = np.asarray(center_yx, dtype=float)
+        crop_radius = max(float(radius), 1.0) + 4.0
+        y0 = max(0, int(np.floor(center[0] - crop_radius)))
+        y1 = min(image.shape[0], int(np.ceil(center[0] + crop_radius + 1)))
+        x0 = max(0, int(np.floor(center[1] - crop_radius)))
+        x1 = min(image.shape[1], int(np.ceil(center[1] + crop_radius + 1)))
+        crop = image[y0:y1, x0:x1]
+        if crop.size == 0:
+            raise ValueError("The refinement circle does not overlap the image")
 
-    enlarged = np.repeat(np.repeat(crop, factor, axis=0), factor, axis=1)
-    local_center = (
-        float((center[0] - y0) * factor),
-        float((center[1] - x0) * factor),
-    )
-    enlarged_mask = scaled_segmenter(
-        enlarged,
-        cellpose_model=cellpose_model,
-        circle_center=local_center,
-        circle_radius=float(radius) * factor,
-    )
-    restored_crop = enlarged_mask[::factor, ::factor]
-    restored_crop = restored_crop[: crop.shape[0], : crop.shape[1]]
-    restored = np.zeros(image.shape, dtype=restored_crop.dtype)
-    restored[y0:y1, x0:x1] = restored_crop
+        enlarged = np.repeat(np.repeat(crop, factor, axis=0), factor, axis=1)
+        local_center = (
+            float((center[0] - y0) * factor),
+            float((center[1] - x0) * factor),
+        )
+        enlarged_mask = scaled_segmenter(
+            enlarged,
+            cellpose_model=cellpose_model,
+            circle_center=local_center,
+            circle_radius=float(radius) * factor,
+        )
+        restored_crop = enlarged_mask[::factor, ::factor]
+        restored_crop = restored_crop[: crop.shape[0], : crop.shape[1]]
+        restored = np.zeros(image.shape, dtype=restored_crop.dtype)
+        restored[y0:y1, x0:x1] = restored_crop
     if pillar_shape_filter is not None:
         shape_result = pillar_shape_filter.filter(
             restored,
@@ -225,7 +262,11 @@ def _acquire_mask(
         )
         restored = shape_result.filtered_labels
     if constrain_trenches:
-        trench_result = filter_labels_to_trenches(image, restored)
+        trench_result = filter_labels_to_trenches(
+            image,
+            restored,
+            pose_override=trench_geometry.pose,
+        )
         if not trench_result.geometry_valid:
             raise RuntimeError(
                 "Learned trench geometry was not recognized during "

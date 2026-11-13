@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from scipy.ndimage import distance_transform_edt
 from tqdm.auto import tqdm
 
 from napari_raman_widget.calibration.models import (
@@ -15,7 +16,10 @@ from napari_raman_widget.calibration.models import (
     load_vandermonde_model,
 )
 from napari_raman_widget.engine_compat import make_pillar_shape_filter
-from napari_raman_widget.trench_tracking import filter_labels_to_trenches
+from napari_raman_widget.trench_tracking import (
+    filter_labels_to_trenches,
+    registered_trench_geometry,
+)
 
 from .masks import get_n_most_centered_coms
 
@@ -107,6 +111,227 @@ def _retain_same_label_refinements(
     return accepted
 
 
+def _circle_selection_mask(
+    shape: tuple[int, int],
+    center: tuple[float, float] | None,
+    radius: float,
+) -> np.ndarray:
+    """Return the circular automated-selection region."""
+
+    if len(shape) != 2 or any(int(value) <= 0 for value in shape):
+        raise ValueError("selection image shape must be two-dimensional")
+    radius = float(radius)
+    if radius < 0:
+        raise ValueError("radius cannot be negative")
+    center_yx = (
+        np.asarray(shape, dtype=float) / 2.0
+        if center is None
+        else np.asarray(center, dtype=float)
+    )
+    if center_yx.shape != (2,) or not np.all(np.isfinite(center_yx)):
+        raise ValueError("center must contain one finite (y, x) coordinate")
+    if np.isinf(radius):
+        return np.ones(shape, dtype=bool)
+    rows, columns = np.ogrid[: shape[0], : shape[1]]
+    return (
+        (rows - center_yx[0]) ** 2 + (columns - center_yx[1]) ** 2
+        <= radius**2
+    )
+
+
+def _mask_union(
+    masks: tuple[np.ndarray, ...],
+    shape: tuple[int, int],
+) -> np.ndarray:
+    """Return a validated union for registered trench masks."""
+
+    if not masks:
+        return np.zeros(shape, dtype=bool)
+    prepared = tuple(np.asarray(mask, dtype=bool) for mask in masks)
+    if any(mask.shape != shape for mask in prepared):
+        raise ValueError("registered trench masks must match the image")
+    return np.logical_or.reduce(prepared)
+
+
+def _segment_trench_cellpose_input(
+    image: np.ndarray,
+    allowed_mask: np.ndarray,
+    *,
+    upsample: int,
+    cellpose_model: str,
+) -> np.ndarray:
+    """Segment the tight crop of cap-safe trenches inside the selection circle."""
+
+    frame = np.asarray(image)
+    allowed = np.asarray(allowed_mask, dtype=bool)
+    if frame.ndim != 2 or allowed.shape != frame.shape:
+        raise ValueError("trench mask must match the two-dimensional image")
+    if not np.any(allowed):
+        return np.zeros(frame.shape, dtype=np.uint32)
+
+    pixels = np.argwhere(allowed)
+    lower = np.maximum(pixels.min(axis=0) - 4, 0)
+    upper = np.minimum(pixels.max(axis=0) + 5, frame.shape)
+    y0, x0 = (int(value) for value in lower)
+    y1, x1 = (int(value) for value in upper)
+    crop = np.array(frame[y0:y1, x0:x1], copy=True)
+    allowed_crop = allowed[y0:y1, x0:x1]
+    crop[~allowed_crop] = np.median(frame[allowed])
+
+    factor = max(1, int(upsample))
+    enlarged = np.repeat(np.repeat(crop, factor, axis=0), factor, axis=1)
+    enlarged_mask = np.asarray(
+        segment_single_img(
+            enlarged,
+            scale=1,
+            crop=False,
+            cellpose_model=cellpose_model,
+        )
+    )
+    if enlarged_mask.ndim != 2:
+        raise ValueError("Cellpose returned a non-image trench mask")
+    restored_crop = enlarged_mask[::factor, ::factor]
+    restored_crop = restored_crop[: crop.shape[0], : crop.shape[1]]
+    restored_crop = np.where(allowed_crop, restored_crop, 0)
+    restored = np.zeros(frame.shape, dtype=restored_crop.dtype)
+    restored[y0:y1, x0:x1] = restored_crop
+    return restored
+
+
+def _background_point_in_region(
+    label_mask: np.ndarray,
+    allowed_mask: np.ndarray,
+    *,
+    threshold: float,
+    center: tuple[float, float] | None,
+) -> np.ndarray:
+    """Choose clear background inside the circle but outside every trench."""
+
+    labels = np.asarray(label_mask)
+    allowed = np.asarray(allowed_mask, dtype=bool)
+    if labels.ndim != 2 or allowed.shape != labels.shape:
+        raise ValueError("background region must match the label image")
+    if threshold < 0:
+        raise ValueError("background threshold cannot be negative")
+
+    background = labels == 0
+    if np.any(~background):
+        clearance = distance_transform_edt(background)
+    else:
+        clearance = np.full(labels.shape, np.inf, dtype=float)
+    fallback_candidates = np.argwhere(allowed & background)
+    if not len(fallback_candidates):
+        raise ValueError(
+            "No background pixel exists inside the selection circle and "
+            "outside the registered trenches."
+        )
+    clear_candidates = np.argwhere(
+        allowed & background & (clearance >= float(threshold))
+    )
+    candidates = (
+        clear_candidates if len(clear_candidates) else fallback_candidates
+    )
+    reference = (
+        np.asarray(labels.shape, dtype=float) / 2.0
+        if center is None
+        else np.asarray(center, dtype=float)
+    )
+    index = int(np.argmin(np.linalg.norm(candidates - reference, axis=1)))
+    return candidates[index].astype(float)
+
+
+def _fill_interlabel_trench_gaps(
+    label_mask: np.ndarray,
+    trench_masks: tuple[np.ndarray, ...],
+) -> np.ndarray:
+    """Split axial background gaps between neighboring labels in each trench.
+
+    Cellpose sometimes leaves a background strip between two packed cells.
+    Within each registered trench, the strip between the facing axial edges
+    of neighboring labels is assigned to whichever label is spatially nearer.
+    Pixels before the first label and after the last label remain background.
+    """
+
+    result = np.asarray(label_mask).copy()
+    if result.ndim != 2 or not np.issubdtype(result.dtype, np.integer):
+        raise ValueError("label_mask must be a two-dimensional integer image")
+
+    for trench_mask in trench_masks:
+        safe = np.asarray(trench_mask, dtype=bool)
+        if safe.shape != result.shape:
+            raise ValueError("trench masks must match the label image")
+        trench_pixels = np.argwhere(safe)
+        if len(trench_pixels) < 3:
+            continue
+
+        lower = trench_pixels.min(axis=0)
+        upper = trench_pixels.max(axis=0) + 1
+        y0, x0 = (int(value) for value in lower)
+        y1, x1 = (int(value) for value in upper)
+        local_safe = safe[y0:y1, x0:x1]
+        local_labels = result[y0:y1, x0:x1]
+        coordinates = np.argwhere(local_safe)
+        centered = coordinates - coordinates.mean(axis=0)
+        covariance = centered.T @ centered
+        _, eigenvectors = np.linalg.eigh(covariance)
+        axis = eigenvectors[:, -1]
+
+        measurements = []
+        values = np.unique(local_labels[local_safe])
+        for value in values[values != 0]:
+            pixels = np.argwhere(local_safe & (local_labels == value))
+            if not len(pixels):
+                continue
+            projections = pixels @ axis
+            measurements.append(
+                (
+                    float(projections.mean()),
+                    float(projections.min()),
+                    float(projections.max()),
+                    int(value),
+                )
+            )
+        measurements.sort(key=lambda item: item[0])
+
+        for left, right in zip(measurements, measurements[1:]):
+            gap_start = left[2]
+            gap_end = right[1]
+            if gap_end <= gap_start:
+                continue
+            empty_pixels = np.argwhere(local_safe & (local_labels == 0))
+            if not len(empty_pixels):
+                break
+            projections = empty_pixels @ axis
+            between = (projections > gap_start) & (projections < gap_end)
+            gap_pixels = empty_pixels[between]
+            if not len(gap_pixels):
+                continue
+
+            left_distance = distance_transform_edt(local_labels != left[3])
+            right_distance = distance_transform_edt(local_labels != right[3])
+            gap_index = tuple(gap_pixels.T)
+            use_left = left_distance[gap_index] <= right_distance[gap_index]
+            chosen = np.where(use_left, left[3], right[3])
+            local_labels[gap_index] = chosen.astype(result.dtype, copy=False)
+
+    return result
+
+
+def _selection_exclusion_mask(
+    trench_safe_mask: np.ndarray | None,
+    pillar_removed_mask: np.ndarray | None,
+) -> np.ndarray | None:
+    """Combine trench and pillar exclusions for cell targets."""
+
+    exclusion = None
+    if trench_safe_mask is not None:
+        exclusion = ~np.asarray(trench_safe_mask, dtype=bool)
+    if pillar_removed_mask is not None:
+        pillars = np.asarray(pillar_removed_mask, dtype=bool)
+        exclusion = pillars.copy() if exclusion is None else exclusion | pillars
+    return exclusion
+
+
 def automated_point_selections(
     core: Any,
     viewer: Any,
@@ -178,8 +403,9 @@ def automated_point_selections(
         of the measured 78 x 56 pixel pillar rectangle.
     constrain_trenches
         When true, fit one global rotation and translation of the learned
-        trapezoid lattice, then keep only cell-sized label components inside
-        wall-safe trench interiors.
+        trapezoid lattice, segment only cap-aware trench pixels inside the
+        circular selection region, and place the optional background target
+        inside that circle but outside every registered trench.
 
     Returns
     -------
@@ -253,9 +479,56 @@ def automated_point_selections(
             time.sleep(image_settle_time)
 
         images.append(image)
-        segmentation_image = image
+        trench_geometry = None
+        trench_safe_mask = None
+        selection_circle_mask = None
+        raw_trench_union = None
+        if constrain_trenches:
+            trench_geometry = registered_trench_geometry(image)
+            if not trench_geometry.geometry_valid:
+                mask = np.zeros(image.shape, dtype=np.uint32)
+                masks.append(mask)
+                if show_masks:
+                    viewer.add_labels(
+                        mask,
+                        name=f"Cellpose mask p{position_index}",
+                    )
+                print(
+                    "Learned trench geometry was not recognized at "
+                    f"position {position_index} "
+                    f"(score={trench_geometry.geometry_score:.3f}); "
+                    "skipping Cellpose and this field without cell or "
+                    "autofocus targets."
+                )
+                selected_by_position.append(np.empty((0, 2), dtype=float))
+                continue
+            selection_circle_mask = _circle_selection_mask(
+                image.shape,
+                center,
+                radius,
+            )
+            raw_trench_union = _mask_union(
+                trench_geometry.trench_masks,
+                image.shape,
+            )
+            trench_safe_mask = (
+                np.asarray(trench_geometry.safe_union, dtype=bool)
+                & selection_circle_mask
+            )
+            segmentation_image = image
+        else:
+            segmentation_image = image
 
-        if int(cellpose_upsample) > 1:
+        if constrain_trenches:
+            # The circle chooses the ROI; learned geometry removes walls,
+            # gaps, and the closed-tip cap within that ROI.
+            mask = _segment_trench_cellpose_input(
+                segmentation_image,
+                trench_safe_mask,
+                upsample=cellpose_upsample,
+                cellpose_model=cellpose_model,
+            )
+        elif int(cellpose_upsample) > 1:
             from napari_raman_widget.demo.cellpose import (
                 segment_upsampled_demo_region,
             )
@@ -309,12 +582,27 @@ def automated_point_selections(
             )
         else:
             mask = raw_mask
-        trench_geometry_valid = True
         if constrain_trenches:
-            trench_result = filter_labels_to_trenches(image, mask)
+            trench_result = filter_labels_to_trenches(
+                image,
+                mask,
+                pose_override=trench_geometry.pose,
+            )
             mask = trench_result.filtered_labels
-            trench_geometry_valid = trench_result.geometry_valid
-            if trench_geometry_valid:
+            trench_safe_mask = (
+                np.asarray(trench_result.safe_interior_mask, dtype=bool)
+                & selection_circle_mask
+            )
+            mask = np.where(trench_safe_mask, mask, 0)
+            circle_safe_masks = tuple(
+                np.asarray(safe_mask, dtype=bool) & selection_circle_mask
+                for safe_mask in trench_geometry.safe_masks
+            )
+            mask = _fill_interlabel_trench_gaps(
+                mask,
+                circle_safe_masks,
+            )
+            if trench_result.geometry_valid:
                 print(
                     "Trench geometry filter for automated selection at "
                     f"position {position_index}: "
@@ -337,41 +625,55 @@ def automated_point_selections(
                 name=f"Cellpose mask p{position_index}",
             )
 
-        if not trench_geometry_valid:
+        if constrain_trenches and not trench_result.geometry_valid:
             selected_by_position.append(np.empty((0, 2), dtype=float))
             continue
 
-        if center_cell:
-            requested_points = (
-                N
-                if no_autofocus
-                else N + 1
-            )
+        selection_exclusion_mask = _selection_exclusion_mask(
+            trench_safe_mask,
+            pillar_removed_mask,
+        )
 
-            selected_points = (
-                get_n_most_centered_coms(
-                    mask,
-                    N=requested_points,
-                    center=center,
-                    radius=np.inf,
-                    autofocus_object=autofocus_object,
-                    bkd_threshold=bkd_thres,
-                    exclusion_mask=pillar_removed_mask,
-                    exclusion_margin=0,
-                )
+        requested_points = N if not center_cell or no_autofocus else N + 1
+        selection_radius = np.inf if center_cell else radius
+        if constrain_trenches:
+            cell_limit = requested_points - (0 if no_autofocus else 1)
+            cell_points = get_n_most_centered_coms(
+                mask,
+                N=cell_limit,
+                center=center,
+                radius=selection_radius,
+                autofocus_object=None,
+                bkd_threshold=bkd_thres,
+                exclusion_mask=selection_exclusion_mask,
+                exclusion_margin=0,
             )
-        else:
-            selected_points = (
-                get_n_most_centered_coms(
+            if no_autofocus:
+                selected_points = cell_points
+            else:
+                background_allowed = selection_circle_mask & ~raw_trench_union
+                if pillar_removed_mask is not None:
+                    background_allowed &= ~np.asarray(
+                        pillar_removed_mask,
+                        dtype=bool,
+                    )
+                background_point = _background_point_in_region(
                     mask,
-                    N=N,
+                    background_allowed,
+                    threshold=bkd_thres,
                     center=center,
-                    radius=radius,
-                    autofocus_object=autofocus_object,
-                    bkd_threshold=bkd_thres,
-                    exclusion_mask=pillar_removed_mask,
-                    exclusion_margin=0,
                 )
+                selected_points = np.vstack((background_point, cell_points))
+        else:
+            selected_points = get_n_most_centered_coms(
+                mask,
+                N=requested_points,
+                center=center,
+                radius=selection_radius,
+                autofocus_object=autofocus_object,
+                bkd_threshold=bkd_thres,
+                exclusion_mask=selection_exclusion_mask,
+                exclusion_margin=0,
             )
 
         if cell_point_refiner is not None and selected_points.size:

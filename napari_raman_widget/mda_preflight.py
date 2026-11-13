@@ -211,12 +211,38 @@ def build_mda_review(owner, *, demo=False):
         if any(p < 0 or p >= positions for p in afp + imgp):
             raise ValueError("Prepared autofocus/imaging indices are outside the sequence. Run selection again.")
         rows.append(("Autofocus", f"{af_choice}, {len(set(afp))} positions" if autofocus else "Off"))
+        if autofocus:
+            autofocus_rejection = float(owner.mda_af_reject_input.value())
+            if (
+                not math.isfinite(autofocus_rejection)
+                or autofocus_rejection <= 0
+            ):
+                raise ValueError(
+                    "Maximum autofocus Z jump must be finite and positive."
+                )
+            rows.append(
+                (
+                    "Maximum autofocus Z jump",
+                    f"{autofocus_rejection:g} µm (after the first time point)",
+                )
+            )
         rows.append(("Imaging positions", f"{len(set(imgp))} of {positions}"))
         if autofocus and not afp:
             warnings.append("Autofocus is enabled but no autofocus positions are selected.")
     except (TypeError, ValueError) as error:
         errors.append(str(error))
     rows.append(("Segment and track", "On" if tracking else "Off"))
+    if tracking:
+        try:
+            maximum_movement = float(owner.mda_max_move_input.value())
+            if not math.isfinite(maximum_movement) or maximum_movement <= 0:
+                raise ValueError("Maximum tracking movement must be finite and positive.")
+            rows.append((
+                "Maximum tracking movement",
+                f"{maximum_movement:g} px (full-resolution, per tracking update)",
+            ))
+        except (TypeError, ValueError) as error:
+            errors.append(str(error))
     rows.append(("Refocus / segment cadence", f"Every {owner.mda_refocus_input.value()} time point(s)"))
 
     exposure = float(owner.mda_exp_input.value())

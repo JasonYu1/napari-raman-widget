@@ -844,8 +844,9 @@ class HardwareWidget(QWidget):
         )
         self.sel_constrain_trenches_check.setChecked(False)
         self.sel_constrain_trenches_check.setToolTip(
-            "Fit one global rotation/translation of the learned trench "
-            "lattice and remove wall or outside labels before selecting cells."
+            "Within the circular selection region, send only learned trench "
+            "interiors to Cellpose, close gaps between neighboring cell masks, "
+            "and place background outside the trenches."
         )
         sel_layout.addWidget(self.sel_constrain_trenches_check)
 
@@ -944,6 +945,17 @@ class HardwareWidget(QWidget):
         af_range_row.addWidget(self.mda_af_range_input)
         mda_advanced_layout.addLayout(af_range_row)
 
+        af_reject_row = QHBoxLayout()
+        self._af_reject_label = QLabel("Maximum autofocus Z jump (um):")
+        af_reject_row.addWidget(self._af_reject_label)
+        self.mda_af_reject_input = QDoubleSpinBox()
+        self.mda_af_reject_input.setRange(0.1, 1000)
+        self.mda_af_reject_input.setValue(5.5)
+        self.mda_af_reject_input.setDecimals(2)
+        self.mda_af_reject_input.setSingleStep(0.5)
+        af_reject_row.addWidget(self.mda_af_reject_input)
+        mda_advanced_layout.addLayout(af_reject_row)
+
         # Coarse autofocus search points (all autofocus objects)
         search_pts_row = QHBoxLayout()
         self._search_pts_label = QLabel("Autofocus search pts:")
@@ -1002,11 +1014,25 @@ class HardwareWidget(QWidget):
         )
         self.mda_constrain_trenches_check.setChecked(False)
         self.mda_constrain_trenches_check.setToolTip(
-            "Keep each tracked cell inside its initially assigned trench and "
-            "reject unsafe center-of-mass jumps."
+            "Segment and track only the trench nearest the selection circle's "
+            "center, without circular clipping. Exclude the first 2 flat-tip "
+            "lengths and reject unsafe center-of-mass jumps."
+        )
+        self.mda_constrain_trenches_check.toggled.connect(
+            self._toggle_trench_crop_control
         )
         mda_advanced_layout.addWidget(self.mda_constrain_trenches_check)
         # Seg-track options (shown only when the box is checked)
+        max_move_row = QHBoxLayout()
+        self._max_move_label = QLabel("Maximum tracking movement (px):")
+        max_move_row.addWidget(self._max_move_label)
+        self.mda_max_move_input = QDoubleSpinBox()
+        self.mda_max_move_input.setRange(0.1, 10000.0)
+        self.mda_max_move_input.setDecimals(1)
+        self.mda_max_move_input.setSingleStep(1.0)
+        self.mda_max_move_input.setValue(45.0)
+        max_move_row.addWidget(self.mda_max_move_input)
+        mda_advanced_layout.addLayout(max_move_row)
         seg_ch_row = QHBoxLayout()
         self._seg_ch_label = QLabel("Segment channel:")
         seg_ch_row.addWidget(self._seg_ch_label)
@@ -1643,6 +1669,8 @@ class HardwareWidget(QWidget):
         self.mda_auto_add_cells_check.setVisible(checked)
         self.mda_suppress_pillars_check.setVisible(checked)
         self.mda_constrain_trenches_check.setVisible(checked)
+        self._max_move_label.setVisible(checked)
+        self.mda_max_move_input.setVisible(checked)
         self._seg_ch_label.setVisible(checked)
         self.mda_seg_ch_combo.setVisible(checked)
         self._seg_scale_label.setVisible(checked)
@@ -1654,6 +1682,21 @@ class HardwareWidget(QWidget):
         self._seg_track_cfg_label.setVisible(checked)
         self.mda_track_cfg_input.setVisible(checked)
         self._seg_track_cfg_browse.setVisible(checked)
+
+    def _toggle_trench_crop_control(self, checked):
+        """Show that learned trench inputs replace the circular crop."""
+
+        enabled = not bool(checked)
+        self._seg_crop_label.setEnabled(enabled)
+        self.mda_seg_crop_combo.setEnabled(enabled)
+        message = (
+            "Ignored while trench constraints are enabled; Cellpose receives "
+            "one trench-shaped input nearest the selection circle's center."
+            if checked
+            else "Whether segmentation is cropped to the circular mask region."
+        )
+        self._seg_crop_label.setToolTip(message)
+        self.mda_seg_crop_combo.setToolTip(message)
 
     def _toggle_px2stage_fields(self, checked):
         """Show/hide the pixel-to-stage calibration fields."""
@@ -1679,6 +1722,8 @@ class HardwareWidget(QWidget):
         # coarse fields: shown for any real autofocus object
         self._af_range_label.setVisible(has_autofocus)
         self.mda_af_range_input.setVisible(has_autofocus)
+        self._af_reject_label.setVisible(has_autofocus)
+        self.mda_af_reject_input.setVisible(has_autofocus)
         self._search_pts_label.setVisible(has_autofocus)
         self.mda_search_pts_input.setVisible(has_autofocus)
 
@@ -1690,6 +1735,9 @@ class HardwareWidget(QWidget):
 
     def _reapply_toggles(self):
         self._toggle_seg_track_fields(self.mda_seg_track_check.isChecked())
+        self._toggle_trench_crop_control(
+            self.mda_constrain_trenches_check.isChecked()
+        )
         self._toggle_zscan_fields(self.scan_zscan_check.isChecked())
         self._toggle_autofocus_fields(self.sel_af_combo.currentText())
         self._toggle_px2stage_fields(self.px2stage_check.isChecked())
@@ -3493,6 +3541,7 @@ class HardwareWidget(QWidget):
         autofocus_enabled = af_choice not in ("None", "none", "", None)
         autofocus_object = af_choice if autofocus_enabled else "laser"
         segment_and_track = self.mda_seg_track_check.isChecked()
+        maximum_tracking_movement_px = float(self.mda_max_move_input.value())
         auto_add_new_cells = (
             segment_and_track
             and self.mda_auto_add_cells_check.isChecked()
@@ -3527,6 +3576,9 @@ class HardwareWidget(QWidget):
         os.makedirs(out_dir, exist_ok=True)
         raman_offset = float(self.mda_raman_off_input.value())
         af_range = float(self.mda_af_range_input.value())
+        maximum_autofocus_z_shift_um = float(
+            self.mda_af_reject_input.value()
+        )
         search_pts = int(self.mda_search_pts_input.value())
         fine_search_range = float(self.mda_fine_range_input.value())
         fine_search_pts = int(self.mda_fine_pts_input.value())
@@ -3537,7 +3589,10 @@ class HardwareWidget(QWidget):
         segment_channel = self.mda_seg_ch_combo.currentText() or "BF"
         seg_scale = float(self.mda_seg_scale_input.value())
         cellpose_model = self.mda_seg_model_combo.currentText() or "cyto2"
-        segment_crop = self.mda_seg_crop_combo.currentText() == "True"
+        segment_crop = (
+            self.mda_seg_crop_combo.currentText() == "True"
+            and not constrain_trench_tracking
+        )
         tracking_config = self.mda_track_cfg_input.text().strip() or "particle_config.json"
         cy = int(self.sel_cy_input.value())
         cx = int(self.sel_cx_input.value())
@@ -3596,7 +3651,12 @@ class HardwareWidget(QWidget):
                     autofocus_p=autofocus_p,
                     image_p=image_p,
                     autofocus_object=autofocus_object,
+                    maximum_autofocus_z_shift_um=(
+                        maximum_autofocus_z_shift_um
+                    ),
                     segment_and_track=segment_and_track,
+                    tracking_log=log.append,
+                    maximum_tracking_movement_px=maximum_tracking_movement_px,
                     auto_add_new_cells=auto_add_new_cells,
                     constrain_trench_tracking=constrain_trench_tracking,
                     scale=seg_scale,
@@ -3687,7 +3747,9 @@ class HardwareWidget(QWidget):
                     f"Starting MDA: {loops} loops, interval={interval}s, "
                     f"z_rel={z_relative}, raman_z={raman_z_indices}, "
                     f"autofocus={autofocus_enabled} ({af_choice}), "
+                    f"max_af_jump={maximum_autofocus_z_shift_um}um, "
                     f"segment_and_track={segment_and_track}, "
+                    f"max_tracking_movement={maximum_tracking_movement_px}px, "
                     f"auto_add_new_cells={auto_add_new_cells}, "
                     f"suppress_pillars={suppress_pillars}, "
                     "constrain_trench_tracking="

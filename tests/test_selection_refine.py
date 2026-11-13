@@ -6,7 +6,7 @@ import unittest
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -43,6 +43,7 @@ class _FakeCore:
         self.channel_history: list[str] = []
         self.snap_count = 0
         self.stop_count = 0
+        self.image = np.zeros(image_shape, dtype=np.uint16)
 
     def getXYPosition(self):
         return self.xy
@@ -68,7 +69,7 @@ class _FakeCore:
         self.snap_count += 1
 
     def getImage(self):
-        return np.zeros(self.image_shape, dtype=np.uint16)
+        return np.array(self.image, copy=True)
 
 
 class SelectionRefineTests(unittest.TestCase):
@@ -239,7 +240,17 @@ class SelectionRefineTests(unittest.TestCase):
             geometry_valid=True,
             geometry_score=1.0,
         )
+        geometry = SimpleNamespace(
+            geometry_valid=True,
+            geometry_score=1.0,
+            safe_union=np.ones(core.image_shape, dtype=bool),
+            pose="registered-pose",
+        )
         with patch.object(
+            _REFINE,
+            "registered_trench_geometry",
+            return_value=geometry,
+        ), patch.object(
             _REFINE,
             "filter_labels_to_trenches",
             return_value=trench_result,
@@ -266,6 +277,94 @@ class SelectionRefineTests(unittest.TestCase):
             np.zeros(core.image_shape, dtype=np.uint16),
         )
         np.testing.assert_array_equal(trench_filter.call_args.args[1], raw)
+        self.assertEqual(
+            trench_filter.call_args.kwargs["pose_override"],
+            "registered-pose",
+        )
+
+    def test_trench_refinement_replaces_circle_with_registered_input(self) -> None:
+        source = _FakeSource(
+            np.array([[0, 0, 0, 0, 6, 6]], dtype=float)
+        )
+        sequence = SimpleNamespace(
+            stage_positions=[SimpleNamespace(x=10.0, y=20.0)]
+        )
+        core = _FakeCore()
+        core.image = np.arange(144, dtype=np.uint16).reshape(12, 12)
+        safe_union = np.zeros(core.image_shape, dtype=bool)
+        safe_union[3:10, 4:9] = True
+        raw = np.zeros(core.image_shape, dtype=np.int32)
+        raw[4:9, 4:9] = 3
+        received = {}
+
+        def segmenter(image, **kwargs):
+            received["image"] = np.array(image, copy=True)
+            received["kwargs"] = dict(kwargs)
+            return raw
+
+        geometry = SimpleNamespace(
+            geometry_valid=True,
+            geometry_score=0.9,
+            safe_union=safe_union,
+            pose="registered-pose",
+        )
+        trench_result = SimpleNamespace(
+            filtered_labels=raw,
+            geometry_valid=True,
+            geometry_score=0.9,
+        )
+        with patch.object(
+            _REFINE,
+            "registered_trench_geometry",
+            return_value=geometry,
+        ), patch.object(
+            _REFINE,
+            "filter_labels_to_trenches",
+            return_value=trench_result,
+        ) as trench_filter:
+            result = refine_cell_source_points(
+                core,
+                source,
+                sequence,
+                center_yx=(6.0, 6.0),
+                radius=2.0,
+                stage_settle_time=0,
+                segmentation_scale=1,
+                cellpose_upsample=3,
+                segmenter=segmenter,
+                constrain_trenches=True,
+                show_progress=False,
+            )
+
+        self.assertEqual(received["image"].shape, (36, 36))
+        enlarged_safe = np.repeat(
+            np.repeat(safe_union, 3, axis=0),
+            3,
+            axis=1,
+        )
+        enlarged_image = np.repeat(
+            np.repeat(core.image, 3, axis=0),
+            3,
+            axis=1,
+        )
+        np.testing.assert_array_equal(
+            received["image"][enlarged_safe],
+            enlarged_image[enlarged_safe],
+        )
+        self.assertTrue(
+            np.all(
+                received["image"][~enlarged_safe]
+                == np.median(core.image[safe_union])
+            )
+        )
+        self.assertFalse(received["kwargs"]["crop"])
+        self.assertIsNone(received["kwargs"]["circle_center"])
+        self.assertTrue(np.isinf(received["kwargs"]["circle_radius"]))
+        self.assertEqual(result["matched"], 1)
+        self.assertEqual(
+            trench_filter.call_args.kwargs["pose_override"],
+            "registered-pose",
+        )
 
     def test_trench_refinement_fails_closed_on_bad_geometry(self) -> None:
         original = np.array([[0, 0, 0, 0, 6, 6]], dtype=float)
@@ -275,11 +374,13 @@ class SelectionRefineTests(unittest.TestCase):
         )
         core = _FakeCore()
 
+        segmenter = Mock(
+            return_value=np.zeros(core.image_shape, dtype=np.uint32)
+        )
         with patch.object(
             _REFINE,
-            "filter_labels_to_trenches",
+            "registered_trench_geometry",
             return_value=SimpleNamespace(
-                filtered_labels=np.zeros(core.image_shape, dtype=np.uint32),
                 geometry_valid=False,
                 geometry_score=0.2,
             ),
@@ -293,12 +394,13 @@ class SelectionRefineTests(unittest.TestCase):
                     radius=6.0,
                     stage_settle_time=0,
                     segmentation_scale=1,
-                    segmenter=lambda image, **kwargs: np.zeros_like(image),
+                    segmenter=segmenter,
                     constrain_trenches=True,
                     show_progress=False,
                 )
 
         np.testing.assert_array_equal(source._points.data, original)
+        segmenter.assert_not_called()
 
 
 if __name__ == "__main__":

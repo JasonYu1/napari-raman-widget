@@ -362,6 +362,11 @@ HELP = {
     ),
     "mda_raman_off_input": "Axial offset used for the Raman measurement (um).",
     "mda_af_range_input": "Coarse autofocus range. Hidden if autofocus is None.",
+    "mda_af_reject_input": (
+        "Maximum accepted autofocus Z change from the previous position, "
+        "applied after the first time point. At t=0, any finite change is "
+        "allowed. Non-finite results always restore the previous Z."
+    ),
     "mda_search_pts_input": "Coarse autofocus sample count.",
     "mda_fine_range_input": (
         "Fine autofocus half-range (+/- um). Shown only for laser autofocus."
@@ -369,6 +374,12 @@ HELP = {
     "mda_fine_pts_input": "Fine laser-autofocus sample count.",
     "mda_seg_track_check": (
         "Re-segment images and update aiming during the time series."
+    ),
+    "mda_max_move_input": (
+        "Maximum accepted tracking movement per update in full-resolution "
+        "image pixels (default 45). Applies to regular, pillar, and trench "
+        "tracking. Larger jumps are rejected; trench mode measures movement "
+        "after correcting for registered device drift."
     ),
     "mda_auto_add_cells_check": (
         "After each tracking refresh after the first time point, add one "
@@ -379,6 +390,17 @@ HELP = {
         "Run Cellpose normally, then remove labels whose rotated mask fits "
         "at least 75% of the measured 78 x 56 px pillar rectangle."
     ),
+    "mda_constrain_trenches_check": (
+        "Segment and track only the learned trench containing or nearest "
+        "the selection circle's center. Use its full safe interior without "
+        "circular clipping, excluding the first 2 flat-tip lengths. "
+        "Follow the selected cell's brightfield appearance with a reverse "
+        "match check, then aim at that Cellpose mask's center of mass without "
+        "watershed. The final center must stay inside that cell and safe trench "
+        "and satisfy the maximum tracking movement. "
+        "Missing masks or ambiguous updates hold the exact previous aim. If all selected "
+        "targets miss the masks, collect Raman at their previous positions."
+    ),
     "mda_seg_ch_combo": "Micro-Manager channel used for segmentation.",
     "mda_seg_scale_input": (
         "Image scale used during segmentation. Minimum value is 1."
@@ -387,7 +409,9 @@ HELP = {
         "Cellpose model for time-series re-segmentation (cyto2 preferred)."
     ),
     "mda_seg_crop_combo": (
-        "Whether segmentation is cropped to the circular mask region."
+        "Whether segmentation is cropped to the circular mask region. "
+        "Ignored in trench mode: one trench-shaped input nearest the "
+        "selection circle's center replaces the circular crop."
     ),
     "mda_track_cfg_input": "Particle-tracking configuration file (.json).",
     "mda_exp_input": (

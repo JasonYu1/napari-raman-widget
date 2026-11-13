@@ -13,18 +13,24 @@ for rows that are still identical to the rows in the original snapshot.
 Consequently, additions survive, deletions are not resurrected, and a manual
 move wins over an in-flight tracking result.
 
-The wrapper also rejects invalid autofocus results and focus changes more than
-four micrometers from the last accepted Z position.  Rejected results restore
-that previous position immediately.
+All cell tracking uses a configurable movement limit in full-resolution pixels,
+defaulting to 45 px per tracking refresh. Ordinary tracking rejects larger
+coordinate changes; trench tracking applies the same limit after registration
+of device motion, alongside its geometry and cell-shape checks.
+
+The wrapper also rejects invalid autofocus results and, after the first time
+point, focus changes beyond a configurable maximum from the last accepted Z
+position. Rejected results restore that previous position immediately; the
+default limit is 5.5 um. At t=0, any finite focus shift is allowed.
 
 An opt-in trench guard registers one fixed learned trapezoid lattice, segments
-each target only inside its assigned trench, and holds the last safe target if
-geometry, wall clearance, cell area, or consecutive motion checks fail.
+only the trench nearest the selection circle's center, and holds the last safe
+target if geometry, wall clearance, cell area, or consecutive motion checks fail.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from threading import RLock
 from typing import Any, Callable
@@ -32,12 +38,18 @@ from typing import Any, Callable
 import numpy as np
 from qtpy.QtCore import QCoreApplication, QObject, QThread, Qt, Signal, Slot
 
-from .trench_tracking import TrenchConstraintTracker, TrenchTarget
+from .trench_segmentation import TrenchCellposeSegmenter
+from .trench_tracking import (
+    DEFAULT_TRENCH_CONFIG,
+    TrenchConstraintTracker,
+    TrenchTarget,
+)
 
 __all__ = ["make_live_cell_engine_type"]
 
 
-MAX_AUTOFOCUS_Z_SHIFT_UM = 4.0
+DEFAULT_MAX_AUTOFOCUS_Z_SHIFT_UM = 5.5
+DEFAULT_MAX_TRACKING_MOVEMENT_PX = DEFAULT_TRENCH_CONFIG.maximum_step_px
 
 
 @dataclass
@@ -99,6 +111,28 @@ class _PointDataProxy:
         return getattr(self._layer, name)
 
 
+class _DeferredAimUpdates:
+    """Delay the base engine's pre-safeguard notification until final merge.
+
+    Writers and the live display subscribe to the original signaler. Other
+    signals still pass through; only aiming records are deferred synchronously.
+    """
+
+    def __init__(self, events: Any) -> None:
+        self._events = events
+        self.pending: list[tuple[Any, ...]] = []
+
+    @property
+    def aimUpdated(self) -> _DeferredAimUpdates:
+        return self
+
+    def emit(self, *args: Any) -> None:
+        self.pending.append(args)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._events, name)
+
+
 @dataclass(frozen=True)
 class _PointUpdateSession:
     source: Any
@@ -123,6 +157,8 @@ class _FrozenAnchorSource:
     name: str
     anchor: np.ndarray
     transformer: Any
+    previous_anchor: np.ndarray | None = None
+    origin: Any = None
 
     def get_mda_points(self, event: Any, transform: bool = True) -> np.ndarray:
         del event
@@ -192,6 +228,45 @@ def _merge_tracked_rows(session: _PointUpdateSession) -> int:
     return changed
 
 
+def _merge_and_report_tracking(
+    sessions: list[_PointUpdateSession],
+    accepted_rows: list[tuple[_PointUpdateSession, int]],
+    position: int,
+    time_index: int,
+) -> list[str]:
+    """Describe accepted updates that survived the live-layer merge."""
+
+    messages = []
+    for session in sessions:
+        live_before = _copy_point_data(session.layer)
+        _merge_tracked_rows(session)
+        live_after = _copy_point_data(session.layer)
+        for accepted_session, row_index in accepted_rows:
+            if accepted_session is not session:
+                continue
+            original = session.before[row_index]
+            updated = session.proxy.data[row_index]
+            # Concurrent moves/deletions win over tracking. An accepted
+            # proposal that was not applied must not be called a success.
+            if not any(_rows_equal(row, original) for row in live_before):
+                continue
+            if not any(_rows_equal(row, updated) for row in live_after):
+                continue
+            movement = float(np.linalg.norm(updated[-2:] - original[-2:]))
+            if not np.isfinite(movement):
+                continue
+            position_index = session.source._pos_idx
+            point_number = int(np.count_nonzero(
+                session.before[:row_index + 1, position_index] == position
+            ))
+            messages.append(
+                f"[tracking] p={position}, t={time_index}: "
+                f"{session.source.name} point {point_number} updated; "
+                f"moved {movement:.2f} px"
+            )
+    return messages
+
+
 def _is_splittable_cell_source(source: Any) -> bool:
     return (
         "cell" in str(getattr(source, "name", "")).lower()
@@ -202,7 +277,11 @@ def _is_splittable_cell_source(source: Any) -> bool:
     )
 
 
-def _split_cell_sources(sources: list[Any], event: Any) -> list[Any]:
+def _split_cell_sources(
+    sources: list[Any],
+    event: Any,
+    previous_points: dict[tuple[int, int], list[tuple[np.ndarray, np.ndarray]]] | None = None,
+) -> list[Any]:
     """Freeze point-backed cell sources as one source per live anchor."""
 
     position = event.index.get("p")
@@ -231,14 +310,19 @@ def _split_cell_sources(sources: list[Any], event: Any) -> list[Any]:
             continue
 
         anchors = rows[:, -2:] / image_shape
-        split_sources.extend(
-            _FrozenAnchorSource(
+        for row, anchor in zip(rows, anchors, strict=True):
+            previous = anchor.copy()
+            for tracked, before in (previous_points or {}).get((id(source), position), []):
+                if _rows_equal(row[-2:], tracked):
+                    previous = before / image_shape
+                    break
+            split_sources.append(_FrozenAnchorSource(
                 name=str(source.name),
                 anchor=anchor,
                 transformer=source.transformer,
-            )
-            for anchor in anchors
-        )
+                previous_anchor=np.asarray(previous, dtype=float).copy(),
+                origin=source,
+            ))
 
     return split_sources
 
@@ -363,25 +447,63 @@ def make_live_cell_engine_type(base_engine_type: type) -> type:
             auto_add_new_cells: bool = False,
             constrain_trench_tracking: bool = False,
             trench_tracking_config: Any | None = None,
+            maximum_tracking_movement_px: float = DEFAULT_MAX_TRACKING_MOVEMENT_PX,
+            maximum_autofocus_z_shift_um: float = (
+                DEFAULT_MAX_AUTOFOCUS_Z_SHIFT_UM
+            ),
+            tracking_log: Callable[[str], None] | None = None,
             **kwargs: Any,
         ) -> None:
+            maximum_shift = float(maximum_autofocus_z_shift_um)
+            if not np.isfinite(maximum_shift) or maximum_shift <= 0:
+                raise ValueError(
+                    "maximum_autofocus_z_shift_um must be finite and positive"
+                )
+            self._maximum_autofocus_z_shift_um = maximum_shift
+            maximum_movement = float(maximum_tracking_movement_px)
+            if not np.isfinite(maximum_movement) or maximum_movement <= 0:
+                raise ValueError(
+                    "maximum_tracking_movement_px must be finite and positive"
+                )
+            self._maximum_tracking_movement_px = maximum_movement
+            self._tracking_log = tracking_log
             self._auto_add_new_cells = bool(auto_add_new_cells)
             self._constrain_trench_tracking = bool(
                 constrain_trench_tracking
             )
             self._trench_tracker = None
             if self._constrain_trench_tracking:
-                self._trench_tracker = (
-                    TrenchConstraintTracker()
+                trench_config = (
+                    DEFAULT_TRENCH_CONFIG
                     if trench_tracking_config is None
-                    else TrenchConstraintTracker(trench_tracking_config)
+                    else trench_tracking_config
+                )
+                self._trench_tracker = TrenchConstraintTracker(
+                    replace(trench_config, maximum_step_px=maximum_movement)
                 )
             self._trench_live_targets: dict[
                 tuple[int, int], dict[tuple[int, int], np.ndarray]
             ] = {}
             self._next_trench_target_token = 0
             self._live_cell_lock = RLock()
+            self._raman_previous_points = {}
+            self._last_aim_updates = {}
             super().__init__(*args, **kwargs)
+            self._trench_cellpose_segmenter = None
+            base_segmenter = getattr(self, "_cellpose_segmenter", None)
+            if (
+                self._constrain_trench_tracking
+                and callable(getattr(base_segmenter, "segment", None))
+            ):
+                self._trench_cellpose_segmenter = TrenchCellposeSegmenter(
+                    base_segmenter,
+                    self._trench_tracker.config,
+                )
+                self._cellpose_segmenter = self._trench_cellpose_segmenter
+                # The circle center chooses a single registered trench;
+                # the circle radius must not clip the Cellpose input.
+                if hasattr(self, "_segment_crop"):
+                    self._segment_crop = False
             # Widgets construct engines on the GUI thread, so this object's
             # affinity is the correct one for subsequent layer operations.
             self._live_layer_bridge = _LayerCallBridge()
@@ -394,13 +516,37 @@ def make_live_cell_engine_type(base_engine_type: type) -> type:
         def constrain_trench_tracking(self) -> bool:
             return self._constrain_trench_tracking
 
+        @property
+        def maximum_autofocus_z_shift_um(self) -> float:
+            return self._maximum_autofocus_z_shift_um
+
+        @property
+        def maximum_tracking_movement_px(self) -> float:
+            return self._maximum_tracking_movement_px
+
+        def _report_tracking(self, message: str) -> None:
+            """Send acquisition-thread updates to both terminal and log panel."""
+
+            print(message, flush=True)
+            if self._tracking_log is not None:
+                try:
+                    self._tracking_log(message + "\n")
+                except Exception as error:
+                    # A log display failure must not interrupt acquisition.
+                    print(f"[tracking log] Could not update log panel: {error}", flush=True)
+
         def autofocus_w_raman(
             self,
             last_z: float,
             *args: Any,
             **kwargs: Any,
         ) -> tuple[Any, Any, Any]:
-            """Reject invalid focus results or shifts over 4 um."""
+            """Reject invalid results; apply the Z-jump limit after t=0."""
+            # The base engine passes (last_z, pt, t, p), either positionally
+            # or by keyword. Only an explicit t=0 exempts the jump limit;
+            # calls without a time index retain the existing safeguard.
+            time_index = kwargs.get("t", args[1] if len(args) >= 2 else None)
+            first_timepoint = time_index == 0
             initial_z, best_z, result = super().autofocus_w_raman(
                 last_z,
                 *args,
@@ -408,14 +554,20 @@ def make_live_cell_engine_type(base_engine_type: type) -> type:
             )
             shift = abs(float(best_z) - float(last_z))
             finite_shift = bool(np.isfinite(shift))
-            if not finite_shift or shift > MAX_AUTOFOCUS_Z_SHIFT_UM:
+            if (
+                not finite_shift
+                or (
+                    not first_timepoint
+                    and shift > self._maximum_autofocus_z_shift_um
+                )
+            ):
                 self.try_set_ZPosition(last_z)
                 reason = (
                     "focus shift is not finite"
                     if not finite_shift
                     else (
                         f"shift of {shift:.3f} um exceeds "
-                        f"{MAX_AUTOFOCUS_Z_SHIFT_UM:.3f} um"
+                        f"{self._maximum_autofocus_z_shift_um:.3f} um"
                     )
                 )
                 print(
@@ -596,10 +748,67 @@ def make_live_cell_engine_type(base_engine_type: type) -> type:
                 self._tracks[position] = np.stack(
                     (safe_labels, safe_labels),
                 )
-            print(
+            self._report_tracking(
                 "[trench safeguard] failed closed at "
                 f"p={position}: {type(error).__name__}: {error}"
             )
+
+        def _apply_tracking_movement_limit(
+            self,
+            sessions: list[_PointUpdateSession],
+            position: int,
+            event: Any,
+        ) -> list[tuple[_PointUpdateSession, int]]:
+            """Hold excessive ordinary tracking updates before live-layer merge.
+
+            Trench tracking enforces this limit in registered device coordinates
+            before committing its target state, so do not apply a second,
+            uncorrected movement gate to those results.
+            """
+
+            if self._constrain_trench_tracking:
+                return []
+            held = 0
+            accepted_rows = []
+            for session in sessions:
+                if "autofocus" in str(getattr(session.source, "name", "")).lower():
+                    continue
+                position_index = getattr(session.source, "_pos_idx", None)
+                if not isinstance(position_index, (int, np.integer)):
+                    continue
+                before = np.asarray(session.before)
+                proposed = np.asarray(session.proxy.data)
+                if (
+                    before.ndim != 2
+                    or before.shape[1] < 2
+                    or before.shape != proposed.shape
+                    or not 0 <= position_index < before.shape[1] - 2
+                ):
+                    continue
+                indices = np.flatnonzero(before[:, position_index] == position)
+                # Point-layer YX coordinates are full resolution regardless of
+                # the engine's segmentation scale.
+                previous_yx = np.asarray(before[indices, -2:], dtype=float)
+                proposed_yx = np.asarray(proposed[indices, -2:], dtype=float)
+                movement = np.linalg.norm(proposed_yx - previous_yx, axis=1)
+                rejected = (
+                    ~np.isfinite(movement)
+                    | (movement > self._maximum_tracking_movement_px)
+                )
+                proposed[indices[rejected], -2:] = previous_yx[rejected]
+                held += int(np.count_nonzero(rejected))
+                if "cell" in str(getattr(session.source, "name", "")).lower():
+                    accepted_rows.extend(
+                        (session, int(index)) for index in indices[~rejected]
+                    )
+            if held:
+                self._report_tracking(
+                    "[tracking safeguard] "
+                    f"p={position}, t={event.index.get('t', 0)}: held {held} "
+                    "target(s) with invalid movement or a jump above "
+                    f"{self._maximum_tracking_movement_px:g} px"
+                )
+            return accepted_rows
 
         def _apply_trench_constraints(
             self,
@@ -609,11 +818,11 @@ def make_live_cell_engine_type(base_engine_type: type) -> type:
             image: np.ndarray,
             sessions: list[_PointUpdateSession],
             previous_mask: np.ndarray | None,
-        ) -> None:
-            """Replace base proposals with validated same-trench cell COMs."""
+        ) -> list[tuple[_PointUpdateSession, int]]:
+            """Refine each proposed cell inside its connected trench-safe mask."""
 
             if not self._constrain_trench_tracking:
-                return
+                return []
             if self._trench_tracker is None:
                 raise RuntimeError("trench constraint tracker is unavailable")
             rows = self._trench_point_rows(sessions, position)
@@ -622,7 +831,7 @@ def make_live_cell_engine_type(base_engine_type: type) -> type:
                 for session in sessions
             )
             if not rows and not has_cell_source:
-                return
+                return []
             targets = [
                 TrenchTarget(
                     token=row.token,
@@ -641,6 +850,9 @@ def make_live_cell_engine_type(base_engine_type: type) -> type:
                 position
             )
             time_index = int(event.index.get("t", 0))
+            trench_center = getattr(self, "_circle_center", None)
+            if trench_center is None:
+                trench_center = (np.asarray(image.shape) - 1) / 2
             try:
                 update = self._trench_tracker.update(
                     position=int(position),
@@ -649,6 +861,7 @@ def make_live_cell_engine_type(base_engine_type: type) -> type:
                     targets=targets,
                     current_labels=current_labels,
                     label_scale=float(getattr(self, "_scale", 1.0)),
+                    trench_center_yx=trench_center,
                 )
                 points = np.asarray(update.points_yx, dtype=float)
                 if points.shape != (len(rows), 2) or not np.isfinite(
@@ -673,7 +886,7 @@ def make_live_cell_engine_type(base_engine_type: type) -> type:
                     previous_mask=previous_mask,
                     error=error,
                 )
-                return
+                return []
 
             for row, point in zip(rows, points, strict=True):
                 row.session.proxy.data[row.row_index, -2:] = point
@@ -706,12 +919,17 @@ def make_live_cell_engine_type(base_engine_type: type) -> type:
                         }
                     )
                 )
-                print(
+                self._report_tracking(
                     "[trench safeguard] "
                     f"p={position}, t={time_index}: held {held}/{len(rows)} "
                     f"target(s); geometry={float(update.geometry_score):.3f}; "
                     f"reasons={reasons or 'geometry'}"
                 )
+            return [
+                (row.session, row.row_index)
+                for row, passed in zip(rows, accepted, strict=True)
+                if passed
+            ]
 
         def setup_sequence(self, *args: Any, **kwargs: Any) -> Any:
             result = super().setup_sequence(*args, **kwargs)
@@ -719,6 +937,8 @@ def make_live_cell_engine_type(base_engine_type: type) -> type:
                 self._trench_tracker.reset()
             self._trench_live_targets.clear()
             self._next_trench_target_token = 0
+            self._raman_previous_points.clear()
+            self._last_aim_updates.clear()
             return result
 
         def _after_live_aim_update(
@@ -810,6 +1030,39 @@ def make_live_cell_engine_type(base_engine_type: type) -> type:
                     f"at p={pos}, t={time_index}"
                 )
 
+        def _publish_final_aim_updates(
+            self,
+            deferred: _DeferredAimUpdates,
+            position: int,
+            event: Any,
+        ) -> None:
+            """Record final masks and points, including concurrent live edits."""
+
+            def final_points() -> np.ndarray:
+                points = []
+                for source in self.aiming_sources:
+                    if "autofocus" in str(source.name).lower():
+                        continue
+                    layer = _point_layer(source)
+                    if layer is not None:
+                        data = _copy_point_data(layer)
+                        selected = data[:, source._pos_idx] == position
+                        points.append(data[selected, -2:])
+                    else:
+                        normalized = source.get_mda_points(event, transform=False)
+                        points.append(
+                            np.asarray(normalized) * [self._image_x, self._image_y]
+                        )
+                return np.vstack(points) if points else np.empty((0, 2))
+
+            merged_points = self._live_layer_bridge.call(final_points)
+            final_labels = np.array(self._last_segments[position], copy=True)
+            for saved_event, saved_image, _, _, previous_points in deferred.pending:
+                self.raman_events.aimUpdated.emit(
+                    saved_event, saved_image, final_labels,
+                    merged_points.copy(), previous_points,
+                )
+
         def update_aim(
             self,
             pos: int,
@@ -826,32 +1079,85 @@ def make_live_cell_engine_type(base_engine_type: type) -> type:
                 for session in sessions:
                     session.source._points = session.proxy
 
+                original_events = getattr(self, "raman_events", None)
+                aim_signal = getattr(original_events, "aimUpdated", None)
+                deferred = (
+                    _DeferredAimUpdates(original_events)
+                    if callable(getattr(aim_signal, "emit", None))
+                    else None
+                )
+                if deferred is not None:
+                    self.raman_events = deferred
                 succeeded = False
                 try:
-                    result = super().update_aim(
-                        pos,
-                        event,
-                        img,
-                        use_same_img=use_same_img,
-                    )
+                    if (
+                        self._trench_cellpose_segmenter is not None
+                        and self._trench_tracker.config.track_cell_appearance
+                    ):
+                        # One image-based identity tracker owns trench aims.
+                        # Running btrack first can assign a neighboring mask
+                        # (or fail to find hypotheses) before refinement.
+                        if use_same_img and pos - 1 in self._last_segments:
+                            labels = np.array(self._last_segments[pos - 1], copy=True)
+                        else:
+                            labels = self._trench_cellpose_segmenter.segment(
+                                img, scale=self._scale, crop=False,
+                                circle_center=self._circle_center,
+                            )
+                        self._last_segments[pos] = labels
+                        points = [
+                            np.asarray(source.get_mda_points(event, transform=False))
+                            * [self._image_x, self._image_y]
+                            for source in self.aiming_sources
+                            if "autofocus" not in str(source.name).lower()
+                        ]
+                        previous_points = np.vstack(points) if points else np.empty((0, 2))
+                        if deferred is not None:
+                            self.raman_events.aimUpdated.emit(
+                                event, img, labels, previous_points, previous_points,
+                            )
+                        result = None
+                    else:
+                        result = super().update_aim(
+                            pos,
+                            event,
+                            img,
+                            use_same_img=use_same_img,
+                        )
                     succeeded = True
                 finally:
+                    if deferred is not None:
+                        self.raman_events = original_events
                     for session in sessions:
                         session.source._points = session.layer
 
                 if succeeded:
-                    self._apply_trench_constraints(
+                    accepted_rows = self._apply_trench_constraints(
                         position=pos,
                         event=event,
                         image=img,
                         sessions=sessions,
                         previous_mask=previous_mask,
                     )
-                    self._live_layer_bridge.call(
-                        lambda: [
-                            _merge_tracked_rows(session)
-                            for session in sessions
-                        ]
+                    accepted_rows.extend(
+                        self._apply_tracking_movement_limit(sessions, pos, event)
+                    )
+                    for session in sessions:
+                        source = session.source
+                        if not _is_splittable_cell_source(source):
+                            continue
+                        before, after = session.before, session.proxy.data
+                        if before.shape == after.shape:
+                            indices = np.flatnonzero(before[:, source._pos_idx] == pos)
+                            self._raman_previous_points[(id(source), pos)] = [
+                                (after[i, -2:].copy(), before[i, -2:].copy())
+                                for i in indices
+                            ]
+                    tracking_messages = self._live_layer_bridge.call(
+                        lambda: _merge_and_report_tracking(
+                            sessions, accepted_rows, pos,
+                            int(event.index.get("t", 0)),
+                        )
                     )
                     self._after_live_aim_update(
                         pos=pos,
@@ -860,19 +1166,108 @@ def make_live_cell_engine_type(base_engine_type: type) -> type:
                         use_same_img=use_same_img,
                         previous_mask=previous_mask,
                     )
+                    if deferred is not None and deferred.pending:
+                        self._publish_final_aim_updates(deferred, pos, event)
+                        self._last_aim_updates[pos] = (deferred, event)
+                    for message in tracking_messages:
+                        self._report_tracking(message)
                 return result
+
+        def _raman_sources_with_previous_fallback(self, event: Any) -> tuple[list[Any], bool]:
+            """Keep selected targets measurable when all current labels miss them.
+
+            Mask failure is a tracking failure, not an instruction to cancel a
+            requested measurement. Use the previous selected anchors, retaining
+            the source's Raman pattern and the ordinary hardware bounds checks.
+            This never changes or fabricates a segmentation mask.
+            """
+            sources = _split_cell_sources(
+                list(self._sources), event, self._raman_previous_points,
+            )
+            if not bool(getattr(self, "_segment_and_track", False)):
+                return sources, False
+            position = int(event.index.get("p", 0))
+            mask = getattr(self, "_last_segments", {}).get(position)
+            if mask is None:
+                return sources, False
+            camera_scale = np.asarray([self._image_x, self._image_y], dtype=float)
+            mask = np.asarray(mask)
+            scale = float(self._scale)
+            for source in sources:
+                if "cell" not in str(source.name).lower():
+                    continue
+                points = np.asarray(source.get_mda_points(event), dtype=float).reshape(-1, 2)
+                points = points[np.isfinite(points).all(axis=1)]
+                indices = np.floor(points * camera_scale / scale).astype(int)
+                inside = np.all((indices >= 0) & (indices < mask.shape), axis=1)
+                indices = indices[inside]
+                if len(indices) and np.any(mask[indices[:, 0], indices[:, 1]]):
+                    return sources, False
+            fallback = []
+            for source in sources:
+                if not isinstance(source, _FrozenAnchorSource):
+                    if "cell" not in str(source.name).lower():
+                        fallback.append(source)
+                    continue
+                anchor = source.previous_anchor
+                if anchor is None or not np.isfinite(anchor).all():
+                    continue
+                candidate = replace(source, anchor=anchor.copy())
+                pattern = np.asarray(candidate.get_mda_points(event), dtype=float)
+                pixels = pattern * camera_scale
+                if not len(pixels) or not np.isfinite(pixels).all():
+                    continue
+                if not np.all((pixels >= 0) & (pixels < np.asarray(mask.shape) * scale)):
+                    continue
+                # Respect live edits: only restore rows still at the frozen aim.
+                origin = source.origin
+                if origin is not None:
+                    data = _copy_point_data(origin._points)
+                    img_shape = np.asarray(origin._img_shape, dtype=float)
+                    selected = data[:, origin._pos_idx] == position
+                    changed = False
+                    for index in np.flatnonzero(selected):
+                        if np.allclose(
+                            data[index, -2:], source.anchor * img_shape,
+                            rtol=0, atol=1e-9,
+                        ):
+                            data[index, -2:] = anchor * img_shape
+                            changed = True
+                    if changed:
+                        origin._points.data = data
+                fallback.append(candidate)
+            if not any("cell" in str(s.name).lower() for s in fallback):
+                return sources, False
+            return fallback, True
 
         def record_raman(self, event: Any) -> Any:
             with self._live_cell_lock:
                 original_sources = self._sources
-                split_sources = self._live_layer_bridge.call(
-                    lambda: _split_cell_sources(list(original_sources), event)
+                split_sources, use_previous = self._live_layer_bridge.call(
+                    lambda: self._raman_sources_with_previous_fallback(event)
                 )
+                original_validation = getattr(self, "_segment_and_track", None)
+                if use_previous:
+                    position = int(event.index.get("p", 0))
+                    self._report_tracking(
+                        "[Raman fallback] "
+                        f"p={position}, t={event.index.get('t', 0)}: "
+                        "current masks missed all selected targets; "
+                        "acquiring at previous positions"
+                    )
+                    saved = self._last_aim_updates.get(position)
+                    if saved is not None and saved[1].index.get("t") == event.index.get("t"):
+                        self._publish_final_aim_updates(saved[0], position, saved[1])
+                    # Bypass only this failed label check for this acquisition.
+                    # The base engine still applies voltage/hardware limits.
+                    self._segment_and_track = False
                 self._sources = split_sources
                 try:
                     return super().record_raman(event)
                 finally:
                     self._sources = original_sources
+                    if use_previous:
+                        self._segment_and_track = original_validation
 
     LiveCellEngine.__name__ = f"LiveCell{base_engine_type.__name__}"
     LiveCellEngine.__qualname__ = LiveCellEngine.__name__
