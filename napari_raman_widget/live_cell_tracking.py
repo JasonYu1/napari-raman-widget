@@ -38,6 +38,7 @@ from typing import Any, Callable
 import numpy as np
 from qtpy.QtCore import QCoreApplication, QObject, QThread, Qt, Signal, Slot
 
+from .engine_recovery import ConfigurationReloader
 from .trench_segmentation import TrenchCellposeSegmenter
 from .trench_tracking import (
     DEFAULT_TRENCH_CONFIG,
@@ -452,6 +453,7 @@ def make_live_cell_engine_type(base_engine_type: type) -> type:
                 DEFAULT_MAX_AUTOFOCUS_Z_SHIFT_UM
             ),
             tracking_log: Callable[[str], None] | None = None,
+            configuration_reload_release_delay_s: float = 2.0,
             **kwargs: Any,
         ) -> None:
             maximum_shift = float(maximum_autofocus_z_shift_um)
@@ -467,6 +469,12 @@ def make_live_cell_engine_type(base_engine_type: type) -> type:
                 )
             self._maximum_tracking_movement_px = maximum_movement
             self._tracking_log = tracking_log
+            release_delay = float(configuration_reload_release_delay_s)
+            if not np.isfinite(release_delay) or release_delay < 0:
+                raise ValueError(
+                    "configuration_reload_release_delay_s must be finite and non-negative"
+                )
+            self._configuration_reload_release_delay_s = release_delay
             self._auto_add_new_cells = bool(auto_add_new_cells)
             self._constrain_trench_tracking = bool(
                 constrain_trench_tracking
@@ -489,6 +497,11 @@ def make_live_cell_engine_type(base_engine_type: type) -> type:
             self._raman_previous_points = {}
             self._last_aim_updates = {}
             super().__init__(*args, **kwargs)
+            core = getattr(self, "_mmc", None)
+            self._configuration_reloader = (
+                ConfigurationReloader(core, self._report_tracking)
+                if core is not None else None
+            )
             self._trench_cellpose_segmenter = None
             base_segmenter = getattr(self, "_cellpose_segmenter", None)
             if (
@@ -534,6 +547,24 @@ def make_live_cell_engine_type(base_engine_type: type) -> type:
                 except Exception as error:
                     # A log display failure must not interrupt acquisition.
                     print(f"[tracking log] Could not update log panel: {error}", flush=True)
+
+        def reload(self, N: int = 100) -> None:
+            """Retain the engine's full reload while excluding other core I/O."""
+            if self._configuration_reloader is None:
+                raise RuntimeError("No Micro-Manager core is available for reload")
+            self._configuration_reloader.reload(
+                getattr(self, "_config_file", None),
+                attempts=N,
+                post_unload_delay=self._configuration_reload_release_delay_s,
+            )
+
+        def request_shutdown(self) -> None:
+            """Interrupt recovery waits before the widget releases hardware."""
+            if self._configuration_reloader is not None:
+                self._configuration_reloader.request_shutdown()
+            parent_shutdown = getattr(super(), "request_shutdown", None)
+            if callable(parent_shutdown):
+                parent_shutdown()
 
         def autofocus_w_raman(
             self,

@@ -9,6 +9,7 @@ as :func:`install_core_guard` is called.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 import threading
@@ -18,6 +19,8 @@ from functools import wraps
 from typing import Any
 
 from .acquisition.autofocus import _retry_core_operation
+from .core_access import install_core_access
+from .engine_recovery import ReloadDiagnostics
 
 __all__ = ["CoreRetryGuard", "install_core_guard"]
 
@@ -95,6 +98,7 @@ class CoreRetryGuard:
         reload_after_failures: int | None = None,
         reload_attempts: int = 3,
         reload_delay: float = 0.1,
+        post_unload_delay: float = 2.0,
     ) -> None:
         if attempts < 1:
             raise ValueError("attempts must be at least one")
@@ -104,8 +108,10 @@ class CoreRetryGuard:
             raise ValueError("delay_increment cannot be negative")
         if reload_attempts < 1:
             raise ValueError("reload_attempts must be at least one")
-        if reload_delay < 0:
-            raise ValueError("reload_delay cannot be negative")
+        if not math.isfinite(reload_delay) or reload_delay < 0:
+            raise ValueError("reload_delay must be finite and nonnegative")
+        if not math.isfinite(post_unload_delay) or post_unload_delay < 0:
+            raise ValueError("post_unload_delay must be finite and nonnegative")
 
         if reload_after_failures is None:
             reload_after_failures = attempts // 2 if attempts > 1 else None
@@ -124,6 +130,11 @@ class CoreRetryGuard:
         self.reload_after_failures = reload_after_failures
         self.reload_attempts = int(reload_attempts)
         self.reload_delay = float(reload_delay)
+        self.post_unload_delay = float(post_unload_delay)
+        # Install beneath retry wrappers: saved originals and paused calls
+        # must still wait while any component is reloading the shared core.
+        self._core_access = install_core_access(core)
+        self._reload_diagnostics = ReloadDiagnostics(logger.warning)
         self.originals: dict[str, Callable[..., Any]] = {}
         self._reload_lock = threading.RLock()
         self._reloading = False
@@ -178,7 +189,7 @@ class CoreRetryGuard:
         return self
 
     def uninstall(self) -> None:
-        """Restore original methods, primarily for tests and shutdown."""
+        """Remove retries while retaining the shared hardware access gate."""
         if getattr(self.core, self._MARKER, None) is not self:
             return
         for name, original in self.originals.items():
@@ -211,7 +222,7 @@ class CoreRetryGuard:
             self._pause_count -= 1
 
     def reload_configuration(self) -> bool:
-        """Reload the configured MMCore system using unwrapped methods."""
+        """Reload the full system exclusively, without retrying each command."""
         if not self.config_file:
             logger.warning(
                 "Core recovery requested, but no Micro-Manager config is set"
@@ -224,7 +235,9 @@ class CoreRetryGuard:
             logger.warning("Core does not expose configuration reload methods")
             return False
 
-        with self._reload_lock:
+        # Always take the hardware gate first. Reversing this order can
+        # deadlock a callback that requests recovery while it owns the gate.
+        with self._core_access.exclusive(), self._reload_lock:
             if self._reloading:
                 return False
             self._reloading = True
@@ -245,11 +258,20 @@ class CoreRetryGuard:
                         )
                         if callable(stop):
                             try:
-                                stop()
+                                with self._reload_diagnostics.watch("stopping camera sequence"):
+                                    stop()
                             except Exception:
                                 pass
-                        unload()
-                        load(self.config_file)
+                        with self._reload_diagnostics.watch("unloading devices"):
+                            unload()
+                        if self.post_unload_delay > 0:
+                            logger.info(
+                                "Waiting %.2f s after unloading devices before reload",
+                                self.post_unload_delay,
+                            )
+                            time.sleep(self.post_unload_delay)
+                        with self._reload_diagnostics.watch("loading configuration"):
+                            load(self.config_file)
                         wait = self.originals.get("waitForSystem")
                         if wait is not None:
                             wait()
@@ -279,6 +301,7 @@ class CoreRetryGuard:
                             reload_attempt,
                             error,
                         )
+                        self._reload_diagnostics.failed(error)
                 logger.error(
                     "Micro-Manager config reload failed after %d attempts: %s",
                     self.reload_attempts,
@@ -348,6 +371,7 @@ def install_core_guard(
     reload_after_failures: int | None = None,
     reload_attempts: int = 3,
     reload_delay: float = 0.1,
+    post_unload_delay: float = 2.0,
 ) -> CoreRetryGuard:
     """Install retry protection on the shared core, once per process."""
     existing = getattr(core, CoreRetryGuard._MARKER, None)
@@ -363,4 +387,5 @@ def install_core_guard(
         reload_after_failures=reload_after_failures,
         reload_attempts=reload_attempts,
         reload_delay=reload_delay,
+        post_unload_delay=post_unload_delay,
     ).install()

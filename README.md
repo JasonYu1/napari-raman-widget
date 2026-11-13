@@ -858,6 +858,18 @@ confirmation dialog (not recommended on live hardware).
   it contains no simulator imports or demo-mode branches.
 - `napari_raman_widget/core_guard.py` - runtime retry protection installed on
   the shared `CMMCorePlus` instance before napari-micromanager is loaded.
+- `napari_raman_widget/core_access.py` - shared hardware gate; other MMCore
+  calls wait throughout a full configuration reload, including when acquisition
+  has paused the retry guard.
+- `napari_raman_widget/engine_recovery.py` - local Raman full-reload path with
+  a two-second delay after unloading devices, cancellable retry waits, and
+  diagnostics for COM17 failures or recovery calls lasting over 30 seconds.
+- `napari_raman_widget/serial_port_diagnostics.py` - bounded, passive Windows
+  COM17 ownership inspection of this acquisition process. Other process names
+  and PIDs are checked only when Sysinternals Handle is already on PATH and its
+  EULA has already been accepted; otherwise the log reports this limitation.
+  It never opens the port or resets hardware. A native device call that never
+  returns cannot be interrupted by the hardware gate.
 - `napari_raman_widget/slack_notifications.py` - optional webhook alerts for
   real exceptions raised during background Raman MDA runs.
 - `napari_raman_widget/hardware_defaults.py` - discovers and parses the

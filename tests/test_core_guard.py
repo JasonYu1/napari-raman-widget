@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
-from napari_raman_widget.core_guard import install_core_guard
+from napari_raman_widget.core_guard import CoreRetryGuard, install_core_guard
 
 
 class FakeCore:
@@ -108,6 +109,7 @@ class CoreRetryGuardTests(unittest.TestCase):
             reload_after_failures=5,
             reload_attempts=1,
             reload_delay=0,
+            post_unload_delay=0,
         )
 
         self.assertEqual(core.getPosition(), 42.0)
@@ -128,7 +130,7 @@ class CoreRetryGuardTests(unittest.TestCase):
         self.assertIs(first, second)
         self.assertEqual(first.config_file, "second.cfg")
 
-    def test_camera_buffer_reads_are_not_wrapped(self) -> None:
+    def test_camera_buffer_reads_are_not_retried(self) -> None:
         core = FakeCore()
         guard = install_core_guard(
             core,
@@ -143,6 +145,44 @@ class CoreRetryGuardTests(unittest.TestCase):
         self.assertEqual(core.image_calls, 1)
         self.assertEqual(core.reload_count, 0)
         guard.uninstall()
+
+    def test_post_unload_delay_precedes_loading(self) -> None:
+        core = FakeCore()
+        sequence = []
+        core.unloadAllDevices = lambda: sequence.append("unload")
+        core.loadSystemConfiguration = lambda path: sequence.append("load")
+        guard = install_core_guard(
+            core, config_file="microscope.cfg", reload_delay=0,
+        )
+        with patch(
+            "napari_raman_widget.core_guard.time.sleep",
+            side_effect=lambda duration: sequence.append(("sleep", duration)),
+        ):
+            self.assertTrue(guard.reload_configuration())
+        self.assertEqual(sequence, ["unload", ("sleep", 2.0), "load"])
+
+    def test_reload_delays_must_be_finite_and_nonnegative(self) -> None:
+        for parameter in ("reload_delay", "post_unload_delay"):
+            for value in (-0.1, float("inf"), float("nan")):
+                with self.subTest(parameter=parameter, value=value):
+                    with self.assertRaisesRegex(ValueError, parameter):
+                        CoreRetryGuard(FakeCore(), **{parameter: value})
+
+    def test_reload_failure_requests_serial_diagnostics(self) -> None:
+        core = FakeCore()
+        error = RuntimeError('Error in device "COM17"')
+
+        def fail_load(path):
+            raise error
+
+        core.loadSystemConfiguration = fail_load
+        guard = install_core_guard(
+            core, config_file="microscope.cfg", reload_attempts=1,
+            reload_delay=0, post_unload_delay=0,
+        )
+        with patch.object(guard._reload_diagnostics, "failed") as failed:
+            self.assertFalse(guard.reload_configuration())
+        failed.assert_called_once_with(error)
 
     def test_pause_bypasses_wrappers_until_resumed(self) -> None:
         core = FakeCore()
